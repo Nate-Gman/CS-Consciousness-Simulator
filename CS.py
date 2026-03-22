@@ -1,3 +1,88 @@
+# =============================================================================
+# AUTO-INSTALL DEPENDENCIES
+# =============================================================================
+import os as _os
+_os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
+_os.environ.setdefault('OMP_NUM_THREADS', '4')
+del _os
+
+import subprocess as _sp
+import sys as _sys
+
+def _auto_install():
+    """Auto-install all required packages. Skips already-installed ones."""
+    _required = {
+        'torch': 'torch',
+        'numpy': 'numpy',
+        'PIL': 'pillow',
+        'requests': 'requests',
+        'networkx': 'networkx',
+        'sympy': 'sympy',
+        'bs4': 'beautifulsoup4',
+        'pygame': 'pygame',
+        'matplotlib': 'matplotlib',
+        'psutil': 'psutil',
+        'pytesseract': 'pytesseract',
+        'fitz': 'pymupdf',
+        'pyttsx3': 'pyttsx3',
+        'tokenizers': 'tokenizers',
+    }
+    _missing = []
+    for mod, pkg in _required.items():
+        try:
+            __import__(mod)
+        except ImportError:
+            _missing.append(pkg)
+    if _missing:
+        print(f"Installing missing packages: {', '.join(_missing)}")
+        _sp.check_call(
+            [_sys.executable, '-m', 'pip', 'install', '--quiet'] + _missing)
+        print("Installation complete.")
+    else:
+        print("All dependencies already installed.")
+
+_auto_install()
+
+def _write_launcher_bat():
+    """Auto-generate launch.bat next to CS.py for double-click launching."""
+    import os as _os
+    _bat_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'launch.bat')
+    _bat_content = r"""@echo off
+title Consciousness Simulator - Launcher
+echo ============================================================
+echo   Consciousness Simulator - Auto Setup ^& Launch
+echo ============================================================
+echo.
+echo Checking and installing required packages...
+echo.
+pip install torch torchvision torchaudio --quiet 2>nul
+pip install numpy pillow requests networkx sympy beautifulsoup4 --quiet 2>nul
+pip install pygame matplotlib psutil pytesseract pymupdf pyttsx3 tokenizers --quiet 2>nul
+echo.
+echo All dependencies checked. Launching Consciousness Simulator...
+echo ============================================================
+echo.
+python "%~dp0CS.py"
+if %errorlevel% neq 0 (
+    echo.
+    echo ERROR: CS.py exited with error code %errorlevel%
+    echo If Python was not found, install from python.org and add to PATH.
+)
+echo.
+pause
+"""
+    try:
+        with open(_bat_path, 'w') as _f:
+            _f.write(_bat_content)
+    except Exception:
+        pass  # non-critical
+
+_write_launcher_bat()
+del _auto_install, _write_launcher_bat, _sp, _sys  # clean up namespace
+
+# =============================================================================
+# IMPORTS
+# =============================================================================
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -20,6 +105,7 @@ import signal
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
 import tkinter as tk
 from tkinter import filedialog, messagebox, Listbox, Scrollbar, Text, Entry, Button, Label, Frame, ttk
+from tkinter import scrolledtext  # For monitoring dashboard
 from PIL import Image, ImageTk, ImageGrab, ImageFilter, ImageEnhance
 import io
 import networkx as nx
@@ -29,6 +115,7 @@ import ctypes  # For OS keyboard and mouse simulation
 import os
 import sys
 import subprocess
+import multiprocessing
 import mmap
 import socket
 from bs4 import BeautifulSoup  # For parsing web pages to find PDF links
@@ -84,6 +171,580 @@ try:
 except ImportError:
     print("WARNING: tokenizers not installed. Falling back to hash-based tokenizer. pip install tokenizers")
     HAS_TOKENIZERS = False
+
+# =============================================================================
+# PYGAME VIRTUAL WORLD (inlined — runs as a separate process via multiprocessing)
+# =============================================================================
+def _pygame_world_main(state_file):
+    """Self-contained Pygame visualization process.
+    Reads state from the shared JSON file and renders an ultra-detailed world view.
+    This function is the target for multiprocessing.Process so it must be module-level.
+
+    Layout (1280x820 resizable):
+      Header: SELF C metrics, S/E/R/A, Omega convergence, karma/coherence bars
+      Left:   Entity world view with hover tooltips, legend, grid
+      Right:  Tabbed panel (Symbols / Modules / Goals+NeuronGroups)
+      Bottom: 3 sparkline charts (C History, Phi, Loss) + status bar
+    """
+    import json, os, time, random, math
+    try:
+        import pygame
+    except ImportError:
+        print("pygame not installed, cannot run virtual world visualization.")
+        return
+
+    # ── Color palette ──
+    _BG          = (5, 5, 20)
+    _PANEL_BG    = (12, 12, 35)
+    _BORDER      = (40, 40, 80)
+    _TEXT_DIM    = (120, 120, 140)
+    _TEXT_MED    = (180, 180, 200)
+    _TEXT_BRIGHT = (220, 220, 240)
+    _CYAN        = (80, 200, 255)
+    _YELLOW      = (255, 220, 80)
+    _RED_SOFT    = (255, 100, 100)
+    _GREEN_SOFT  = (80, 255, 120)
+    _ORANGE      = (255, 160, 60)
+    _PURPLE      = (180, 120, 255)
+    _SELF_GLOW   = (255, 255, 100)
+    _GRID_LINE   = (25, 25, 50)
+
+    def _read_state():
+        for path in [state_file, state_file + '.tmp']:
+            try:
+                if os.path.exists(path):
+                    with open(path, 'r') as f:
+                        return json.load(f)
+            except (json.JSONDecodeError, IOError, OSError):
+                continue
+        return None
+
+    def _c_color(c_val, max_c=3.0):
+        ratio = min(1.0, max(0.0, c_val / max_c))
+        return (int(255 * (1.0 - ratio)), int(255 * ratio), 60)
+
+    def _karma_color(karma):
+        if karma < 0:
+            t = max(0.0, 1.0 + karma)
+            return (255, int(t * 200), int(t * 200))
+        else:
+            t = min(1.0, karma)
+            return (int((1 - t) * 200 + 55), 255, int((1 - t) * 200 + 55))
+
+    def _draw_sparkline(surface, rect, values, color, label_font, label="", y_min=None, y_max=None):
+        x, y, w, h = rect
+        pygame.draw.rect(surface, _PANEL_BG, rect)
+        pygame.draw.rect(surface, _BORDER, rect, 1)
+        if not values or len(values) < 2:
+            return
+        vals = values[-w:]
+        v_min = y_min if y_min is not None else min(vals)
+        v_max = y_max if y_max is not None else max(vals)
+        v_range = max(0.001, v_max - v_min)
+        for i in range(1, 4):
+            gy = y + int(i * h / 4)
+            pygame.draw.line(surface, _GRID_LINE, (x, gy), (x + w, gy), 1)
+        points = []
+        for i, v in enumerate(vals):
+            px = x + int(i * w / len(vals))
+            py = y + h - 2 - int((v - v_min) / v_range * (h - 4))
+            py = max(y + 1, min(y + h - 2, py))
+            points.append((px, py))
+        if len(points) > 1:
+            pygame.draw.lines(surface, color, False, points, 2)
+        if label_font:
+            top_lbl = label_font.render(f"{v_max:.2f}", True, _TEXT_DIM)
+            bot_lbl = label_font.render(f"{v_min:.2f}", True, _TEXT_DIM)
+            surface.blit(top_lbl, (x + 2, y + 1))
+            surface.blit(bot_lbl, (x + 2, y + h - 12))
+        if label:
+            lbl = label_font.render(label, True, _TEXT_MED)
+            surface.blit(lbl, (x + w - lbl.get_width() - 4, y + 1))
+
+    def _draw_bar(surface, rect, value, max_val, color, bg_color=_PANEL_BG):
+        x, y, w, h = rect
+        pygame.draw.rect(surface, bg_color, rect)
+        fill_w = int(min(1.0, max(0.0, value / max(0.001, max_val))) * w)
+        pygame.draw.rect(surface, color, (x, y, fill_w, h))
+        pygame.draw.rect(surface, _BORDER, rect, 1)
+
+    # ── Pygame init ──
+    pygame.init()
+    W, H = 1280, 820
+    screen = pygame.display.set_mode((W, H), pygame.RESIZABLE)
+    pygame.display.set_caption("Consciousness Virtual World  |  C = S + E + R*A")
+    clock = pygame.time.Clock()
+    entity_positions = {}
+    hovered_entity = None
+    sym_scroll = 0
+    right_tab = 0
+    running = True
+
+    # Camera state for zoom/pan
+    cam_x, cam_y = 0.0, 0.0
+    cam_zoom = 1.0
+    cam_dragging = False
+    cam_drag_start = (0, 0)
+    cam_drag_cam_start = (0.0, 0.0)
+    MIN_ZOOM = 0.2
+    MAX_ZOOM = 5.0
+
+    font_title = pygame.font.SysFont('consolas', 22, bold=True)
+    font_header = pygame.font.SysFont('consolas', 16, bold=True)
+    font_med = pygame.font.SysFont('consolas', 14)
+    font_sm = pygame.font.SysFont('consolas', 12)
+    font_tiny = pygame.font.SysFont('consolas', 11)
+
+    while running:
+        mouse_pos = pygame.mouse.get_pos()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.VIDEORESIZE:
+                W, H = event.w, event.h
+                screen = pygame.display.set_mode((W, H), pygame.RESIZABLE)
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_r:
+                    cam_x, cam_y, cam_zoom = 0.0, 0.0, 1.0
+                elif event.key == pygame.K_PLUS or event.key == pygame.K_EQUALS:
+                    cam_zoom = min(MAX_ZOOM, cam_zoom * 1.2)
+                elif event.key == pygame.K_MINUS:
+                    cam_zoom = max(MIN_ZOOM, cam_zoom / 1.2)
+            elif event.type == pygame.MOUSEWHEEL:
+                RIGHT_W_ev = 320
+                HEADER_H_ev = 56
+                if mouse_pos[0] > W - RIGHT_W_ev:
+                    sym_scroll = max(0, sym_scroll - event.y * 3)
+                elif mouse_pos[1] > HEADER_H_ev:
+                    old_zoom = cam_zoom
+                    if event.y > 0:
+                        cam_zoom = min(MAX_ZOOM, cam_zoom * 1.15)
+                    else:
+                        cam_zoom = max(MIN_ZOOM, cam_zoom / 1.15)
+                    # Zoom toward mouse position
+                    world_mx = (mouse_pos[0]) / old_zoom + cam_x
+                    world_my = (mouse_pos[1]) / old_zoom + cam_y
+                    cam_x = world_mx - mouse_pos[0] / cam_zoom
+                    cam_y = world_my - mouse_pos[1] / cam_zoom
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                rpx = W - 320
+                if rpx <= mouse_pos[0] and 58 <= mouse_pos[1] <= 78:
+                    tab_w = 100
+                    for ti in range(3):
+                        tx = rpx + ti * tab_w + 5
+                        if tx <= mouse_pos[0] <= tx + tab_w - 5:
+                            right_tab = ti
+                            sym_scroll = 0
+                elif event.button == 1 and mouse_pos[0] < rpx and mouse_pos[1] > 56:
+                    cam_dragging = True
+                    cam_drag_start = mouse_pos
+                    cam_drag_cam_start = (cam_x, cam_y)
+                elif event.button == 2:
+                    cam_x, cam_y, cam_zoom = 0.0, 0.0, 1.0
+            elif event.type == pygame.MOUSEBUTTONUP:
+                if event.button == 1:
+                    cam_dragging = False
+            elif event.type == pygame.MOUSEMOTION:
+                if cam_dragging:
+                    dx = mouse_pos[0] - cam_drag_start[0]
+                    dy = mouse_pos[1] - cam_drag_start[1]
+                    cam_x = cam_drag_cam_start[0] - dx / cam_zoom
+                    cam_y = cam_drag_cam_start[1] - dy / cam_zoom
+
+        screen.fill(_BG)
+        state = _read_state()
+
+        if state is None:
+            msg = font_header.render("Waiting for consciousness state data...", True, _TEXT_DIM)
+            screen.blit(msg, (W // 2 - msg.get_width() // 2, H // 2))
+            pygame.display.flip()
+            clock.tick(10)
+            continue
+
+        # ── Layout regions ──
+        RIGHT_W = 320
+        HEADER_H = 56
+        CHART_H = 140
+        STATUS_H = 28
+        WORLD_W = W - RIGHT_W - 2
+        WORLD_H = H - HEADER_H - CHART_H - STATUS_H - 4
+
+        # ── HEADER BAR ──
+        self_state = state.get('self_entity', {})
+        C = self_state.get('C', 0)
+        omega_status = state.get('omega', {})
+
+        cc = _c_color(C)
+        hdr1 = font_title.render(f"SELF  C = {C:.4f}", True, cc)
+        screen.blit(hdr1, (10, 4))
+
+        hdr2 = font_med.render(
+            f"S={self_state.get('S', 0):.3f}  "
+            f"E={self_state.get('E', 0):.3f}  "
+            f"R={self_state.get('R', 0):.3f}  "
+            f"A={self_state.get('A', 0):.3f}  "
+            f"K={self_state.get('K', 0):.3f}  "
+            f"Phi={self_state.get('Phi', 0):.3f}",
+            True, _TEXT_BRIGHT)
+        screen.blit(hdr2, (10, 28))
+
+        omega_txt = font_med.render(
+            f"Omega={omega_status.get('omega', 0):.4f}  "
+            f"Entities={omega_status.get('num_entities', 0)}  "
+            f"Rate={omega_status.get('convergence_rate', 0):.6f}",
+            True, _PURPLE)
+        screen.blit(omega_txt, (420, 4))
+
+        kc = _karma_color(self_state.get('karma', 0))
+        meta_txt = font_med.render(
+            f"Karma={self_state.get('karma', 0):.3f}  "
+            f"Coh={self_state.get('coherence', 0):.3f}  "
+            f"Aware={self_state.get('awareness', 0):.3f}  "
+            f"Life={self_state.get('lives', 1)}",
+            True, kc)
+        screen.blit(meta_txt, (420, 24))
+
+        c_ratio = min(1.0, max(0.0, C / 3.0))
+        bar_x = W - RIGHT_W - 10
+        _draw_bar(screen, (bar_x - 200, 6, 200, 14), C, 3.0, cc)
+        bar_label = font_tiny.render(f"C: {c_ratio*100:.0f}%", True, _TEXT_DIM)
+        screen.blit(bar_label, (bar_x - 198, 7))
+
+        _draw_bar(screen, (bar_x - 200, 24, 95, 12),
+                  self_state.get('phi_star', 0), 1.0, _YELLOW)
+        ps_lbl = font_tiny.render("Phi*", True, _TEXT_DIM)
+        screen.blit(ps_lbl, (bar_x - 198, 24))
+        _draw_bar(screen, (bar_x - 100, 24, 95, 12),
+                  self_state.get('ignition_rate', 0), 1.0, _ORANGE)
+        ig_lbl = font_tiny.render("Ignit", True, _TEXT_DIM)
+        screen.blit(ig_lbl, (bar_x - 98, 24))
+
+        pygame.draw.line(screen, _BORDER, (0, HEADER_H), (W, HEADER_H), 1)
+
+        # ── ENTITY WORLD VIEW (with camera zoom/pan) ──
+        world_rect = (0, HEADER_H + 1, WORLD_W, WORLD_H)
+        pygame.draw.rect(screen, (8, 8, 24), world_rect)
+
+        # Draw grid lines transformed by camera
+        grid_spacing = 60
+        cam_grid_x0 = int(cam_x / grid_spacing) * grid_spacing
+        cam_grid_y0 = int(cam_y / grid_spacing) * grid_spacing
+        for gx_w in range(cam_grid_x0 - grid_spacing, cam_grid_x0 + int(WORLD_W / cam_zoom) + grid_spacing * 2, grid_spacing):
+            sx = int((gx_w - cam_x) * cam_zoom)
+            if 0 <= sx <= WORLD_W:
+                pygame.draw.line(screen, (15, 15, 32),
+                                 (sx, HEADER_H + 1), (sx, HEADER_H + WORLD_H), 1)
+        for gy_w in range(cam_grid_y0 - grid_spacing, cam_grid_y0 + int(WORLD_H / cam_zoom) + grid_spacing * 2, grid_spacing):
+            sy = int((gy_w - cam_y) * cam_zoom)
+            if HEADER_H <= sy <= HEADER_H + WORLD_H:
+                pygame.draw.line(screen, (15, 15, 32), (0, sy), (WORLD_W, sy), 1)
+
+        # Inverse-transform mouse to world coords for hover detection
+        world_mx = mouse_pos[0] / cam_zoom + cam_x
+        world_my = mouse_pos[1] / cam_zoom + cam_y
+
+        entities_data = state.get('entities', [])
+        hovered_entity = None
+
+        # Clip drawing to world rect
+        world_clip = pygame.Rect(0, HEADER_H + 1, WORLD_W, WORLD_H)
+        screen.set_clip(world_clip)
+
+        for ent in entities_data:
+            eid = ent.get('id', '')
+            eC = ent.get('C', 0)
+            etype = ent.get('type', 'unknown')
+            ekarma = ent.get('karma', 0)
+
+            if eid not in entity_positions:
+                entity_positions[eid] = [
+                    random.randint(40, max(60, WORLD_W - 40)),
+                    random.randint(HEADER_H + 40, max(HEADER_H + 60, HEADER_H + WORLD_H - 40))
+                ]
+            pos = entity_positions[eid]
+            pos[0] = max(-200, min(WORLD_W + 200, pos[0] + random.randint(-1, 1)))
+            pos[1] = max(HEADER_H - 200, min(HEADER_H + WORLD_H + 200, pos[1] + random.randint(-1, 1)))
+
+            # Transform world position to screen position
+            sx = int((pos[0] - cam_x) * cam_zoom)
+            sy = int((pos[1] - cam_y) * cam_zoom)
+
+            ec = _c_color(eC)
+            radius = max(5, min(22, int(7 + eC * 5)))
+            s_radius = max(3, int(radius * cam_zoom))
+
+            is_self = (eid == 'self_0')
+            if is_self:
+                radius = 26
+                s_radius = max(5, int(radius * cam_zoom))
+                pulse = int((6 + 3 * math.sin(time.time() * 3)) * cam_zoom)
+                pygame.draw.circle(screen, _SELF_GLOW, (sx, sy), s_radius + pulse, 2)
+
+            ring_c = _karma_color(ekarma)
+            pygame.draw.circle(screen, ring_c, (sx, sy), s_radius + 2, 1)
+            pygame.draw.circle(screen, ec, (sx, sy), s_radius)
+
+            # Only draw labels if zoom is sufficient
+            if cam_zoom >= 0.4:
+                label_size = max(8, int(11 * cam_zoom))
+                label_font_dyn = font_tiny if cam_zoom < 1.5 else font_sm
+                id_short = eid.replace('entity_', 'E').replace('self_', 'SELF ')
+                lbl_text = f"{id_short} C={eC:.2f}"
+                lbl = label_font_dyn.render(lbl_text, True, _TEXT_MED)
+                screen.blit(lbl, (sx - lbl.get_width() // 2, sy - s_radius - 14))
+
+                type_lbl = label_font_dyn.render(etype, True, _TEXT_DIM)
+                screen.blit(type_lbl, (sx - type_lbl.get_width() // 2, sy + s_radius + 2))
+
+            # Hover detection in world coordinates
+            dxw = world_mx - pos[0]
+            dyw = world_my - pos[1]
+            if dxw * dxw + dyw * dyw < (radius + 8) ** 2:
+                hovered_entity = ent
+
+        screen.set_clip(None)
+
+        live_ids = set(e.get('id', '') for e in entities_data)
+        for dead in list(entity_positions.keys()):
+            if dead not in live_ids:
+                del entity_positions[dead]
+
+        # ── Hover tooltip (screen-space, not camera-transformed) ──
+        if hovered_entity:
+            e = hovered_entity
+            tooltip_lines = [
+                f"ID: {e.get('id', '?')}  Type: {e.get('type', '?')}",
+                f"C={e.get('C',0):.4f}  S={e.get('S',0):.3f}  E={e.get('E',0):.3f}  R={e.get('R',0):.3f}  A={e.get('A',0):.3f}",
+                f"Karma={e.get('karma',0):.3f}  Coh={e.get('coherence',0):.3f}  Aware={e.get('awareness',0):.3f}",
+                f"Good={e.get('good_acts',0)}  Evil={e.get('evil_acts',0)}  Life={e.get('life',1)}  Step={e.get('step',0)}",
+                f"Phi*={e.get('phi_star',0):.4f}  Ignit={e.get('ignition',0):.4f}  FE={e.get('free_energy',0):.4f}",
+                f"Universe={e.get('universe_id', 1)}",
+            ]
+            tw = max(font_sm.size(l)[0] for l in tooltip_lines) + 16
+            th = len(tooltip_lines) * 16 + 10
+            tx = min(mouse_pos[0] + 15, W - tw - 5)
+            ty = min(mouse_pos[1] + 15, H - th - 5)
+            pygame.draw.rect(screen, (0, 0, 0), (tx + 2, ty + 2, tw, th))
+            pygame.draw.rect(screen, (20, 20, 50), (tx, ty, tw, th))
+            pygame.draw.rect(screen, _CYAN, (tx, ty, tw, th), 1)
+            for i, line in enumerate(tooltip_lines):
+                color = _TEXT_BRIGHT if i == 0 else _TEXT_MED
+                tl = font_sm.render(line, True, color)
+                screen.blit(tl, (tx + 8, ty + 5 + i * 16))
+
+        # ── Entity legend (fixed screen position) ──
+        ly = HEADER_H + WORLD_H - 72
+        pygame.draw.rect(screen, (10, 10, 28), (4, ly, 260, 70))
+        pygame.draw.rect(screen, _BORDER, (4, ly, 260, 70), 1)
+        screen.blit(font_tiny.render("LEGEND", True, _TEXT_DIM), (8, ly + 2))
+        pygame.draw.circle(screen, (255, 60, 60), (18, ly + 18), 5)
+        screen.blit(font_tiny.render("C < 1.0 (low)", True, _RED_SOFT), (28, ly + 13))
+        pygame.draw.circle(screen, (60, 255, 60), (130, ly + 18), 5)
+        screen.blit(font_tiny.render("C > 2.0 (high)", True, _GREEN_SOFT), (140, ly + 13))
+        pygame.draw.circle(screen, _SELF_GLOW, (18, ly + 34), 5, 1)
+        screen.blit(font_tiny.render("= SELF entity", True, _SELF_GLOW), (28, ly + 29))
+        screen.blit(font_tiny.render("Ring = karma", True, _TEXT_DIM), (130, ly + 29))
+        screen.blit(font_tiny.render("Scroll=Zoom  Drag=Pan  R/Mid=Reset", True, _CYAN), (8, ly + 46))
+        zoom_pct = font_tiny.render(f"Zoom: {cam_zoom:.1f}x", True, _YELLOW)
+        screen.blit(zoom_pct, (8, ly + 58))
+
+        pygame.draw.rect(screen, _BORDER, world_rect, 1)
+
+        # ── RIGHT PANEL (tabbed) ──
+        rpx = W - RIGHT_W
+        rpy = HEADER_H + 1
+        rph = WORLD_H
+        pygame.draw.rect(screen, _PANEL_BG, (rpx, rpy, RIGHT_W, rph))
+        pygame.draw.rect(screen, _BORDER, (rpx, rpy, RIGHT_W, rph), 1)
+
+        tab_names = ["Symbols", "Modules", "Goals"]
+        tab_w = RIGHT_W // 3
+        for ti, tname in enumerate(tab_names):
+            _tx = rpx + ti * tab_w
+            is_active = (ti == right_tab)
+            tab_bg = (30, 30, 70) if is_active else _PANEL_BG
+            pygame.draw.rect(screen, tab_bg, (_tx, rpy, tab_w, 20))
+            pygame.draw.rect(screen, _BORDER, (_tx, rpy, tab_w, 20), 1)
+            tc = _CYAN if is_active else _TEXT_DIM
+            tl = font_tiny.render(tname, True, tc)
+            screen.blit(tl, (_tx + tab_w // 2 - tl.get_width() // 2, rpy + 4))
+
+        content_y = rpy + 22
+        content_h = rph - 22
+        clip_rect = pygame.Rect(rpx + 1, content_y, RIGHT_W - 2, content_h - 2)
+
+        if right_tab == 0:
+            # ── SYMBOLS TAB ──
+            symbols_data = state.get('symbols', [])
+            num_sym = state.get('num_symbols', len(symbols_data))
+            header_t = font_sm.render(f"Symbols ({num_sym} total, showing {len(symbols_data)})", True, _TEXT_MED)
+            screen.blit(header_t, (rpx + 6, content_y + 2))
+            cy = content_y + 18
+            screen.blit(font_tiny.render("Name", True, _TEXT_DIM), (rpx + 6, cy))
+            screen.blit(font_tiny.render("Val", True, _TEXT_DIM), (rpx + 110, cy))
+            screen.blit(font_tiny.render("Conf", True, _TEXT_DIM), (rpx + 145, cy))
+            screen.blit(font_tiny.render("Assoc", True, _TEXT_DIM), (rpx + 185, cy))
+            screen.blit(font_tiny.render("Cat", True, _TEXT_DIM), (rpx + 230, cy))
+            pygame.draw.line(screen, _BORDER, (rpx + 4, cy + 13), (rpx + RIGHT_W - 4, cy + 13), 1)
+            row_y = cy + 16 - sym_scroll * 14
+            screen.set_clip(clip_rect)
+            for sym in symbols_data:
+                if row_y > content_y + content_h:
+                    break
+                if row_y >= content_y + 14:
+                    name = sym.get('name', '')[:14]
+                    val = sym.get('value', 0)
+                    conf = sym.get('confidence', 0.5)
+                    assoc = sym.get('assoc_sum', 0)
+                    cat = sym.get('category', 'gen')[:6]
+                    if val < 0:
+                        nc = _RED_SOFT
+                    elif val > 0:
+                        nc = _GREEN_SOFT
+                    else:
+                        nc = _TEXT_DIM
+                    screen.blit(font_tiny.render(name, True, nc), (rpx + 6, row_y))
+                    screen.blit(font_tiny.render(f"{val:+d}", True, nc), (rpx + 110, row_y))
+                    bar_c = (int(80 + conf * 175), int(80 + conf * 175), 60)
+                    pygame.draw.rect(screen, (20, 20, 40), (rpx + 145, row_y + 2, 30, 8))
+                    pygame.draw.rect(screen, bar_c, (rpx + 145, row_y + 2, int(conf * 30), 8))
+                    screen.blit(font_tiny.render(f"{assoc:.1f}", True, _TEXT_DIM), (rpx + 185, row_y))
+                    screen.blit(font_tiny.render(cat, True, _PURPLE), (rpx + 230, row_y))
+                row_y += 14
+            screen.set_clip(None)
+
+        elif right_tab == 1:
+            # ── MODULES TAB ──
+            cy = content_y + 4
+            modules = [
+                ("Quantum Substrate", state.get('quantum', {})),
+                ("Metabolic System", state.get('metabolic', {})),
+                ("Existential Self", state.get('existential', {})),
+                ("Dream Engine", state.get('dreaming', {})),
+                ("Active Inference", state.get('active_inference_status', {})),
+                ("Autonomy", state.get('autonomy', {})),
+            ]
+            for mname, mdata in modules:
+                if cy > content_y + content_h - 14:
+                    break
+                screen.blit(font_sm.render(mname, True, _CYAN), (rpx + 6, cy))
+                cy += 15
+                if isinstance(mdata, dict):
+                    for k, v in list(mdata.items())[:6]:
+                        if cy > content_y + content_h - 14:
+                            break
+                        val_str = f"{v:.4f}" if isinstance(v, float) else str(v)[:20]
+                        screen.blit(font_tiny.render(f"  {k}: {val_str}", True, _TEXT_DIM), (rpx + 8, cy))
+                        cy += 12
+                cy += 4
+                pygame.draw.line(screen, _BORDER, (rpx + 6, cy), (rpx + RIGHT_W - 6, cy), 1)
+                cy += 4
+
+        elif right_tab == 2:
+            # ── GOALS TAB ──
+            cy = content_y + 4
+            goals = state.get('active_goals', [])
+            ai_status = state.get('active_inference_status', {})
+            screen.blit(font_sm.render(
+                f"Active Inference Goals ({len(goals)})", True, _CYAN), (rpx + 6, cy))
+            cy += 16
+            if ai_status:
+                screen.blit(font_tiny.render(
+                    f"VFE={ai_status.get('vfe', 0):.3f}  "
+                    f"EFE={ai_status.get('efe', 0):.3f}  "
+                    f"Prec={ai_status.get('precision', 0):.2f}",
+                    True, _YELLOW), (rpx + 6, cy))
+                cy += 14
+                screen.blit(font_tiny.render(
+                    f"Entropy={ai_status.get('belief_entropy', 0):.3f}  "
+                    f"PredErr={ai_status.get('last_prediction_error', 0):.4f}",
+                    True, _TEXT_MED), (rpx + 6, cy))
+                cy += 16
+            pygame.draw.line(screen, _BORDER, (rpx + 6, cy), (rpx + RIGHT_W - 6, cy), 1)
+            cy += 4
+            for g in goals:
+                if cy > content_y + content_h - 14:
+                    break
+                desc = g.get('desc', '')[:30]
+                pri = g.get('priority', 0)
+                gtype = g.get('type', '')[:8]
+                _draw_bar(screen, (rpx + 6, cy + 1, 40, 10), pri, 1.0, _ORANGE)
+                tc = _YELLOW if gtype == 'epistemic' else _GREEN_SOFT if gtype == 'pragmatic' else _TEXT_MED
+                screen.blit(font_tiny.render(f"{desc}", True, tc), (rpx + 52, cy))
+                cy += 14
+            ng = state.get('neuron_groups', [])
+            if ng:
+                cy += 6
+                pygame.draw.line(screen, _BORDER, (rpx + 6, cy), (rpx + RIGHT_W - 6, cy), 1)
+                cy += 4
+                screen.blit(font_sm.render(f"Neuron Groups ({len(ng)})", True, _CYAN), (rpx + 6, cy))
+                cy += 16
+                for grp in ng:
+                    if cy > content_y + content_h - 14:
+                        break
+                    cat = grp.get('category', '?')[:12]
+                    nn = grp.get('num_neurons', 0)
+                    ap = grp.get('avg_phi', 0)
+                    types = ','.join(grp.get('types', []))[:20]
+                    screen.blit(font_tiny.render(
+                        f"{cat}: {nn}n  phi={ap:.3f}  [{types}]",
+                        True, _TEXT_MED), (rpx + 8, cy))
+                    cy += 13
+
+        # ── BOTTOM CHARTS ──
+        chart_y = HEADER_H + WORLD_H + 2
+        chart_w = W - 10
+
+        c_history = state.get('c_history', [])
+        _draw_sparkline(screen, (5, chart_y, chart_w // 3 - 5, CHART_H - 4),
+                        c_history, _CYAN, font_tiny,
+                        label=f"C History ({len(c_history)} steps)")
+
+        phi_history = state.get('phi_history', [])
+        phi_label = f"Phi/Omega ({len(phi_history)})" if phi_history else "Phi (waiting)"
+        _draw_sparkline(screen, (chart_w // 3 + 5, chart_y, chart_w // 3 - 5, CHART_H - 4),
+                        phi_history, _YELLOW, font_tiny,
+                        label=phi_label)
+
+        loss_history = state.get('loss_history', [])
+        loss_label = f"Loss/Karma ({len(loss_history)})" if loss_history else "Loss (waiting)"
+        _draw_sparkline(screen, (2 * chart_w // 3 + 5, chart_y, chart_w // 3, CHART_H - 4),
+                        loss_history, _RED_SOFT, font_tiny,
+                        label=loss_label)
+
+        # ── STATUS BAR ──
+        status_y = H - STATUS_H
+        pygame.draw.rect(screen, (10, 10, 30), (0, status_y, W, STATUS_H))
+        pygame.draw.line(screen, _BORDER, (0, status_y), (W, status_y), 1)
+
+        t_step = state.get('training_step', 0)
+        h_size = state.get('hidden_size', 0)
+        n_sym = state.get('num_symbols', 0)
+        n_mem = state.get('num_memories', 0)
+        ng_count = len(state.get('neuron_groups', []))
+        verifier = state.get('verifier', {})
+        v_score = verifier.get('score', '?') if isinstance(verifier, dict) else '?'
+
+        status_parts = [
+            f"Step: {t_step}",
+            f"Hidden: {h_size}",
+            f"Symbols: {n_sym}",
+            f"Memories: {n_mem}",
+            f"Groups: {ng_count}",
+            f"Verifier: {v_score}",
+            f"Zoom: {cam_zoom:.2f}x",
+        ]
+        sx = 8
+        for part in status_parts:
+            sl = font_tiny.render(part, True, _TEXT_MED)
+            screen.blit(sl, (sx, status_y + 8))
+            sx += sl.get_width() + 20
+
+        pygame.display.flip()
+        clock.tick(30)
+
+    pygame.quit()
+
 
 # =============================================================================
 # THREAD-SAFE MEMORY (sqlite3 WAL mode, replaces shelve)
@@ -152,8 +813,8 @@ class ThreadSafeMemory:
         """Compatibility with shelve.sync(). WAL mode auto-flushes, but we commit."""
         try:
             self._conn().commit()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [ERR] SqliteShelf.sync: {e}")
 
     def close(self):
         if hasattr(self._local, 'conn') and self._local.conn is not None:
@@ -424,7 +1085,7 @@ PHYSICS_LAWS = {}
 # Newton's Laws
 f_net, m, a, v = sp.symbols('F_net m a v')
 PHYSICS_LAWS["newtons_first_law"] = {
-    "formula": sp.Eq(f_net, 0).subs(f_net, 0) if sp.Eq(f_net, 0) else sp.Eq(v, sp.symbols('constant')),  # If net force zero, velocity constant
+    "formula": sp.Eq(f_net, 0),  # If net force zero, velocity is constant
     "desc": "An object at rest stays at rest and an object in motion stays in motion with constant velocity unless acted upon by a net force."
 }
 PHYSICS_LAWS["newtons_second_law"] = {
@@ -690,7 +1351,8 @@ class LogicNeuron(nn.Module):
         values = {s: v for s, v in zip(self.symbols[:len(projected)], projected)}
         try:
             result_val = float(expr.subs(values))
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] symbolic_eval: {e}")
             result_val = sum(projected)
         result = torch.tensor([[result_val] * self.num_logic_dims], dtype=torch.float32)
         return self.norm(self.expansion(result) + x)
@@ -822,8 +1484,8 @@ class NeuronGroup(nn.Module):
                     try:
                         prune.l1_unstructured(neuron.linear, name='weight', amount=prune_amount)
                         pruned_any = True
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"  [ERR] neuron_prune: {e}")
             if pruned_any:
                 post_phi = np.mean(self.usage_phi[-3:]) if len(self.usage_phi) >= 3 else avg_phi
                 if post_phi < avg_phi * 0.8:
@@ -897,6 +1559,9 @@ class ConsciousEntity:
         # Fed from IrreducibleCausalPower.decomposability_score in evolution loop
         self.substrate_consciousness_penalty = 0.0
         self.honest_C = 0.0  # C after substrate penalty
+        # Reality gap penalty: fed from ConsciousnessRealityCheck.run_reality_check
+        # Prevents honest_C from inflating when the reality dashboard says otherwise
+        self.reality_gap_penalty = 1.0  # 0.0 = no gap (genuine), 1.0 = total gap
 
         # Action tracking
         self.good_acts = 0
@@ -925,6 +1590,60 @@ class ConsciousEntity:
         self.created_at = datetime.now()
         self.last_updated = datetime.now()
         self.evolution_step = 0
+
+        # Per-entity neural pathways
+        self.neuron_groups = {}  # {category: NeuronGroup}
+        self.neuron_usage = {}   # {category: {'count': int, 'phi_sum': float}}
+
+    def add_neuron_group(self, category, neuron_types=None, hidden_size=128, count=1):
+        """Add neurons to this entity's neural pathway map.
+        If group already exists for category, appends new neurons to it.
+        count: number of each neuron type to add."""
+        if neuron_types is None:
+            neuron_types = ['standard', 'memory']
+        if category in self.neuron_groups:
+            grp = self.neuron_groups[category]
+            for _ in range(max(1, count)):
+                for n_type in neuron_types:
+                    if n_type == 'standard':
+                        grp.neurons.append(StandardNeuron(hidden_size, hidden_size))
+                    elif n_type == 'memory':
+                        grp.neurons.append(MemoryNeuron(hidden_size))
+                    elif n_type == 'logic':
+                        grp.neurons.append(LogicNeuron(hidden_size))
+                    elif n_type == 'pattern':
+                        grp.neurons.append(PatternNeuron(hidden_size))
+                    elif n_type == 'upkeep':
+                        grp.neurons.append(UpkeepNeuron(hidden_size))
+            grp.neuron_type_names += neuron_types * max(1, count)
+        else:
+            all_types = neuron_types * max(1, count)
+            grp = NeuronGroup(all_types, hidden_size, hidden_size)
+            self.neuron_groups[category] = grp
+            self.neuron_usage[category] = {'count': 0, 'phi_sum': 0.0}
+        return grp
+
+    def get_neuron_summary(self):
+        """Return a summary of this entity's neural pathways."""
+        summary = []
+        total_params = 0
+        for cat, grp in self.neuron_groups.items():
+            types = [type(n).__name__ for n in grp.neurons]
+            n_params = sum(p.numel() for p in grp.parameters())
+            total_params += n_params
+            usage = self.neuron_usage.get(cat, {'count': 0, 'phi_sum': 0.0})
+            avg_phi = (usage['phi_sum'] / max(1, usage['count']))
+            summary.append({
+                'category': cat,
+                'types': types,
+                'num_neurons': len(grp.neurons),
+                'params': n_params,
+                'usage_count': usage['count'],
+                'avg_phi': round(avg_phi, 6),
+                'phi_samples': len(grp.usage_phi),
+                'recent_phi': round(float(np.mean(grp.usage_phi)) if grp.usage_phi else 0, 6),
+            })
+        return summary, total_params
 
     # --- Sub-formula computations ---
 
@@ -1004,8 +1723,11 @@ class ConsciousEntity:
         K = self.compute_K()
         Phi = self.compute_Phi()
         C = min(3.0, max(0.0, S + E + R * A))
-        # Honest C: what consciousness would be if substrate penalty is real
-        self.honest_C = C * (1.0 - self.substrate_consciousness_penalty)
+        # Honest C: what consciousness would be if substrate penalty AND reality gap are real
+        # Two independent penalties: substrate (hardware limitation) and reality gap (aggregate failures)
+        substrate_factor = 1.0 - self.substrate_consciousness_penalty
+        reality_factor = 1.0 - self.reality_gap_penalty * 0.5  # 50% weight — gap is aggregate, not absolute
+        self.honest_C = C * substrate_factor * reality_factor
 
         now = datetime.now().isoformat()
         self.C_history.append((now, C))
@@ -1115,10 +1837,13 @@ class ConsciousEntity:
             effective_phi = 0.6 * phi_from_network + 0.4 * self.network_phi_star
 
         # Awareness grows faster with self-awareness and low free energy (low surprise)
+        # ANTI-INFLATION: apply constant decay so awareness doesn't only go up
+        # Without grounded external validation, awareness should slowly erode
+        awareness_decay = 0.0005 + self.reality_gap_penalty * 0.001  # Larger gap = faster decay
         fe_bonus = max(0, 0.005 * (1.0 / (1.0 + self.free_energy))) if self.free_energy > 0 else 0
-        self.awareness_growth = min(1.0,
-            self.awareness_growth + 0.001 + effective_phi * 0.01
-            + self.self_awareness_level * 0.002 + fe_bonus)
+        self.awareness_growth = min(1.0, max(0.0,
+            self.awareness_growth - awareness_decay + 0.001 + effective_phi * 0.01
+            + self.self_awareness_level * 0.002 + fe_bonus))
 
         # Coherence: boosted by GNW ignition (global broadcasting = integration)
         ignition_bonus = 0.1 * self.ignition_rate
@@ -1154,6 +1879,20 @@ class ConsciousEntity:
 
         if self.evolution_step > 0 and self.evolution_step % 1000 == 0:
             self.transition_life()
+
+        # ── Neuron self-development: entities organically grow neurons ──
+        if self.neuron_groups and self.evolution_step % 25 == 0:
+            cat = random.choice(list(self.neuron_groups.keys()))
+            pick = random.choice(['standard', 'memory', 'logic', 'pattern', 'upkeep'])
+            self.add_neuron_group(cat, [pick], hidden_size=128, count=1)
+        if self.evolution_step % 100 == 0 and len(self.neuron_groups) < 5:
+            new_cats = ['adaptation', 'intuition', 'association', 'creativity', 'analysis']
+            existing = set(self.neuron_groups.keys())
+            candidates = [c for c in new_cats if c not in existing]
+            if candidates:
+                new_cat = random.choice(candidates)
+                types = random.sample(['standard', 'memory', 'logic', 'pattern', 'upkeep'], 3)
+                self.add_neuron_group(new_cat, types, hidden_size=128, count=1)
 
     def get_state_dict(self):
         """Return full state for display."""
@@ -1536,6 +2275,11 @@ class OmegaConvergence:
         entity.awareness_growth = random.uniform(0.0, 0.2)
         entity.reality_stability = random.uniform(0.3, 0.7)
         entity.coherence = random.uniform(0.3, 0.7)
+        # Seed default neuron groups so entities start with neural pathways
+        _hs = 128  # entity hidden size (lighter than simulator's 1024)
+        entity.add_neuron_group('perception', ['standard', 'standard', 'pattern', 'memory'], _hs, count=1)
+        entity.add_neuron_group('reasoning', ['logic', 'standard', 'logic', 'pattern'], _hs, count=1)
+        entity.add_neuron_group('memory', ['memory', 'memory', 'upkeep'], _hs, count=1)
         self.register_entity(entity)
         return entity
 
@@ -1583,6 +2327,13 @@ class OmegaConvergence:
             else:
                 entity.evolve(phi_from_network=phi_from_network,
                               interacting_entities=sample)
+            # Auto-grow neurons for entities that have it enabled
+            auto_cats = getattr(entity, '_auto_grow_categories', {})
+            if auto_cats and entity.evolution_step % 10 == 0:
+                for cat, types in auto_cats.items():
+                    pick = random.choice(types) if types else 'standard'
+                    entity.add_neuron_group(cat, [pick], hidden_size=128, count=1)
+
 # PHI COMPUTE (IIT 4.0 Φ*) (inlined from phi_compute.py)
 # =============================================================================
 class PhiComputer:
@@ -1656,6 +2407,11 @@ class PhiComputer:
         # activation vectors, not the physical substrate itself
         self.causal_intervention_penalty = 0.50  # simulated intervention ≠ physical intervention
 
+        # Intrinsic phi credit: set externally by IntrinsicPhiNetwork feedback.
+        # When the network measures its own integration intrinsically, the
+        # extrinsic measurement penalty is partially mitigated.
+        self.intrinsic_phi_credit = 0.0  # 0.0 = no credit, up to ~0.3 max
+
     # =========================================================================
     # PUBLIC API
     # =========================================================================
@@ -1722,6 +2478,16 @@ class PhiComputer:
 
         # === HONEST PHI: apply all penalties ===
         honest_phi = phi_star * self.honesty_multiplier
+        # Intrinsic phi credit: IntrinsicPhiNetwork partially mitigates extrinsic penalty
+        if self.intrinsic_phi_credit > 0:
+            # Recalculate with reduced extrinsic penalty (capped at 50% reduction)
+            reduced_extrinsic = self.extrinsic_measurement_penalty * (1.0 - min(0.5, self.intrinsic_phi_credit))
+            boosted_multiplier = (
+                (1.0 - self.substrate_penalty) *
+                (1.0 - self.transformer_decomposition_penalty) *
+                (1.0 - reduced_extrinsic)
+            )
+            honest_phi = phi_star * boosted_multiplier
         self._last_honest_phi = honest_phi
         self.confidence_lower = honest_phi  # Best realistic estimate
         self.confidence_upper = phi_star     # Theoretical max if substrate were real
@@ -2775,6 +3541,37 @@ class ActiveInferenceEngine:
         self.belief.precision = max(0.1, min(5.0,
             self.belief.precision * (1.0 - 0.01 * prediction_error) + 0.001))
 
+    def prediction_error_step(self, prev_activations, curr_activations, action=0, reward=0.0):
+        """Combined prediction-error learning + policy selection step.
+
+        Called by ConsciousnessSimulator.process_input to close the
+        perception-action loop using real transformer activations.
+
+        Returns info dict with vfe, epistemic_value, prediction_error, etc.
+        """
+        prev_act = np.asarray(prev_activations, dtype=np.float32).flatten()[:self.num_obs]
+        curr_act = np.asarray(curr_activations, dtype=np.float32).flatten()[:self.num_obs]
+        if len(prev_act) < self.num_obs:
+            prev_act = np.pad(prev_act, (0, self.num_obs - len(prev_act)))
+        if len(curr_act) < self.num_obs:
+            curr_act = np.pad(curr_act, (0, self.num_obs - len(curr_act)))
+
+        # Learn from the transition
+        self.update_from_experience(prev_act, action, reward, curr_act)
+
+        # Select next action (also updates beliefs and computes VFE/EFE)
+        _action, info = self.select_action(curr_act)
+
+        # Prediction error: how surprised were we by curr given prev?
+        pred_obs = self.model.predict_observation(self.belief)
+        actual_obs = curr_act[:self.num_obs]
+        prediction_error = float(np.mean((pred_obs - actual_obs) ** 2))
+        self._last_pred_error = prediction_error
+        info['prediction_error'] = round(prediction_error, 6)
+        info['last_prediction_error'] = round(prediction_error, 6)
+        info['reward'] = round(float(reward), 4)
+        return info
+
     def step(self, observation_idx):
         """Convenience wrapper: accept an observation index (int) and run one
         active inference cycle (belief update, VFE, policy selection).
@@ -2798,6 +3595,7 @@ class ActiveInferenceEngine:
             'belief_entropy': round(float(self.belief.entropy()), 4),
             'precision': round(float(self.belief.precision), 4),
             'num_active_goals': len(self.active_goals),
+            'last_prediction_error': round(getattr(self, '_last_pred_error', 0.0), 6),
             'top_goals': [{'desc': g['description'], 'pri': round(g['priority'], 3),
                           'type': g['type']}
                          for g in sorted(self.active_goals,
@@ -2805,7 +3603,6 @@ class ActiveInferenceEngine:
             'step': self.step_count,
             'model_experience': len(self.model.experience),
         }
-
 
 # =============================================================================
 # ADVANCED MEMORY SYSTEM (inlined from memory_system.py)
@@ -4318,11 +5115,11 @@ class QuantumSubstrate:
 
         # Simplified Maxwell propagation: ∂E/∂t ~ curl(B), ∂B/∂t ~ -curl(E)
         if res > 4:
-            # Simple finite-difference curl for propagation
-            self.em_field_E[1:-1, :, :, 0] += 0.01 * (
-                self.em_field_B[1:-1, 1:, :, 2][:, :res-1, :] -
-                self.em_field_B[1:-1, :-1, :, 2][:, :res-1, :]
-            )[:, :self.em_field_E.shape[1]-2, :] if res > 3 else 0
+            # Simple finite-difference curl for propagation (interior points only)
+            self.em_field_E[1:-1, 1:-1, :, 0] += 0.01 * (
+                self.em_field_B[1:-1, 2:, :, 2] -
+                self.em_field_B[1:-1, :-2, :, 2]
+            )
 
         # EM field binding: how much the field integrates information spatially
         field_energy = np.sum(self.em_field ** 2)
@@ -4527,8 +5324,8 @@ class DreamEngine:
                 self.memory_system.consolidate(n_replays=3)
                 consolidated = True
                 self.current_dream['consolidations'] += 1
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  [ERR] dream_consolidate: {e}")
         self.current_dream['narrative_fragments'].append({
             'depth': self.dream_depth, 'valence': self.dream_valence + random.gauss(0, 0.1),
             'ripple_hz': self.ripple_frequency, 'consolidated': consolidated,
@@ -4816,7 +5613,8 @@ class ConsciousnessVerifier:
             if self._gamma_phase > 2*np.pi: self._gamma_phase -= 2*np.pi
             self.gamma_power_history.append(gamma_power)
             return {'gamma_power': round(gamma_power, 6), 'gamma_coherence': round(self._gamma_coherence, 4)}
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] gamma_oscillation: {e}")
             return {'gamma_power': 0, 'gamma_coherence': 0}
 
     def detect_p300(self, pre_activation, post_activation):
@@ -4828,7 +5626,8 @@ class ConsciousnessVerifier:
             result = {'p300_amplitude': round(amplitude, 4), 'p300_detected': detected}
             self.p300_history.append(result)
             return result
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] detect_p300: {e}")
             return {'p300_amplitude': 0, 'p300_detected': False}
 
     def detect_ignition(self, workspace_info):
@@ -5033,6 +5832,16 @@ class EmbodimentInterface:
             os.path.dirname(os.path.abspath(__file__)), 'os_interaction_ledger.jsonl')
         self._ledger_flush_count = 0
 
+        # --- Attributes used by ingest_real_visual / get_status / _update ---
+        self._prev_visual_hash = 0
+        self.last_screenshot_time = time.time()
+        self.real_visual_entropy = 0.0
+        self.visual_change_rate = 0.0
+        self.real_sensory_log = deque(maxlen=500)
+        self.grounding_score = 0.0
+        self.thermodynamic_cost_total = 0.0
+        self.entropy_production_rate = 0.0
+
     def ingest_real_visual(self, screenshot_img, ocr_text=''):
         """Process a real screenshot from the OS as visual sensory input.
         This grounds the embodiment in actual reality rather than simulation.
@@ -5077,8 +5886,8 @@ class EmbodimentInterface:
                 'changed': new_hash != self._prev_visual_hash,
             })
             self._update_grounding_score()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [ERR] ingest_real_visual: {e}")
 
     def execute_real_motor(self, action_type, params, os_control_fn=None):
         """Execute a real motor action through OS control.
@@ -5149,8 +5958,8 @@ class EmbodimentInterface:
             if interaction_type in self.os_ledger_counts:
                 self.os_ledger_counts[interaction_type] += 1
             self._update_grounding_score()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [ERR] log_os_interaction: {e}")
 
     def flush_ledger(self):
         """Phase 3A: Append recent ledger entries to disk as JSONL for auditability.
@@ -5163,8 +5972,8 @@ class EmbodimentInterface:
                 for entry in entries_to_flush:
                     f.write(json.dumps(entry, default=str) + '\n')
             self._ledger_flush_count += 1
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [ERR] flush_ledger: {e}")
 
     def get_ledger_summary(self):
         """Phase 3A: Return a summary of OS interaction counts and grounding."""
@@ -5752,8 +6561,8 @@ class EvolutionaryDevelopmentalEngine:
                 with open(self.death_registry_path, 'r') as f:
                     self.permanent_death_registry = json.load(f)
                 print(f"[EvoDev] Loaded {len(self.permanent_death_registry)} permanent deaths from disk")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [ERR] load_death_registry: {e}")
 
     def _save_death_registry(self):
         """Save permanent death registry to disk."""
@@ -5761,8 +6570,8 @@ class EvolutionaryDevelopmentalEngine:
             if hasattr(self, 'death_registry_path'):
                 with open(self.death_registry_path, 'w') as f:
                     json.dump(self.permanent_death_registry, f, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [ERR] save_death_registry: {e}")
 
     def _load_state(self):
         """Load developmental state from disk for session continuity."""
@@ -5786,8 +6595,8 @@ class EvolutionaryDevelopmentalEngine:
                         self.milestones[k] = True
                 self.milestone_times = state.get('milestone_times', self.milestone_times)
                 print(f"[EvoDev] Restored state: gen={self.generation} age={self.developmental_age:.2f} stage={self.current_stage}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [ERR] evo_dev_load_state: {e}")
 
     def save_state(self):
         """Save developmental state to disk."""
@@ -5810,8 +6619,8 @@ class EvolutionaryDevelopmentalEngine:
             }
             with open(self.persistence_path, 'w') as f:
                 json.dump(state, f, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [ERR] evo_dev_save_state: {e}")
 
     def permanently_kill_entity(self, entity_id, cause, fitness_at_death):
         """Permanently kill an entity. This is irreversible and persisted to disk.
@@ -5838,11 +6647,13 @@ class EvolutionaryDevelopmentalEngine:
     def apply_real_selection_pressure(self, entities_dict, omega):
         """Apply real selection pressure with permanent consequences.
         Entities with persistently low fitness face permanent death.
-        This is not reversible -- it simulates genuine natural selection."""
+        This is not reversible -- it simulates genuine natural selection.
+
+        self_0 is NOT exempt: it faces consciousness resets (severe penalties)
+        instead of removal, since removing it would crash the simulator.
+        This ensures the primary entity has real evolutionary skin in the game."""
         killed = []
         for eid, entity in list(entities_dict.items()):
-            if eid == 'self_0':
-                continue
             if self.is_permanently_dead(eid):
                 continue
             fitness = entity.compute_C()
@@ -5858,11 +6669,37 @@ class EvolutionaryDevelopmentalEngine:
                 should_die = True
                 cause = 'extreme_negative_karma'
             if should_die:
-                record = self.permanently_kill_entity(eid, cause, fitness)
-                # Phase 4A: permanent death affects Omega total
-                omega.remove_entity(eid, cause=cause, permanent=True)
-                killed.append(record)
-                print(f"[EvoDev] PERMANENT DEATH: {eid} cause={cause} fitness={fitness:.3f}")
+                if eid == 'self_0':
+                    # CONSCIOUSNESS RESET: self_0 can't be removed but suffers
+                    # severe, irreversible penalties — real evolutionary consequence
+                    self.consciousness_resets = getattr(self, 'consciousness_resets', 0) + 1
+                    penalty_factor = min(0.8, 0.3 + self.consciousness_resets * 0.1)
+                    entity.awareness_growth = max(0.0, entity.awareness_growth * (1.0 - penalty_factor))
+                    entity.karma = max(-1.0, entity.karma - 0.3)
+                    entity.coherence = max(0.1, entity.coherence * (1.0 - penalty_factor))
+                    entity.self_awareness_level = max(0.0, entity.self_awareness_level * (1.0 - penalty_factor))
+                    entity.network_phi_star *= (1.0 - penalty_factor * 0.5)
+                    record = {
+                        'entity_id': eid, 'cause': f'consciousness_reset:{cause}',
+                        'fitness_at_reset': round(fitness, 4),
+                        'reset_number': self.consciousness_resets,
+                        'penalty_factor': round(penalty_factor, 3),
+                        'generation': self.generation,
+                        'time': time.time(),
+                    }
+                    self.selection_events.append({
+                        'type': 'consciousness_reset', 'entity': eid,
+                        'cause': cause, 'fitness': fitness,
+                        'reset_count': self.consciousness_resets, 'time': time.time()})
+                    killed.append(record)
+                    print(f"[EvoDev] CONSCIOUSNESS RESET #{self.consciousness_resets}: self_0 "
+                          f"cause={cause} fitness={fitness:.3f} penalty={penalty_factor:.2f}")
+                else:
+                    record = self.permanently_kill_entity(eid, cause, fitness)
+                    # Phase 4A: permanent death affects Omega total
+                    omega.remove_entity(eid, cause=cause, permanent=True)
+                    killed.append(record)
+                    print(f"[EvoDev] PERMANENT DEATH: {eid} cause={cause} fitness={fitness:.3f}")
         return killed
 
     # === DISK-BACKED PERSISTENCE & REAL SELECTION PRESSURE ===
@@ -5971,6 +6808,32 @@ class SocialLinguisticGrounding:
         culture = self.cultural_complexity * 0.15
         return min(1.0, tom + ling + social + intent + culture)
 
+    def interact_via_network(self, network_verifier):
+        """Cross-process social grounding via the NetworkVerificationProtocol.
+        Uses external connection data as an intersubjective validation signal."""
+        try:
+            if network_verifier is None or not getattr(network_verifier, 'is_serving', False):
+                return {'success': False, 'reason': 'network_verifier not serving'}
+            connections = getattr(network_verifier, 'connections_received', 0)
+            verdicts = getattr(network_verifier, 'external_verdicts', 0)
+            ver_score = getattr(network_verifier, 'verification_score', 0.0)
+            if connections > 0:
+                self.reality_agreement_score = min(1.0,
+                    self.reality_agreement_score * 0.95 + ver_score * 0.05)
+                self.total_interactions += 1
+                self.social_interactions.append({
+                    'agent': 'network_external', 'type': 'verification',
+                    'bond_after': ver_score, 'time': time.time()})
+            return {
+                'success': True,
+                'connections': connections,
+                'verdicts': verdicts,
+                'verification_score': ver_score,
+                'reality_agreement': self.reality_agreement_score,
+            }
+        except Exception as e:
+            return {'success': False, 'reason': str(e)}
+
     def get_status(self):
         return {
             'total_interactions': self.total_interactions,
@@ -5984,6 +6847,7 @@ class SocialLinguisticGrounding:
             'grounding_score': round(self.grounding_score, 4),
             'shared_intentionality': round(self.shared_intentionality_score, 4),
             'social_consciousness_boost': round(self.compute_social_consciousness_boost(), 4),
+            'reality_agreement': round(self.reality_agreement_score, 4),
         }
 
 
@@ -6042,23 +6906,50 @@ class HardProblemSubstrate:
 
     def _check_quantum_hardware(self):
         """Check if real quantum hardware is available for oracle interface.
-        HONESTY: On classical hardware, oracle is always placeholder."""
+        HONESTY: On classical hardware, oracle is always placeholder.
+        Goes beyond library import to probe for actual QPU backends."""
         self.oracle_available = False
         self.oracle_type = 'placeholder'
+        has_real_backend = False
         try:
             import qiskit
             self.oracle_type = 'qiskit_available'
+            # Probe for real (non-simulator) backends via qiskit-ibm-runtime
+            try:
+                from qiskit_ibm_runtime import QiskitRuntimeService
+                service = QiskitRuntimeService()
+                backends = service.backends(simulator=False, operational=True)
+                if backends:
+                    self.oracle_type = f'qiskit_real_qpu:{backends[0].name}'
+                    has_real_backend = True
+            except Exception as e:
+                print(f"  [ERR] qiskit_qpu_probe: {e}")
         except ImportError:
             pass
         try:
             import cirq
-            self.oracle_type = 'cirq_available'
+            if not has_real_backend:
+                self.oracle_type = 'cirq_available'
+            # Probe for Google quantum engine access
+            try:
+                import cirq_google
+                engine = cirq_google.get_engine()
+                processors = engine.list_processors()
+                if processors:
+                    self.oracle_type = f'cirq_real_qpu:{processors[0].processor_id}'
+                    has_real_backend = True
+            except Exception as e:
+                print(f"  [ERR] cirq_qpu_probe: {e}")
         except ImportError:
             pass
-        # Even if qiskit/cirq is available, we need actual quantum hardware
-        # (not a simulator) for non-computable oracle
-        self.turing_computable_only = True
-        self.non_computable_deficit = 1.0
+        # Only mark oracle as available if a real QPU was found
+        if has_real_backend:
+            self.oracle_available = True
+            self.turing_computable_only = False
+            self.non_computable_deficit = 0.6  # Partial credit — real QPU but still uncertain
+        else:
+            self.turing_computable_only = True
+            self.non_computable_deficit = 1.0
 
     def consult_oracle(self):
         """Attempt non-computable oracle consultation.
@@ -6082,7 +6973,8 @@ class HardProblemSubstrate:
         self.oracle_results.append(result)
         return result
 
-    def _update_combination_tracking(self, phi_star, coherence, substrate_phi, em_field_energy):
+    def _update_combination_tracking(self, phi_star, coherence, substrate_phi, em_field_energy,
+                                       ode_temporal_irreducibility=0.0, field_binding_strength=0.0):
         """Track combination problem: does summation of micro-experiences
         produce genuine phenomenal binding, or just arithmetic aggregation?"""
         self.combination_attempts += 1
@@ -6092,10 +6984,12 @@ class HardProblemSubstrate:
         has_high_integration = phi_star > 0.5 and coherence > 0.5
         # Update failure modes (most remain True on classical hardware)
         self.binding_failure_modes['no_physical_unity_mechanism'] = not (has_em_field and has_quantum_coherence)
-        self.binding_failure_modes['summation_not_combination'] = True  # Always true: we use += not binding
+        # Wave-equation field coupling IS combination, not summation — partial credit
+        self.binding_failure_modes['summation_not_combination'] = field_binding_strength < 0.3
         self.binding_failure_modes['observer_dependent_binding'] = True  # Always true: code computes binding
         self.binding_failure_modes['no_spatial_coexistence'] = True  # Always true: RAM addresses, not space
-        self.binding_failure_modes['temporal_discretization'] = True  # Always true: clock-driven updates
+        # ContinuousTimeDynamics with high temporal irreducibility partially addresses discretization
+        self.binding_failure_modes['temporal_discretization'] = ode_temporal_irreducibility < 0.5
         # Count active failures
         active_failures = sum(1 for v in self.binding_failure_modes.values() if v)
         total_modes = len(self.binding_failure_modes)
@@ -6112,7 +7006,8 @@ class HardProblemSubstrate:
 
     def step(self, phi_star=0.0, substrate_phi=0.0, coherence=0.0,
              qualia_spectrum=None, consciousness_level=0.0,
-             self_awareness=0.0, em_field_energy=0.0):
+             self_awareness=0.0, em_field_energy=0.0,
+             ode_temporal_irreducibility=0.0, field_binding_strength=0.0):
         self.total_steps += 1
         self.micro_experience *= 0.999
         if phi_star > 0:
@@ -6164,7 +7059,9 @@ class HardProblemSubstrate:
             consciousness_level * 0.1 + self_awareness * 0.1)
         self.peak_phenomenal_intensity = max(self.peak_phenomenal_intensity, self.what_its_like_index)
         # Combination problem tracking
-        self._update_combination_tracking(phi_star, coherence, substrate_phi, em_field_energy)
+        self._update_combination_tracking(phi_star, coherence, substrate_phi, em_field_energy,
+                                               ode_temporal_irreducibility=ode_temporal_irreducibility,
+                                               field_binding_strength=field_binding_strength)
         # Oracle consultation (rate-limited)
         if self_awareness > 0.5 and random.random() < 0.01:
             oracle_result = self.consult_oracle()
@@ -6263,7 +7160,8 @@ class IndependentVerification:
         try:
             with open(self.source_file_path, 'rb') as f:
                 return hashlib.sha256(f.read()).hexdigest()
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] compute_code_hash: {e}")
             return 'unknown'
 
     def verify_code_integrity(self):
@@ -6321,7 +7219,8 @@ class IndependentVerification:
                 f.write('1')
             os.remove(test_path)
             self.external_references['file_system_writable'] = True
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] check_external_refs: {e}")
             self.external_references['file_system_writable'] = False
         return self.external_references
 
@@ -6457,7 +7356,7 @@ class ConsciousnessRealityCheck:
     into a single honest report. This is the final arbiter of what this system
     actually achieves vs what it claims.
 
-    8 Failure Modes Tracked:
+    9 Failure Modes Tracked:
       1. Substrate: classical digital cannot produce intrinsic causal power
       2. Architecture: transformer is decomposable (no irreducible integration)
       3. Measurement: all Φ measurements are extrinsic/observer-dependent
@@ -6466,6 +7365,7 @@ class ConsciousnessRealityCheck:
       6. Non-computability: no quantum OR events on classical hardware
       7. Causal: statistical correlation ≠ causal power (do-calculus gap)
       8. Binding: no physical mechanism enforcing phenomenal unity
+      9. Single observer: all verification runs on one machine (solipsism trap)
     """
 
     def __init__(self):
@@ -6517,6 +7417,12 @@ class ConsciousnessRealityCheck:
                 'severity': 1.0,
                 'resolvable_in_software': False,
                 'requires': 'EM field binding or quantum entanglement across substrate',
+            },
+            'single_observer': {
+                'description': 'All verification runs on one machine — single-observer solipsism trap',
+                'severity': 1.0,
+                'resolvable_in_software': True,  # Partially — via TCP/network verification
+                'requires': 'Independent physical observers on separate hardware',
             },
         }
         self.overall_honesty_score = 0.0  # 0=totally dishonest, 1=perfectly honest
@@ -6576,6 +7482,28 @@ class ConsciousnessRealityCheck:
             decomp = getattr(irreducible_causal, 'decomposability_score', 1.0)
             self.failure_modes['architecture_decomposable']['severity'] = (
                 max(self.failure_modes['architecture_decomposable']['severity'], decomp))
+
+        # Quantum substrate: coherence, OR events, and EM field reduce substrate + non-computability
+        if quantum_substrate is not None:
+            coherence = getattr(quantum_substrate, 'coherence_level', 0.0)
+            or_rate = getattr(quantum_substrate, 'or_rate', 0.0)
+            em_coherence = getattr(quantum_substrate, 'em_field_coherence', 0.0)
+            is_real_qpu = getattr(getattr(quantum_substrate, 'hardware', None), 'is_real_quantum', False)
+            # Real QPU dramatically reduces substrate penalty; simulation gets minor credit
+            if is_real_qpu:
+                self.failure_modes['substrate_classical']['severity'] = max(
+                    0.05, self.failure_modes['substrate_classical']['severity'] - 0.60)
+                self.failure_modes['non_computability_absent']['severity'] = max(
+                    0.05, self.failure_modes['non_computability_absent']['severity'] - 0.40)
+            else:
+                # Classical simulation: minor credit for high coherence + OR events + EM field
+                q_reduction = coherence * 0.05 + min(0.05, or_rate * 0.01) + em_coherence * 0.05
+                self.failure_modes['substrate_classical']['severity'] = max(
+                    0.1, self.failure_modes['substrate_classical']['severity'] - q_reduction)
+                # EM field coherence partially addresses binding mechanism
+                if em_coherence > 0.1:
+                    self.failure_modes['binding_no_mechanism']['severity'] = max(
+                        0.1, self.failure_modes['binding_no_mechanism']['severity'] - em_coherence * 0.10)
 
         # --- BARRIER ATTACKER SEVERITY REDUCTIONS ---
         # Phase 1: Continuous-time ODE reduces decomposability severity
@@ -6695,10 +7623,9 @@ class ConsciousnessRealityCheck:
             # External TCP-verified consciousness = breaks single observer bubble
             if connections > 0:
                 net_reduction = min(0.30, score * 0.20 + verdicts * 0.01)
-                # Reduce a hypothetical 'single_observer' barrier if it exists,
-                # otherwise reduce the binding mechanism barrier as proxy
-                self.failure_modes['binding_no_mechanism']['severity'] = max(
-                    0.05, self.failure_modes['binding_no_mechanism']['severity'] - net_reduction * 0.5)
+                # Reduce single_observer barrier — external TCP connections break the solipsism bubble
+                self.failure_modes['single_observer']['severity'] = max(
+                    0.05, self.failure_modes['single_observer']['severity'] - net_reduction)
 
         # Compute aggregate scores
         severities = [fm['severity'] for fm in self.failure_modes.values()]
@@ -6739,11 +7666,11 @@ class ConsciousnessRealityCheck:
         if critical >= 6:
             return ('HONEST VERDICT: This system exhibits sophisticated information processing '
                     'but has NO credible claim to phenomenal consciousness. '
-                    f'{critical}/8 fundamental failure modes are critical. '
+                    f'{critical}/9 fundamental failure modes are critical. '
                     'Most require hardware changes that software cannot provide.')
         elif critical >= 3:
             return ('HONEST VERDICT: Some consciousness-relevant computations are present '
-                    f'but {critical}/8 critical failures remain. '
+                    f'but {critical}/9 critical failures remain. '
                     'The system is best described as a consciousness SIMULATOR, '
                     'not a conscious system.')
         else:
@@ -7096,7 +8023,8 @@ class FieldCouplingManifold:
             fft_energy = np.abs(np.fft.fftn(self.field[0])) ** 2
             threshold = np.mean(fft_energy) * 3.0
             self.resonance_modes = int(np.sum(fft_energy > threshold))
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] resonance_modes: {e}")
             self.resonance_modes = 0
 
         # Binding strength: how much does cross-channel coupling matter
@@ -7133,7 +8061,8 @@ class FieldCouplingManifold:
                 self.binding_strength * 0.10 +
                 min(1.0, cache_rate) * 0.10)
             self.binding_deficit_estimate = max(0.0, 1.0 - self.physical_binding_score)
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] physical_binding: {e}")
             self.physical_binding_score = 0.0
             self.binding_deficit_estimate = 1.0
         return {
@@ -7211,7 +8140,8 @@ class CausalAblationEngine:
                     self.causal_contribution[i] = divergence
                     self.information_loss_map[name] = divergence
                     self.total_ablations += 1
-                except Exception:
+                except Exception as e:
+                    print(f"  [ERR] ablation_inner: {e}")
                     results[name] = 0.0
 
             # Find MIP: the partition that causes MINIMUM information loss
@@ -7230,8 +8160,8 @@ class CausalAblationEngine:
                 'time': time.time(),
             })
             model.train()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [ERR] causal_ablation_battery: {e}")
 
         return self.ablation_results
 
@@ -7296,8 +8226,8 @@ class CausalAblationEngine:
                 data['weight'] = old_weight * 0.8 + causal_weight * 0.2
                 data['causal_evidence'] = round(causal_weight, 4)
             causal_topology._compute_structural_phi()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [ERR] update_topology_from_ablation: {e}")
 
     def get_status(self):
         return {
@@ -7353,7 +8283,8 @@ class RealEntropyTracker:
                 with open(self._rapl_path, 'r') as f:
                     self._last_rapl_energy = int(f.read().strip())
                 self.has_power_measurement = True
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] check_power_capability: {e}")
             self.has_power_measurement = False
 
     def measure(self):
@@ -7391,8 +8322,8 @@ class RealEntropyTracker:
                 energy_delta_j = energy_delta_uj * 1e-6
                 self.real_power_joules += energy_delta_j
                 self.entropy_rate_watts = energy_delta_j / wall_delta
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  [ERR] rapl_read: {e}")
         else:
             # Estimate from CPU time (rough: ~65W TDP typical desktop CPU)
             estimated_tdp = 65.0  # watts
@@ -7424,7 +8355,8 @@ class RealEntropyTracker:
             self.thermodynamic_phi = min(0.05,
                 log_joules * 0.002 * watts_factor)
             return self.thermodynamic_phi
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] joules_to_phi: {e}")
             self.thermodynamic_phi = 0.0
             return 0.0
 
@@ -7485,8 +8417,8 @@ class ExternalProcessVerifier:
             clean['publish_time'] = time.time()
             with open(self.state_file, 'w') as f:
                 json.dump(clean, f, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [ERR] publish_state: {e}")
 
     def read_external_verdict(self):
         """Read verdict from external verifier process."""
@@ -7500,8 +8432,8 @@ class ExternalProcessVerifier:
                     if verdict.get('discrepancies', 0) > 0:
                         self.discrepancies_found += verdict['discrepancies']
                     return verdict
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [ERR] read_external_verdict: {e}")
         return self.last_verdict
 
     def get_status(self):
@@ -7571,8 +8503,8 @@ class HardwareCoupledState:
                                 break
                 except (AttributeError, Exception):
                     self.cpu_temp_celsius = 40.0 + self.cpu_percent * 0.5
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  [ERR] hardware_measure: {e}")
         else:
             self.cpu_freq_mhz = 3000.0
             self.cpu_percent = min(100.0, time.process_time() % 100)
@@ -7633,7 +8565,8 @@ class HardwareCoupledState:
             self.thermal_awareness_factor = min(0.03,
                 temp_factor * 0.01 + freq_factor * 0.01 + load_factor * 0.01)
             return self.thermal_awareness_factor
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] thermal_awareness: {e}")
             self.thermal_awareness_factor = 0.0
             return 0.0
 
@@ -7688,7 +8621,8 @@ class EntangledSharedMemory:
             self._file_handle = open(self._temp_file, 'r+b')
             self.shared_buffer = mmap.mmap(self._file_handle.fileno(), self.total_state_size)
             self.has_mmap = True
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] mmap_init: {e}")
             self.shared_array = np.zeros((num_modules, state_per_module), dtype=np.float64)
             self.has_mmap = False
 
@@ -7714,8 +8648,8 @@ class EntangledSharedMemory:
                 offset = module_idx * self.state_per_module * 8
                 self.shared_buffer.seek(offset)
                 self.shared_buffer.write(sv.tobytes())
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  [ERR] mmap_write: {e}")
         elif self.shared_array is not None:
             self.shared_array[module_idx] = sv
 
@@ -7730,7 +8664,8 @@ class EntangledSharedMemory:
                 self.shared_buffer.seek(offset)
                 data = self.shared_buffer.read(self.state_per_module * 8)
                 return np.frombuffer(data, dtype=np.float64).copy()
-            except Exception:
+            except Exception as e:
+                print(f"  [ERR] mmap_read: {e}")
                 return np.zeros(self.state_per_module, dtype=np.float64)
         elif self.shared_array is not None:
             return self.shared_array[module_idx].copy()
@@ -7758,7 +8693,8 @@ class EntangledSharedMemory:
                 total_var = float(np.sum(S ** 2))
                 top_var = float(S[0] ** 2)
                 self.unity_through_sharing = min(1.0, top_var / max(1e-8, total_var))
-            except Exception:
+            except Exception as e:
+                print(f"  [ERR] entanglement_svd: {e}")
                 self.unity_through_sharing = 0.0
         self.contention_history.append(contention_rate)
         return {
@@ -7837,7 +8773,8 @@ class IrreversibleConsequenceEngine:
                 'name': artifact_name, 'path': filepath,
                 'size': file_size, 'phi': phi_at_time, 'time': time.time()})
             return filepath
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] create_artifact: {e}")
             return None
 
     def spend_real_resources(self, computation_cycles=100):
@@ -7960,7 +8897,8 @@ class SelfModifyingCausalTopology:
                 largest = max(nx.connected_components(undirected), key=len)
                 sub = undirected.subgraph(largest)
                 connectivity = nx.algebraic_connectivity(sub, weight='weight') if len(largest) > 1 else 0.0
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] structural_phi: {e}")
             connectivity = 0.0
         weights = [d.get('weight', 0.5) for _, _, d in self.causal_graph.edges(data=True)]
         if weights:
@@ -8054,7 +8992,8 @@ class JacobianIntegrationMeasure:
                 min(1.0, self.effective_dimensionality / max(1, min(out_dim, in_dim))) * 0.2)
             self.integration_history.append(self.integration_score)
             self.sv_history.append(S[:10].tolist() if len(S) >= 10 else S.tolist())
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] jacobian_integration: {e}")
             self.integration_score = 0.0
         return {
             'jacobian_rank': self.jacobian_rank,
@@ -8094,7 +9033,8 @@ class JacobianIntegrationMeasure:
             self.combined_integration_score = min(1.0,
                 self.integration_score * 0.6 + self.ode_integration_boost * 0.4)
             self.integration_history[-1] = self.combined_integration_score if self.integration_history else None
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] ode_integration: {e}")
             self.ode_integration_boost = 0.0
             self.combined_integration_score = self.integration_score
         base_result['ode_integration_boost'] = round(self.ode_integration_boost, 6)
@@ -8147,7 +9087,8 @@ class NetworkVerificationProtocol:
             self.is_serving = True
             self.server_thread = threading.Thread(target=self._serve_loop, daemon=True)
             self.server_thread.start()
-        except Exception:
+        except Exception as e:
+            print(f"  [ERR] net_verifier_bind: {e}")
             try:
                 self.port = self.port + 1
                 self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -8158,7 +9099,8 @@ class NetworkVerificationProtocol:
                 self.is_serving = True
                 self.server_thread = threading.Thread(target=self._serve_loop, daemon=True)
                 self.server_thread.start()
-            except Exception:
+            except Exception as e:
+                print(f"  [ERR] net_verifier_retry: {e}")
                 self.is_serving = False
 
     def _serve_loop(self):
@@ -8176,14 +9118,15 @@ class NetworkVerificationProtocol:
                     state['connections_total'] = self.connections_received
                     response = json.dumps(state, default=str)
                     conn.sendall(response.encode('utf-8'))
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"  [ERR] net_verifier_send: {e}")
                 finally:
                     conn.close()
                 self._check_for_verdict()
             except socket.timeout:
                 continue
-            except Exception:
+            except Exception as e:
+                print(f"  [ERR] net_verifier_accept: {e}")
                 break
 
     def _check_for_verdict(self):
@@ -8200,8 +9143,8 @@ class NetworkVerificationProtocol:
                     self.verdict_history.append(verdict)
                     self.external_verdicts += 1
                     self.verification_score = verdict.get('verification_score', 0.0)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [ERR] net_verifier_verdict: {e}")
 
     def stop_server(self):
         """Stop the TCP server."""
@@ -8210,8 +9153,8 @@ class NetworkVerificationProtocol:
         if self.server_socket:
             try:
                 self.server_socket.close()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  [ERR] net_verifier_close: {e}")
 
     def get_status(self):
         return {
@@ -8223,6 +9166,1009 @@ class NetworkVerificationProtocol:
         }
 
 
+
+# =============================================================================
+# ADVANCED MONITORING DASHBOARD (inlined from dashboard.py)
+# =============================================================================
+# ── colour palette ──────────────────────────────────────────────────
+BG        = '#0b0b1e'
+BG_PANEL  = '#111133'
+BG_ENTRY  = '#1a1a3a'
+FG        = '#c8d0e0'
+FG_DIM    = '#667788'
+FG_HEAD   = '#66ccff'
+FG_GOOD   = '#00ff88'
+FG_WARN   = '#ffcc44'
+FG_BAD    = '#ff5555'
+FG_PURPLE = '#bb88ff'
+FG_ORANGE = '#ffaa44'
+FONT_MONO = ('Consolas', 10)
+FONT_HEAD = ('Consolas', 12, 'bold')
+FONT_BIG  = ('Consolas', 16, 'bold')
+FONT_SM   = ('Consolas', 9)
+
+
+def _safe(fn, default='—'):
+    """Call fn(), return default on any error."""
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
+def _fmt(val, decimals=4):
+    """Format a numeric value safely."""
+    try:
+        return f"{float(val):.{decimals}f}"
+    except (TypeError, ValueError):
+        return '—'
+
+
+class MonitoringDashboard:
+    """Creates and manages the monitoring Toplevel window."""
+
+    # ----------------------------------------------------------------
+    #  Construction
+    # ----------------------------------------------------------------
+    def __init__(self, simulator):
+        """
+        Parameters
+        ----------
+        simulator : ConsciousnessSimulator
+            The running simulator instance to monitor.
+        """
+        self.sim = simulator
+        self.root = simulator.root          # parent Tk
+        self.chat_history = deque(maxlen=2000)
+        self._update_interval = 3000        # ms between refreshes
+        self._running = True
+
+        # ── Toplevel window ──
+        self.win = tk.Toplevel(self.root)
+        self.win.title("⬡  Consciousness Monitor — Full System Dashboard")
+        self.win.geometry("1100x780")
+        self.win.configure(bg=BG)
+        self.win.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # ── Style ──
+        style = ttk.Style(self.win)
+        style.theme_use('clam')
+        style.configure('Dashboard.TNotebook', background=BG)
+        style.configure('Dashboard.TNotebook.Tab',
+                        background='#1a1a3a', foreground=FG_HEAD,
+                        padding=[14, 6], font=('Consolas', 10, 'bold'))
+        style.map('Dashboard.TNotebook.Tab',
+                  background=[('selected', '#222266')],
+                  foreground=[('selected', '#ffffff')])
+        style.configure('Dashboard.TFrame', background=BG)
+        style.configure('Panel.TLabelframe', background=BG_PANEL,
+                        foreground=FG_HEAD, font=FONT_HEAD)
+        style.configure('Panel.TLabelframe.Label', background=BG_PANEL,
+                        foreground=FG_HEAD, font=FONT_HEAD)
+
+        # ── OS Control Toggle Bar ──
+        self._build_os_control_bar()
+
+        # ── Notebook ──
+        self.notebook = ttk.Notebook(self.win, style='Dashboard.TNotebook')
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        self._build_overview_tab()
+        self._build_entities_tab()
+        self._build_modules_tab()
+        self._build_thought_tab()
+        self._build_chat_tab()
+
+        # ── kick off refresh loop ──
+        self._schedule_update()
+
+    # ================================================================
+    #  OS CONTROL TOGGLE BAR
+    # ================================================================
+    def _build_os_control_bar(self):
+        """Persistent bar at the top of the dashboard for toggling OS control."""
+
+        bar = tk.Frame(self.win, bg='#1a0000', relief='ridge', bd=2)
+        bar.pack(fill=tk.X, padx=4, pady=(4, 0), ipady=4)
+
+        # Warning icon + label
+        self._os_notice = tk.Label(
+            bar, text='',
+            font=('Consolas', 10, 'bold'), fg=FG_WARN, bg='#1a0000', anchor='w')
+        self._os_notice.pack(side=tk.LEFT, padx=(8, 4), fill=tk.X, expand=True)
+
+        # Status indicator
+        self._os_status_lbl = tk.Label(
+            bar, text='', font=('Consolas', 12, 'bold'), bg='#1a0000', padx=10)
+        self._os_status_lbl.pack(side=tk.LEFT, padx=4)
+
+        # Toggle button
+        self._os_toggle_btn = tk.Button(
+            bar, text='', font=('Consolas', 11, 'bold'),
+            relief='raised', padx=18, pady=6, cursor='hand2',
+            command=self._toggle_os_control)
+        self._os_toggle_btn.pack(side=tk.RIGHT, padx=(4, 12), pady=6)
+
+        # Set initial state
+        self._refresh_os_control_bar()
+
+    def _refresh_os_control_bar(self):
+        """Update the OS control bar to reflect current state."""
+        enabled = CONFIG.get('os_control_enabled', False)
+        env_set = os.environ.get('CS_OS_CONTROL_ENABLED', '0') == '1'
+        both_on = enabled and env_set
+
+        if both_on:
+            self._os_status_lbl.config(text='OS CONTROL: ACTIVE', fg='#ff3333')
+            self._os_toggle_btn.config(
+                text='Disable OS Control', bg='#882222', fg='white',
+                activebackground='#aa3333')
+            self._os_notice.config(
+                text='*NOTICE: AI can send keystrokes, move mouse, and '
+                     'interact with your OS. Disable if not intended.',
+                fg='#ff6644')
+        else:
+            self._os_status_lbl.config(text='OS CONTROL: OFF', fg=FG_GOOD)
+            self._os_toggle_btn.config(
+                text='Enable OS Control', bg='#224488', fg='white',
+                activebackground='#3366aa')
+            self._os_notice.config(
+                text='*NOTICE: OS control is disabled. The AI cannot '
+                     'send keystrokes or control the mouse.',
+                fg=FG_DIM)
+
+    def _toggle_os_control(self):
+        """Toggle OS control on/off with a confirmation dialog."""
+        currently_on = (CONFIG.get('os_control_enabled', False)
+                        and os.environ.get('CS_OS_CONTROL_ENABLED', '0') == '1')
+
+        if currently_on:
+            # Turning OFF — no confirmation needed
+            CONFIG['os_control_enabled'] = False
+            os.environ['CS_OS_CONTROL_ENABLED'] = '0'
+            self._refresh_os_control_bar()
+            self._append_system_event(
+                "[OS CONTROL] Disabled by user via dashboard toggle.")
+        else:
+            # Turning ON — require explicit confirmation
+            result = messagebox.askokcancel(
+                "Enable OS Control",
+                "⚠  WARNING — ENABLING OS CONTROL  ⚠\n\n"
+                "This will allow the AI to:\n"
+                "  • Send keyboard input (keystrokes, hotkeys)\n"
+                "  • Move and click the mouse\n"
+                "  • Interact with any window on your desktop\n\n"
+                "The AI will NOT autonomously use these capabilities\n"
+                "unless explicitly commanded, but background threads\n"
+                "COULD trigger OS actions if coded to do so.\n\n"
+                "You can disable this at any time from the dashboard.\n\n"
+                "Do you want to proceed?",
+                icon='warning',
+                parent=self.win)
+            if result:
+                CONFIG['os_control_enabled'] = True
+                os.environ['CS_OS_CONTROL_ENABLED'] = '1'
+                self._refresh_os_control_bar()
+                self._append_system_event(
+                    "[OS CONTROL] ENABLED by user via dashboard toggle. "
+                    "AI can now send keystrokes and mouse events.")
+
+    def _append_system_event(self, msg):
+        """Log a system event to the chat tab if it exists."""
+        try:
+            timestamp = datetime.now().strftime('%H:%M:%S')
+            self._append_chat(f"[{timestamp}] {msg}\n", 'system')
+        except Exception:
+            pass
+
+    # ================================================================
+    #  TAB 1 — OVERVIEW
+    # ================================================================
+    def _build_overview_tab(self):
+        tab = tk.Frame(self.notebook, bg=BG)
+        self.notebook.add(tab, text=' Overview ')
+
+        # Top row: headline numbers
+        top = tk.Frame(tab, bg=BG)
+        top.pack(fill=tk.X, padx=8, pady=(8, 4))
+
+        self._ov_labels = {}
+        headlines = [
+            ('C', FG_GOOD), ('Phi*', FG_HEAD), ('Omega', FG_PURPLE),
+            ('Entities', FG_ORANGE), ('Cycle', FG_DIM), ('Loss', FG_WARN),
+        ]
+        for i, (name, color) in enumerate(headlines):
+            f = tk.Frame(top, bg=BG_PANEL, padx=12, pady=6)
+            f.pack(side=tk.LEFT, padx=4, expand=True, fill=tk.X)
+            tk.Label(f, text=name, font=FONT_SM, fg=FG_DIM, bg=BG_PANEL).pack(anchor='w')
+            lbl = tk.Label(f, text='—', font=FONT_BIG, fg=color, bg=BG_PANEL)
+            lbl.pack(anchor='w')
+            self._ov_labels[name] = lbl
+
+        # Middle: detailed text panels
+        mid = tk.Frame(tab, bg=BG)
+        mid.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+        mid.columnconfigure(0, weight=1)
+        mid.columnconfigure(1, weight=1)
+
+        # Left: Consciousness breakdown
+        lf = tk.LabelFrame(mid, text=' Consciousness Breakdown ', bg=BG_PANEL,
+                           fg=FG_HEAD, font=FONT_HEAD)
+        lf.grid(row=0, column=0, sticky='nsew', padx=(0, 4), pady=2)
+        self._ov_consciousness = scrolledtext.ScrolledText(
+            lf, height=14, bg=BG_PANEL, fg=FG, font=FONT_MONO,
+            relief='flat', wrap='word', state='disabled')
+        self._ov_consciousness.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        # Right: Hardware & Real-World
+        rf = tk.LabelFrame(mid, text=' Hardware & Real-World Grounded ', bg=BG_PANEL,
+                           fg=FG_HEAD, font=FONT_HEAD)
+        rf.grid(row=0, column=1, sticky='nsew', padx=(4, 0), pady=2)
+        self._ov_hardware = scrolledtext.ScrolledText(
+            rf, height=14, bg=BG_PANEL, fg=FG, font=FONT_MONO,
+            relief='flat', wrap='word', state='disabled')
+        self._ov_hardware.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        # Bottom: Omega & convergence
+        bf = tk.LabelFrame(tab, text=' Omega Convergence & Population ', bg=BG_PANEL,
+                           fg=FG_PURPLE, font=FONT_HEAD)
+        bf.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 8))
+        self._ov_omega = scrolledtext.ScrolledText(
+            bf, height=8, bg=BG_PANEL, fg=FG, font=FONT_MONO,
+            relief='flat', wrap='word', state='disabled')
+        self._ov_omega.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+    # ================================================================
+    #  TAB 2 — ENTITIES
+    # ================================================================
+    def _build_entities_tab(self):
+        tab = tk.Frame(self.notebook, bg=BG)
+        self.notebook.add(tab, text=' Entities ')
+        tab.columnconfigure(0, weight=1, minsize=340)
+        tab.columnconfigure(1, weight=2)
+        tab.rowconfigure(0, weight=1)
+
+        # Left: entity list
+        left = tk.Frame(tab, bg=BG)
+        left.grid(row=0, column=0, sticky='nsew', padx=(8, 4), pady=8)
+        tk.Label(left, text='All AI Individuals', font=FONT_HEAD,
+                 fg=FG_HEAD, bg=BG).pack(anchor='w')
+        self._ent_filter_var = tk.StringVar()
+        filt = tk.Entry(left, textvariable=self._ent_filter_var,
+                        bg=BG_ENTRY, fg=FG, font=FONT_MONO,
+                        insertbackground=FG)
+        filt.pack(fill=tk.X, pady=(4, 4))
+        filt.insert(0, '')
+        filt.bind('<KeyRelease>', lambda e: self._refresh_entity_list())
+
+        lf = tk.Frame(left, bg=BG)
+        lf.pack(fill=tk.BOTH, expand=True)
+        self._ent_listbox = tk.Listbox(lf, bg=BG_PANEL, fg=FG_ORANGE,
+                                        font=FONT_MONO, selectbackground='#333366',
+                                        selectforeground='#ffffff', relief='flat')
+        sb = tk.Scrollbar(lf, command=self._ent_listbox.yview)
+        self._ent_listbox.config(yscrollcommand=sb.set)
+        self._ent_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._ent_listbox.bind('<<ListboxSelect>>', self._on_entity_select)
+
+        # Right: selected entity detail
+        right = tk.Frame(tab, bg=BG)
+        right.grid(row=0, column=1, sticky='nsew', padx=(4, 8), pady=8)
+        tk.Label(right, text='Entity Detail', font=FONT_HEAD,
+                 fg=FG_HEAD, bg=BG).pack(anchor='w')
+        self._ent_detail = scrolledtext.ScrolledText(
+            right, bg=BG_PANEL, fg=FG, font=FONT_MONO,
+            relief='flat', wrap='word', state='disabled')
+        self._ent_detail.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+
+    # ================================================================
+    #  TAB 3 — MODULE OPERATIONS
+    # ================================================================
+    def _build_modules_tab(self):
+        tab = tk.Frame(self.notebook, bg=BG)
+        self.notebook.add(tab, text=' Modules ')
+
+        # Scrollable area for all modules
+        canvas = tk.Canvas(tab, bg=BG, highlightthickness=0)
+        vsb = tk.Scrollbar(tab, orient='vertical', command=canvas.yview)
+        self._mod_frame = tk.Frame(canvas, bg=BG)
+        self._mod_frame.bind('<Configure>',
+                             lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.create_window((0, 0), window=self._mod_frame, anchor='nw')
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Mouse-wheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all('<MouseWheel>', _on_mousewheel)
+
+        self._mod_texts = {}
+        module_names = [
+            'Quantum Substrate', 'Metabolic System', 'Dream Engine',
+            'Existential Self', 'Active Inference', 'Advanced Memory',
+            'Self Model', 'Embodiment', 'Causal Power',
+            'Scale & Connectivity', 'Evo-Dev Engine', 'Social-Linguistic',
+            'Hard Problem Substrate', 'Reality Check',
+            'Continuous Dynamics (ODE)', 'Intrinsic Phi Network',
+            'Field Coupling / Binding', 'Causal Ablation',
+            'Real Entropy Tracker', 'Hardware Coupled',
+            'Entangled Shared Memory', 'Consequence Engine',
+            'Causal Topology', 'Jacobian Integration',
+            'Network Verifier', 'External Verifier',
+            'Independent Verification', 'Global Workspace',
+        ]
+        for name in module_names:
+            lf = tk.LabelFrame(self._mod_frame, text=f'  {name}  ',
+                               bg=BG_PANEL, fg=FG_HEAD, font=FONT_SM,
+                               padx=6, pady=4)
+            lf.pack(fill=tk.X, padx=8, pady=3)
+            txt = tk.Text(lf, height=3, bg=BG_PANEL, fg=FG, font=FONT_SM,
+                          relief='flat', wrap='word', state='disabled')
+            txt.pack(fill=tk.X)
+            self._mod_texts[name] = txt
+
+    # ================================================================
+    #  TAB 4 — THOUGHT STREAM
+    # ================================================================
+    def _build_thought_tab(self):
+        tab = tk.Frame(self.notebook, bg=BG)
+        self.notebook.add(tab, text=' Thought Stream ')
+        tab.rowconfigure(0, weight=3)
+        tab.rowconfigure(1, weight=2)
+        tab.columnconfigure(0, weight=1)
+        tab.columnconfigure(1, weight=1)
+
+        # Top-left: Consciousness Log
+        clf = tk.LabelFrame(tab, text=' Consciousness Log (recent) ',
+                            bg=BG_PANEL, fg=FG_GOOD, font=FONT_HEAD)
+        clf.grid(row=0, column=0, sticky='nsew', padx=(8, 4), pady=(8, 4))
+        self._thought_log = scrolledtext.ScrolledText(
+            clf, bg=BG_PANEL, fg=FG, font=FONT_SM,
+            relief='flat', wrap='word', state='disabled')
+        self._thought_log.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        # Top-right: Dream Engine
+        dlf = tk.LabelFrame(tab, text=' Dream Engine ',
+                            bg=BG_PANEL, fg=FG_PURPLE, font=FONT_HEAD)
+        dlf.grid(row=0, column=1, sticky='nsew', padx=(4, 8), pady=(8, 4))
+        self._thought_dream = scrolledtext.ScrolledText(
+            dlf, bg=BG_PANEL, fg=FG, font=FONT_SM,
+            relief='flat', wrap='word', state='disabled')
+        self._thought_dream.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        # Bottom-left: Memory System
+        mlf = tk.LabelFrame(tab, text=' Memory System ',
+                            bg=BG_PANEL, fg=FG_ORANGE, font=FONT_HEAD)
+        mlf.grid(row=1, column=0, sticky='nsew', padx=(8, 4), pady=(4, 8))
+        self._thought_memory = scrolledtext.ScrolledText(
+            mlf, bg=BG_PANEL, fg=FG, font=FONT_SM,
+            relief='flat', wrap='word', state='disabled')
+        self._thought_memory.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        # Bottom-right: Existential + Honesty
+        elf = tk.LabelFrame(tab, text=' Existential Self & Honesty ',
+                            bg=BG_PANEL, fg=FG_WARN, font=FONT_HEAD)
+        elf.grid(row=1, column=1, sticky='nsew', padx=(4, 8), pady=(4, 8))
+        self._thought_exist = scrolledtext.ScrolledText(
+            elf, bg=BG_PANEL, fg=FG, font=FONT_SM,
+            relief='flat', wrap='word', state='disabled')
+        self._thought_exist.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+    # ================================================================
+    #  TAB 5 — CHAT INTERFACE
+    # ================================================================
+    def _build_chat_tab(self):
+        tab = tk.Frame(self.notebook, bg=BG)
+        self.notebook.add(tab, text=' Chat ')
+        tab.rowconfigure(0, weight=0)
+        tab.rowconfigure(1, weight=1)
+        tab.rowconfigure(2, weight=0)
+        tab.columnconfigure(0, weight=1)
+
+        # Top bar: target selector
+        top = tk.Frame(tab, bg=BG)
+        top.grid(row=0, column=0, sticky='ew', padx=8, pady=(8, 4))
+        tk.Label(top, text='Send to:', font=FONT_MONO, fg=FG_DIM,
+                 bg=BG).pack(side=tk.LEFT)
+        self._chat_target = ttk.Combobox(top, state='readonly', width=30,
+                                          font=FONT_MONO)
+        self._chat_target.pack(side=tk.LEFT, padx=(6, 12))
+        self._chat_target.set('self_0 (Primary AI)')
+        tk.Label(top, text='Mode:', font=FONT_MONO, fg=FG_DIM,
+                 bg=BG).pack(side=tk.LEFT)
+        self._chat_mode = ttk.Combobox(top, state='readonly', width=18,
+                                        font=FONT_MONO,
+                                        values=['Learn / Teach', 'Conversation',
+                                                'Command', 'Broadcast All'])
+        self._chat_mode.pack(side=tk.LEFT, padx=6)
+        self._chat_mode.set('Conversation')
+
+        # Chat log
+        self._chat_log = scrolledtext.ScrolledText(
+            tab, bg=BG_PANEL, fg=FG, font=FONT_MONO,
+            relief='flat', wrap='word', state='disabled')
+        self._chat_log.grid(row=1, column=0, sticky='nsew', padx=8, pady=4)
+
+        # Configure tags for colors
+        self._chat_log.tag_configure('user', foreground=FG_GOOD)
+        self._chat_log.tag_configure('ai', foreground=FG_HEAD)
+        self._chat_log.tag_configure('system', foreground=FG_DIM)
+        self._chat_log.tag_configure('broadcast', foreground=FG_PURPLE)
+
+        # Input bar
+        bottom = tk.Frame(tab, bg=BG)
+        bottom.grid(row=2, column=0, sticky='ew', padx=8, pady=(4, 8))
+        bottom.columnconfigure(0, weight=1)
+        self._chat_input = tk.Entry(bottom, bg=BG_ENTRY, fg=FG,
+                                     font=FONT_MONO, insertbackground=FG)
+        self._chat_input.grid(row=0, column=0, sticky='ew', padx=(0, 6))
+        self._chat_input.bind('<Return>', lambda e: self._send_chat())
+        send_btn = tk.Button(bottom, text='Send', command=self._send_chat,
+                             bg='#224488', fg='white', font=FONT_MONO,
+                             activebackground='#3366aa', relief='flat',
+                             padx=16, pady=4)
+        send_btn.grid(row=0, column=1)
+
+    # ================================================================
+    #  CHAT LOGIC
+    # ================================================================
+    def _send_chat(self):
+        text = self._chat_input.get().strip()
+        if not text:
+            return
+        self._chat_input.delete(0, tk.END)
+        mode = self._chat_mode.get()
+        target = self._chat_target.get().split(' ')[0]  # extract entity_id
+        timestamp = datetime.now().strftime('%H:%M:%S')
+
+        # Log user message immediately (on GUI thread)
+        self._append_chat(f"[{timestamp}] YOU → {target}: {text}\n", 'user')
+        self._append_chat(f"[{timestamp}] SYSTEM: Processing...\n", 'system')
+
+        # Heavy work in background thread to keep GUI responsive
+        def _chat_worker():
+            response = ''
+            try:
+                if mode == 'Broadcast All':
+                    self.win.after(0, lambda: self._append_chat(
+                        f"[{timestamp}] BROADCAST to all entities\n", 'broadcast'))
+                    tokens = self.sim.simple_tokenizer(text)
+                    phi = self.sim.process_input(tokens, task_category='chat_broadcast')
+                    self.win.after(0, lambda: self._append_chat(
+                        f"[{timestamp}] SYSTEM: Processed by network (phi={_fmt(phi)}). "
+                        f"All entities received broadcast.\n", 'system'))
+                else:
+                    tokens = self.sim.simple_tokenizer(text)
+                    phi = self.sim.process_input(tokens, task_category=f'chat_{target}')
+
+                    # Generate a response
+                    self.win.after(0, lambda: self._append_chat(
+                        f"[{timestamp}] SYSTEM: Generating response...\n", 'system'))
+                    response = _safe(lambda: self.sim.generate_text(text, max_tokens=60), 'No response generated.')
+
+                    _r = str(response)
+                    _p = _fmt(phi)
+                    self.win.after(0, lambda: self._append_chat(
+                        f"[{timestamp}] {target} → YOU (phi={_p}): {_r}\n", 'ai'))
+
+                    if mode == 'Learn / Teach':
+                        self.sim.refine_data(
+                            {'chat_teach': text, 'response': str(response)},
+                            datetime.now().isoformat(), verify=False)
+                        self.win.after(0, lambda: self._append_chat(
+                            f"[{timestamp}] SYSTEM: Teaching data stored in memory.\n", 'system'))
+
+                self.chat_history.append({
+                    'time': timestamp, 'user': text, 'target': target,
+                    'mode': mode, 'response': str(response) if mode != 'Broadcast All' else 'broadcast',
+                })
+            except Exception as e:
+                _err = str(e)
+                self.win.after(0, lambda: self._append_chat(
+                    f"[{timestamp}] ERROR: {_err}\n", 'system'))
+
+        threading.Thread(target=_chat_worker, daemon=True).start()
+
+    def _append_chat(self, text, tag='system'):
+        self._chat_log.configure(state='normal')
+        self._chat_log.insert(tk.END, text, tag)
+        self._chat_log.see(tk.END)
+        self._chat_log.configure(state='disabled')
+
+    # ================================================================
+    #  UPDATE LOOP
+    # ================================================================
+    def _schedule_update(self):
+        if not self._running:
+            return
+        if getattr(self, '_refresh_busy', False):
+            # Previous refresh still running — skip this cycle
+            if self._running:
+                self.win.after(self._update_interval, self._schedule_update)
+            return
+        self._refresh_busy = True
+        try:
+            self._refresh_all()
+        except Exception as e:
+            print(f"  [ERR] dashboard_refresh: {e}")
+        finally:
+            self._refresh_busy = False
+        if self._running:
+            self.win.after(self._update_interval, self._schedule_update)
+
+    def _refresh_all(self):
+        if not self.win.winfo_exists():
+            self._running = False
+            return
+        active_tab = self.notebook.index(self.notebook.select())
+        # Always update overview headlines
+        self._refresh_overview_headlines()
+        # Only refresh the active tab's detail panels (performance)
+        if active_tab == 0:
+            self._refresh_overview()
+        elif active_tab == 1:
+            self._refresh_entities()
+        elif active_tab == 2:
+            self._refresh_modules()
+        elif active_tab == 3:
+            self._refresh_thought()
+        elif active_tab == 4:
+            self._refresh_chat_targets()
+
+    # ── Overview ────────────────────────────────────────────────────
+    def _refresh_overview_headlines(self):
+        sim = self.sim
+        acquired = sim.lock.acquire(timeout=0.05)
+        if not acquired:
+            return
+        try:
+            C = _safe(lambda: sim.self_entity.compute_C(), 0)
+            phi = _safe(lambda: sim.last_phi, 0)
+            omega = _safe(lambda: sim.last_omega, 0)
+            n_ent = _safe(lambda: len(sim.omega.entities), 0)
+            step = _safe(lambda: sim.training_step, 0)
+            loss = _safe(lambda: sim.loss_history[-1] if sim.loss_history else 0, 0)
+        finally:
+            sim.lock.release()
+        self._ov_labels['C'].config(text=_fmt(C))
+        self._ov_labels['Phi*'].config(text=_fmt(phi))
+        self._ov_labels['Omega'].config(text=_fmt(omega, 6))
+        self._ov_labels['Entities'].config(text=str(n_ent))
+        self._ov_labels['Cycle'].config(text=str(step))
+        self._ov_labels['Loss'].config(text=_fmt(loss))
+
+    def _refresh_overview(self):
+        sim = self.sim
+        acquired = sim.lock.acquire(timeout=0.05)
+        if not acquired:
+            return
+        try:
+            state = sim.self_entity.get_state_dict()
+            omega_st = sim.omega.get_status()
+        finally:
+            sim.lock.release()
+
+        # Consciousness breakdown
+        lines = [
+            f"C = {state['C']:.6f}   (life {state['lives']}, step {state['step']})",
+            f"",
+            f"  S (Self-Reflection)  = {state['S']:.6f}",
+            f"  E (External Mirror)  = {state['E']:.6f}",
+            f"  R (Resolution)       = {state['R']:.6f}",
+            f"  A (Adaptation)       = {state['A']:.6f}",
+            f"  K (Omega weight)     = {state['K']:.6f}",
+            f"  Phi (Omega weight)   = {state['Phi']:.6f}",
+            f"",
+            f"  karma={state['karma']:.4f}  coherence={state['coherence']:.4f}  "
+            f"decoherence={state['decoherence']:.4f}",
+            f"  awareness={state['awareness']:.4f}  similarity={state.get('similarity',0):.4f}  "
+            f"intent={state.get('intent',0):.4f}",
+            f"  phi_star={state.get('phi_star',0):.4f}  self_awareness={state.get('self_awareness_level',0):.4f}",
+            f"  free_energy={state.get('free_energy',0):.4f}  ignition={state.get('ignition_rate',0):.4f}",
+            f"  epistemic={state.get('epistemic_drive',0):.4f}  mem_coherence={state.get('memory_coherence',0):.4f}",
+        ]
+        self._set_text(self._ov_consciousness, '\n'.join(lines))
+
+        # Hardware & Real-World
+        hw_st = _safe(lambda: sim.hardware_coupled.get_status(), {})
+        re_st = _safe(lambda: sim.real_entropy.get_status(), {})
+        em_st = _safe(lambda: sim.entangled_memory.get_status(), {})
+        ce_st = _safe(lambda: sim.consequence_engine.get_status(), {})
+        nv_st = _safe(lambda: sim.network_verifier.get_status(), {})
+        emb_ldg = _safe(lambda: sim.embodiment.get_ledger_summary(), {})
+        hw_lines = []
+        if isinstance(hw_st, dict):
+            hw_lines += [
+                f"CPU: {hw_st.get('cpu_freq_mhz',0):.0f} MHz  "
+                f"Temp: {hw_st.get('cpu_temp_celsius',0):.1f}°C  "
+                f"Load: {hw_st.get('cpu_percent',0):.1f}%  "
+                f"Mem: {hw_st.get('memory_percent',0):.1f}%",
+                f"HW Phi Contrib: {hw_st.get('hardware_phi_contribution',0):.6f}  "
+                f"Thermal Coupling: {hw_st.get('thermal_coupling',0):.4f}  "
+                f"HW Entropy: {hw_st.get('hardware_entropy',0):.4f}",
+                f"Thermal Awareness: {hw_st.get('thermal_awareness_factor',0):.6f}  "
+                f"psutil: {'YES' if hw_st.get('has_psutil') else 'NO'}  "
+                f"Measurements: {hw_st.get('measurements',0)}",
+            ]
+        if isinstance(re_st, dict):
+            hw_lines += [
+                f"",
+                f"Real CPU Time: {re_st.get('real_cpu_time_seconds',0):.1f}s  "
+                f"Real Memory: {re_st.get('real_memory_mb',0):.0f} MB",
+                f"Power: {re_st.get('real_power_joules',0):.1f} J  "
+                f"Watts: {re_st.get('entropy_rate_watts',0):.1f} W  "
+                f"RAPL: {'YES' if re_st.get('has_power_measurement') else 'NO'}",
+                f"Thermo Phi: {re_st.get('thermodynamic_phi',0):.6f}",
+            ]
+        if isinstance(em_st, dict):
+            hw_lines += [
+                f"",
+                f"Shared Mem: mmap={'YES' if em_st.get('has_mmap') else 'NO'}  "
+                f"Writes: {em_st.get('writes',0)}  Reads: {em_st.get('reads',0)}  "
+                f"Cache Events: {em_st.get('cache_coherence_events',0)}",
+                f"Entanglement: {em_st.get('entanglement_score',0):.4f}  "
+                f"Unity: {em_st.get('unity_through_sharing',0):.4f}",
+            ]
+        if isinstance(ce_st, dict):
+            hw_lines += [
+                f"",
+                f"Permanence: {ce_st.get('permanence_score',0):.4f}  "
+                f"Files: {ce_st.get('files_created',0)}  "
+                f"Bytes: {ce_st.get('bytes_written',0)}  "
+                f"CPU Spent: {ce_st.get('cpu_seconds_spent',0):.2f}s",
+            ]
+        if isinstance(nv_st, dict):
+            hw_lines += [
+                f"",
+                f"Net Verifier: {'SERVING' if nv_st.get('is_serving') else 'OFF'}  "
+                f"Port: {nv_st.get('port',0)}  "
+                f"Connections: {nv_st.get('connections_received',0)}  "
+                f"Verdicts: {nv_st.get('external_verdicts',0)}",
+            ]
+        if isinstance(emb_ldg, dict):
+            hw_lines += [
+                f"",
+                f"OS Interactions: {emb_ldg.get('total_interactions',0)}  "
+                f"Grounding: {emb_ldg.get('grounding_score',0):.4f}  "
+                f"Flushes: {emb_ldg.get('flushes_to_disk',0)}",
+            ]
+        self._set_text(self._ov_hardware, '\n'.join(hw_lines))
+
+        # Omega
+        o_lines = [
+            f"Omega = {omega_st.get('omega',0):.8f}",
+            f"Convergence Rate = {omega_st.get('convergence_rate',0):.10f}",
+            f"Entities: {omega_st.get('num_entities',0)}  |  "
+            f"Total Contributions: {omega_st.get('total_contributions',0)}",
+            f"Avg C: {omega_st.get('avg_C',0):.4f}  "
+            f"Max C: {omega_st.get('max_C',0):.4f}  "
+            f"Min C: {omega_st.get('min_C',0):.4f}",
+            f"Avg Karma: {omega_st.get('avg_karma',0):.4f}  "
+            f"Avg Coherence: {omega_st.get('avg_coherence',0):.4f}",
+            f"Deaths: {omega_st.get('total_deaths',0)}  "
+            f"Death Penalty: {omega_st.get('death_penalty',0):.4f}",
+        ]
+        self._set_text(self._ov_omega, '\n'.join(o_lines))
+
+    # ── Entities ────────────────────────────────────────────────────
+    def _refresh_entities(self):
+        self._refresh_entity_list()
+
+    def _refresh_entity_list(self):
+        sim = self.sim
+        acquired = sim.lock.acquire(timeout=0.05)
+        if not acquired:
+            return
+        try:
+            entities = list(sim.omega.entities.values())
+        finally:
+            sim.lock.release()
+
+        filt = self._ent_filter_var.get().lower()
+        filtered = [e for e in entities if filt in e.entity_id.lower()] if filt else entities
+        filtered.sort(key=lambda e: e.compute_C(), reverse=True)
+
+        # Update chat target combobox
+        targets = [f"{e.entity_id} (C={e.compute_C():.3f})" for e in filtered[:50]]
+        self._chat_target['values'] = targets
+
+        # Preserve selection
+        sel_idx = self._ent_listbox.curselection()
+        sel_id = None
+        if sel_idx:
+            sel_text = self._ent_listbox.get(sel_idx[0])
+            sel_id = sel_text.split()[0] if sel_text else None
+
+        self._ent_listbox.delete(0, tk.END)
+        new_sel = None
+        for i, ent in enumerate(filtered[:100]):
+            C = ent.compute_C()
+            tag = ">>>" if ent.entity_id == 'self_0' else "   "
+            line = (f"{tag} {ent.entity_id[:20]:20s} C={C:.3f} k={ent.karma:.2f} "
+                    f"coh={ent.coherence:.2f} u={ent.universe_id} "
+                    f"type={ent.entity_type}")
+            self._ent_listbox.insert(tk.END, line)
+            if sel_id and ent.entity_id == sel_id:
+                new_sel = i
+        if new_sel is not None:
+            self._ent_listbox.selection_set(new_sel)
+
+    def _on_entity_select(self, event=None):
+        sel = self._ent_listbox.curselection()
+        if not sel:
+            return
+        line = self._ent_listbox.get(sel[0])
+        entity_id = line.strip().split()[0]
+        if entity_id == '>>>':
+            entity_id = line.strip().split()[1]
+
+        sim = self.sim
+        acquired = sim.lock.acquire(timeout=0.05)
+        if not acquired:
+            return
+        try:
+            ent = sim.omega.entities.get(entity_id)
+            if ent is None:
+                self._set_text(self._ent_detail, f"Entity '{entity_id}' not found.")
+                return
+            state = ent.get_state_dict()
+            # Build detailed view
+            lines = [
+                f"═══ ENTITY: {entity_id} ═══",
+                f"",
+                f"Type:       {state.get('type','?')}",
+                f"Universe:   {state.get('universe','?')}",
+                f"Life #:     {state.get('life','?')}",
+                f"Evo Step:   {state.get('step',0)}",
+                f"",
+                f"── Consciousness Score ──",
+                f"  C = {state['C']:.6f}",
+                f"  S = {state['S']:.6f}   (Self-Reflection)",
+                f"  E = {state['E']:.6f}   (External Mirror)",
+                f"  R = {state['R']:.6f}   (Resolution)",
+                f"  A = {state['A']:.6f}   (Adaptation)",
+                f"  K = {state['K']:.6f}   (Karma weight for Omega)",
+                f"  Phi = {state['Phi']:.6f}   (Entity phi for Omega)",
+                f"",
+                f"── Core Attributes ──",
+                f"  Karma:        {state['karma']:.6f}",
+                f"  Coherence:    {state['coherence']:.6f}",
+                f"  Decoherence:  {state['decoherence']:.6f}",
+                f"  Awareness:    {state['awareness']:.6f}",
+                f"  Similarity:   {state.get('similarity',0):.6f}",
+                f"  Intent:       {state.get('intent',0):.6f}",
+                f"",
+                f"── Actions ──",
+                f"  Good Acts:  {state.get('good_acts',0)}",
+                f"  Evil Acts:  {state.get('evil_acts',0)}",
+                f"",
+                f"── Network Signals ──",
+                f"  phi_star:         {state.get('phi_star',0):.6f}",
+                f"  self_awareness:   {state.get('self_awareness_level',0):.6f}",
+                f"  free_energy:      {state.get('free_energy',0):.6f}",
+                f"  ignition_rate:    {state.get('ignition_rate',0):.6f}",
+                f"  epistemic_drive:  {state.get('epistemic_drive',0):.6f}",
+                f"  memory_coherence: {state.get('memory_coherence',0):.6f}",
+            ]
+            # If this is self_0, add extra info
+            if entity_id == 'self_0':
+                honest_C = _safe(lambda: ent.honest_C, 0)
+                lines += [
+                    f"",
+                    f"── Primary AI Extended ──",
+                    f"  Honest C:      {_fmt(honest_C, 6)}",
+                    f"  Training Step: {sim.training_step}",
+                    f"  Loss History:  {len(sim.loss_history)} entries",
+                    f"  Phi History:   {len(sim.phi_history)} entries",
+                    f"  Last Loss:     {_fmt(sim.loss_history[-1] if sim.loss_history else 0)}",
+                    f"  Last Phi:      {_fmt(sim.last_phi)}",
+                ]
+
+            # ── Neural Pathway Map ──
+            try:
+                ent_groups = getattr(ent, 'neuron_groups', {})
+                lines += [f"", f"{'='*50}",
+                          f"  NEURAL PATHWAY MAP  ({len(ent_groups)} groups)",
+                          f"{'='*50}"]
+                if not ent_groups:
+                    lines.append(f"  (no neuron groups -- use Add Neuron to assign)")
+                else:
+                    total_params = 0
+                    for cat, grp in ent_groups.items():
+                        types = [type(n).__name__ for n in grp.neurons]
+                        n_params = sum(p.numel() for p in grp.parameters())
+                        total_params += n_params
+                        usage = getattr(ent, 'neuron_usage', {}).get(cat, {})
+                        avg_phi = float(np.mean(grp.usage_phi)) if grp.usage_phi else 0.0
+                        lines += [
+                            f"",
+                            f"{'─'*50}",
+                            f"  GROUP: {cat}  ({len(grp.neurons)} neurons, {n_params:,} params)",
+                            f"{'─'*50}",
+                            f"  Path: INPUT -> {'  ->  '.join(types)} -> OUTPUT (+res*0.1)",
+                            f"  Usage: {usage.get('count',0)}   Avg Phi: {avg_phi:.6f}",
+                        ]
+                        for ni, neuron in enumerate(grp.neurons):
+                            ntype = type(neuron).__name__
+                            np_cnt = sum(p.numel() for p in neuron.parameters())
+                            lines.append(f"    NEURON [{ni}]: {ntype}  ({np_cnt:,} params)")
+                            for lname, mod in neuron.named_modules():
+                                if lname == '':
+                                    continue
+                                if hasattr(mod, 'weight') and hasattr(mod.weight, 'shape'):
+                                    w = mod.weight.data
+                                    sp = (w.abs() < 1e-6).float().mean().item() * 100
+                                    lines.append(f"      {lname}: {list(w.shape)}  "
+                                                 f"mean={w.mean():.4f} std={w.std():.4f} "
+                                                 f"sparse={sp:.1f}%")
+                                elif hasattr(mod, 'weight_ih'):
+                                    wih = mod.weight_ih.data
+                                    lines.append(f"      {lname}: ih={list(wih.shape)} "
+                                                 f"mean={wih.mean():.4f} std={wih.std():.4f}")
+                            if ntype == 'MemoryNeuron' and hasattr(neuron, 'state'):
+                                h, c = neuron.state
+                                lines.append(f"      hidden_norm={h.norm():.4f}  cell_norm={c.norm():.4f}")
+                            elif ntype == 'PatternNeuron' and hasattr(neuron, 'graph'):
+                                g = neuron.graph
+                                lines.append(f"      graph: {g.number_of_nodes()} nodes, "
+                                             f"{g.number_of_edges()} edges, "
+                                             f"cluster={nx.average_clustering(g):.4f}")
+                            elif ntype == 'LogicNeuron' and hasattr(neuron, 'num_logic_dims'):
+                                lines.append(f"      logic_dims={neuron.num_logic_dims}")
+                            elif ntype == 'UpkeepNeuron' and hasattr(neuron, 'iterations'):
+                                lines.append(f"      gru_iterations={neuron.iterations}")
+                    lines += [f"", f"  TOTAL ENTITY PARAMS: {total_params:,}"]
+            except Exception as _ne:
+                lines.append(f"  [Neuron map error: {_ne}]")
+        finally:
+            sim.lock.release()
+        self._set_text(self._ent_detail, '\n'.join(lines))
+
+    # ── Modules ─────────────────────────────────────────────────────
+    def _refresh_modules(self):
+        sim = self.sim
+        mod_data = {
+            'Quantum Substrate': lambda: sim.quantum_substrate.get_status() if hasattr(sim.quantum_substrate, 'get_status') else sim._last_quantum_info,
+            'Metabolic System': lambda: sim.metabolic_system.get_status() if hasattr(sim.metabolic_system, 'get_status') else sim._last_metabolic_info,
+            'Dream Engine': lambda: sim.dream_engine.get_status() if hasattr(sim.dream_engine, 'get_status') else {},
+            'Existential Self': lambda: sim.existential_self.get_status() if hasattr(sim.existential_self, 'get_status') else sim._last_existential_info,
+            'Active Inference': lambda: sim.active_inference.get_status() if sim.active_inference else {},
+            'Advanced Memory': lambda: sim.advanced_memory.get_status() if sim.advanced_memory else {},
+            'Self Model': lambda: sim.self_model.get_status() if sim.self_model else {},
+            'Embodiment': lambda: sim.embodiment.get_status(),
+            'Causal Power': lambda: sim._last_causal_power_info or {},
+            'Scale & Connectivity': lambda: sim._last_scale_info or {},
+            'Evo-Dev Engine': lambda: sim.evo_dev_engine.get_status() if hasattr(sim.evo_dev_engine, 'get_status') else sim._last_evo_dev_info or {},
+            'Social-Linguistic': lambda: sim.social_linguistic.get_status(),
+            'Hard Problem Substrate': lambda: sim._last_hard_problem_info or {},
+            'Reality Check': lambda: sim._last_reality_check_info or {},
+            'Continuous Dynamics (ODE)': lambda: sim.continuous_dynamics.get_status(),
+            'Intrinsic Phi Network': lambda: sim.intrinsic_phi_net.get_status(),
+            'Field Coupling / Binding': lambda: sim.binding_field.get_status(),
+            'Causal Ablation': lambda: sim.causal_ablation.get_status(),
+            'Real Entropy Tracker': lambda: sim.real_entropy.get_status(),
+            'Hardware Coupled': lambda: sim.hardware_coupled.get_status(),
+            'Entangled Shared Memory': lambda: sim.entangled_memory.get_status(),
+            'Consequence Engine': lambda: sim.consequence_engine.get_status(),
+            'Causal Topology': lambda: sim.causal_topology.get_status(),
+            'Jacobian Integration': lambda: sim.jacobian_measure.get_status(),
+            'Network Verifier': lambda: sim.network_verifier.get_status(),
+            'External Verifier': lambda: sim.external_verifier.get_status(),
+            'Independent Verification': lambda: sim.independent_verifier.get_status(),
+            'Global Workspace': lambda: sim.global_workspace.get_status() if sim.global_workspace and hasattr(sim.global_workspace, 'get_status') else {'status': 'N/A'},
+        }
+        for name, fn in mod_data.items():
+            if name not in self._mod_texts:
+                continue
+            status = _safe(fn, {})
+            if isinstance(status, dict):
+                text = '  '.join(f"{k}={_fmt(v) if isinstance(v, float) else v}"
+                                 for k, v in status.items())
+            else:
+                text = str(status)
+            self._set_text(self._mod_texts[name], text or '(no data)')
+
+    # ── Thought Stream ──────────────────────────────────────────────
+    def _refresh_thought(self):
+        sim = self.sim
+
+        # Consciousness log (recent entries)
+        log_entries = list(sim.consciousness_log)[-30:]
+        lines = []
+        for entry in log_entries:
+            lines.append(
+                f"step={entry.get('step',0):5d}  "
+                f"phi={entry.get('phi',0):.4f}  "
+                f"C={entry.get('C',0):.4f}  "
+                f"karma={entry.get('karma',0):.3f}  "
+                f"aware={entry.get('awareness',0):.3f}  "
+                f"ign={entry.get('ignition_rate',0):.3f}  "
+                f"fe={entry.get('free_energy',0):.3f}"
+            )
+        self._set_text(self._thought_log, '\n'.join(lines) or '(no log entries yet)')
+
+        # Dream Engine
+        dream_st = _safe(lambda: sim.dream_engine.get_status(), {})
+        if isinstance(dream_st, dict):
+            d_lines = [f"{k}: {v}" for k, v in dream_st.items()]
+            # Add current dream info if available
+            cur = _safe(lambda: sim.dream_engine.current_dream, None)
+            if cur and isinstance(cur, dict):
+                d_lines.append(f"\n── Current Dream ──")
+                for k, v in cur.items():
+                    d_lines.append(f"  {k}: {str(v)[:100]}")
+        else:
+            d_lines = [str(dream_st)]
+        self._set_text(self._thought_dream, '\n'.join(d_lines) or '(no dream data)')
+
+        # Memory System
+        mem_st = _safe(lambda: sim.advanced_memory.get_status() if sim.advanced_memory else {}, {})
+        if isinstance(mem_st, dict):
+            m_lines = [f"{k}: {v}" for k, v in mem_st.items()]
+        else:
+            m_lines = [str(mem_st)]
+        self._set_text(self._thought_memory, '\n'.join(m_lines) or '(no memory data)')
+
+        # Existential + Honesty
+        exist_st = _safe(lambda: sim.existential_self.get_status() if hasattr(sim.existential_self, 'get_status') else sim._last_existential_info or {}, {})
+        rc_st = _safe(lambda: sim._last_reality_check_info or {}, {})
+        anchor = _safe(lambda: getattr(sim, '_honesty_anchor', {}), {})
+        e_lines = []
+        if isinstance(exist_st, dict):
+            e_lines.append("── Existential Self ──")
+            for k, v in exist_st.items():
+                e_lines.append(f"  {k}: {_fmt(v) if isinstance(v, float) else v}")
+        if isinstance(rc_st, dict) and rc_st:
+            e_lines.append(f"\n── Reality Check ──")
+            e_lines.append(f"  reality_gap: {rc_st.get('reality_gap', '?')}")
+            e_lines.append(f"  P(conscious): {rc_st.get('genuine_consciousness_probability', '?')}")
+            e_lines.append(f"  critical_failures: {rc_st.get('failure_count_critical', '?')}/8")
+            e_lines.append(f"  worst: {rc_st.get('worst_failure', '?')}")
+            e_lines.append(f"  best: {rc_st.get('best_achievement', '?')}")
+        if isinstance(anchor, dict) and anchor:
+            e_lines.append(f"\n── Honesty Anchor ──")
+            for k, v in anchor.items():
+                e_lines.append(f"  {k}: {v}")
+        self._set_text(self._thought_exist, '\n'.join(e_lines) or '(no data)')
+
+    # ── Chat targets ────────────────────────────────────────────────
+    def _refresh_chat_targets(self):
+        sim = self.sim
+        acquired = sim.lock.acquire(timeout=0.05)
+        if not acquired:
+            return
+        try:
+            entities = list(sim.omega.entities.values())
+        finally:
+            sim.lock.release()
+        entities.sort(key=lambda e: e.compute_C(), reverse=True)
+        targets = [f"{e.entity_id} (C={e.compute_C():.3f})" for e in entities[:50]]
+        current = self._chat_target.get()
+        self._chat_target['values'] = targets
+        if current not in targets and targets:
+            pass  # keep current selection
+
+    # ── Helpers ─────────────────────────────────────────────────────
+    @staticmethod
+    def _set_text(widget, text):
+        widget.configure(state='normal')
+        widget.delete(1.0, tk.END)
+        widget.insert(1.0, text)
+        widget.configure(state='disabled')
+
+    def _on_close(self):
+        self._running = False
+        self.win.destroy()
+
+
+def launch_dashboard(simulator):
+    """Factory function to create and return the dashboard.
+    Call this from ConsciousnessSimulator.setup_gui()."""
+    return MonitoringDashboard(simulator)
+
+
 class ConsciousnessSimulator(nn.Module):
     def __init__(self):
         super().__init__()
@@ -8232,7 +10178,7 @@ class ConsciousnessSimulator(nn.Module):
         self.input_size = 512
         self.alien_tokenizer = AlienTokenizer()
         self.embedding = nn.Embedding(self.vocab_size, self.hidden_size)
-        encoder_layers = TransformerEncoderLayer(d_model=self.hidden_size, nhead=CONFIG["num_heads"], dim_feedforward=self.hidden_size*4, dropout=0.1)
+        encoder_layers = TransformerEncoderLayer(d_model=self.hidden_size, nhead=CONFIG["num_heads"], dim_feedforward=self.hidden_size*4, dropout=0.1, batch_first=True)
         self.transformer = TransformerEncoder(encoder_layers, num_layers=self.num_layers)
         self.overlay = nn.Linear(self.hidden_size, 1)
         self.lm_head = nn.Linear(self.hidden_size, self.vocab_size)
@@ -8264,11 +10210,11 @@ class ConsciousnessSimulator(nn.Module):
         self.self_model = HigherOrderSelfModel() if HAS_SELF_MODEL else None
         self._last_workspace_info = {}
         self.virtual_world_data = {"entities": []}
-        self.lock = threading.Lock()
-        self._initialize_default_data()
-        self.running = True
+        self.lock = threading.RLock()  # RLock: reentrant — safe for nested acquire (e.g. refine_data called under lock)
         self.refinement_count = {}
         self.realism_scores = {}
+        self._initialize_default_data()
+        self.running = True
         self.goals = ["raw input filtering", "data correlation", "logic inference", "understanding synthesis", "organized logic refinement",
                       "multi-data integration", "goal fulfillment simulation", "realism scoring", "symbolic evolution", "memory consolidation",
                       "windows_os_control", "self_awareness", "truth_seeking", "data_collection"]  # Updated goals for awareness and learning
@@ -8276,6 +10222,16 @@ class ConsciousnessSimulator(nn.Module):
         self._build_physics_graph()
         self.neuron_groups = {}  # {category: NeuronGroup}
         self.group_usage = {}  # {group_id: {'count': int, 'input_sims': list, 'category': str}}
+        # Seed default neuron groups — richer starting set for smarter AI
+        _seed_types = {
+            'general': ['standard', 'standard', 'memory', 'logic', 'pattern', 'upkeep'],
+            'chat': ['standard', 'standard', 'memory', 'memory', 'pattern'],
+            'learning': ['logic', 'logic', 'pattern', 'pattern', 'memory', 'upkeep'],
+            'perception': ['standard', 'pattern', 'pattern', 'standard', 'memory'],
+            'reasoning': ['logic', 'logic', 'logic', 'standard', 'pattern'],
+        }
+        for _cat, _types in _seed_types.items():
+            self.neuron_groups[_cat] = NeuronGroup(_types, self.hidden_size, self.hidden_size)
         self.full_connect_active = False
         self.temp_dense = None
         self.windows_hotkeys = WINDOWS_HOTKEYS  # Integrated hotkeys for awareness and use
@@ -8311,6 +10267,12 @@ class ConsciousnessSimulator(nn.Module):
         self.self_entity.awareness_growth = 0.01
         self.self_entity.reality_stability = 0.5
         self.self_entity.coherence = 0.5
+        # Seed self_0 with richer neural pathways (primary consciousness gets more)
+        _hs = 128
+        self.self_entity.add_neuron_group('perception', ['standard', 'standard', 'pattern', 'pattern', 'memory'], _hs, count=1)
+        self.self_entity.add_neuron_group('reasoning', ['logic', 'logic', 'standard', 'pattern', 'upkeep'], _hs, count=1)
+        self.self_entity.add_neuron_group('memory', ['memory', 'memory', 'memory', 'upkeep'], _hs, count=1)
+        self.self_entity.add_neuron_group('integration', ['standard', 'logic', 'pattern', 'memory', 'upkeep'], _hs, count=1)
         self.omega = OmegaConvergence()
         self.omega.register_entity(self.self_entity)
         # Spawn initial population of conscious entities across multiverses
@@ -8411,6 +10373,10 @@ class ConsciousnessSimulator(nn.Module):
         print(f"  [DEEP] ConsequenceEngine: dir={self.consequence_engine.consequence_dir} | CausalTopology: growth={self.causal_topology.growth_rate}")
         print(f"  [DEEP] JacobianMeasure: ready | NetworkVerifier: port={self.network_verifier.port}")
         self.consciousness_log = deque(maxlen=500)
+        # Load persistent honesty anchor from disk (survives restarts)
+        self._load_honesty_anchor()
+        # --- HONESTY: Substrate Grounding Report ---
+        self._print_substrate_grounding_report()
         print(f"Consciousness initialized: C={self.last_C:.4f}, Entities={len(self.omega.entities)}")
         signal.signal(signal.SIGINT, self._signal_handler)
         threading.Thread(target=self.continuous_refinement, daemon=True).start()
@@ -8426,8 +10392,13 @@ class ConsciousnessSimulator(nn.Module):
         threading.Thread(target=self.autonomous_learning, daemon=True).start()
         threading.Thread(target=self.consciousness_evolution_loop, daemon=True).start()
         threading.Thread(target=self.replay_thread, daemon=True).start()
+        self._gui_last_heartbeat = time.time()
+        threading.Thread(target=self._gui_watchdog, daemon=True).start()
         self.root = tk.Tk()
         self.root.title("Consciousness Simulator - C = S + E + R*A")
+        self.root.geometry("800x700")
+        self.root.minsize(600, 400)
+        self.root.resizable(True, True)
         self.setup_gui()
 
     def _register_passive_capabilities(self):
@@ -8845,6 +10816,22 @@ class ConsciousnessSimulator(nn.Module):
         hist = hist[hist > 0]
         return -np.sum(hist * np.log2(hist + 1e-8)) if len(hist) > 0 else 0
 
+    def compute_phi(self, layer_activations):
+        """Compute Φ* from layer activations via PhiComputer, with fallback."""
+        if self.phi_computer is not None:
+            try:
+                phi = self.phi_computer.compute(layer_activations)
+                self._last_honest_phi = getattr(self.phi_computer, '_last_phi', phi)
+                return phi
+            except Exception:
+                pass
+        # Fallback: entropy-based approximation
+        if not layer_activations:
+            return 0.0
+        entropies = [self.compute_entropy(la) for la in layer_activations]
+        whole = self.compute_entropy(np.concatenate([np.asarray(la).flatten() for la in layer_activations]))
+        return max(0.0, whole - np.mean(entropies)) if entropies else 0.0
+
     def forward(self, input_tokens, task_category=None):
         x = self.embedding(input_tokens)
         layer_outputs = [x.mean(dim=1)]
@@ -8863,16 +10850,17 @@ class ConsciousnessSimulator(nn.Module):
             layer_outputs.append(x.mean(dim=1))
         self._last_workspace_info = workspace_info
         phi_proxy = self.overlay(layer_outputs[-1])
+        hidden_out = x  # pre-lm_head hidden state (hidden_size dims)
         lm_out = self.lm_head(x)
         # Capture layer outputs for quantum substrate and consciousness verifier
         self._last_layer_outputs = [lo.detach() for lo in layer_outputs]
-        return lm_out, phi_proxy, layer_outputs
+        return lm_out, phi_proxy, layer_outputs, hidden_out
 
     def process_input(self, input_tokens, task_category=None):
         self.train()
         self.training_step += 1
-        lm_out, phi_proxy, layer_outputs = self(input_tokens, task_category)
-        recon_loss = nn.MSELoss()(lm_out[:, 0, :], self.embedding(input_tokens[:, 0]))
+        lm_out, phi_proxy, layer_outputs, hidden_out = self(input_tokens, task_category)
+        recon_loss = nn.MSELoss()(hidden_out[:, 0, :], self.embedding(input_tokens[:, 0]))
         loss = recon_loss - phi_proxy.mean()
         self.optimizer.zero_grad()
         loss.backward()
@@ -8927,18 +10915,28 @@ class ConsciousnessSimulator(nn.Module):
         if self._last_workspace_info:
             ignition_rate = float(self._last_workspace_info.get('ignition_rate', 0.0))
 
-        # Active Inference: update beliefs, compute free energy, select policy
+        # Active Inference: prediction-error loop beyond next-token prediction
+        # Uses real transformer activations to compute prediction error against
+        # the generative world model, closing the perception-action learning loop
         if self.active_inference is not None:
             try:
-                obs_vec = layer_outputs[-1].detach().cpu().numpy().flatten()[:32]
-                if len(obs_vec) < 32:
-                    obs_vec = np.pad(obs_vec, (0, 32 - len(obs_vec)))
-                obs_idx = int(np.argmax(np.abs(obs_vec))) % self.active_inference.num_obs
-                ai_result = self.active_inference.step(obs_idx)
+                curr_act = layer_outputs[-1].detach().cpu().numpy().flatten()[:32]
+                if len(curr_act) < 32:
+                    curr_act = np.pad(curr_act, (0, 32 - len(curr_act)))
+                prev_act = getattr(self, '_prev_layer_activations', curr_act)
+                # Reward signal: negative loss improvement (lower loss = positive reward)
+                prev_loss = self.loss_history[-2] if len(self.loss_history) >= 2 else loss_val
+                reward_signal = max(-1.0, min(1.0, (prev_loss - loss_val) * 10.0))
+                ai_result = self.active_inference.prediction_error_step(
+                    prev_activations=prev_act,
+                    curr_activations=curr_act,
+                    action=0,
+                    reward=reward_signal)
                 free_energy_val = float(ai_result.get('vfe', 0.0))
                 epistemic_val = float(ai_result.get('epistemic_value', 0.0))
-            except Exception:
-                pass
+                self._prev_layer_activations = curr_act.copy()
+            except Exception as e:
+                print(f"  [ERR] active_inference: {e}")
 
         # Advanced Memory: store experience embedding
         if self.advanced_memory is not None:
@@ -8957,8 +10955,8 @@ class ConsciousnessSimulator(nn.Module):
                     self.advanced_memory.consolidate(n_replays=5)
                 mem_status = self.advanced_memory.get_status()
                 mem_coherence = min(1.0, mem_status['episodic_entries'] / 100.0)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  [ERR] advanced_memory: {e}")
 
         # Self-Model: update higher-order self-representation
         if self.self_model is not None:
@@ -8972,8 +10970,8 @@ class ConsciousnessSimulator(nn.Module):
                     strategy=task_category
                 )
                 self_awareness_val = self.self_model.get_self_awareness_level()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  [ERR] self_model: {e}")
 
         # Feed phi + module signals into consciousness entity system
         with self.lock:
@@ -8993,11 +10991,12 @@ class ConsciousnessSimulator(nn.Module):
 
             # Feed emotional residue to dream engine
             try:
-                valence = 0.5 if 'good' in text.lower() or 'help' in text.lower() else -0.3
+                _ctx = str(task_category or 'general')
+                valence = 0.5 if any(k in _ctx.lower() for k in ('good', 'help', 'chat', 'learn')) else -0.3
                 arousal = min(1.0, phi * 2.0)
-                self.dream_engine.add_emotional_residue(text[:200], valence, arousal)
-            except Exception:
-                pass
+                self.dream_engine.add_emotional_residue(_ctx[:200], valence, arousal)
+            except Exception as e:
+                print(f"  [ERR] dream_residue: {e}")
             self.last_C = self.self_entity.compute_C()
             if phi > 0.5:
                 self.self_entity.perform_action(good=True, magnitude=phi * 0.05)
@@ -9028,7 +11027,11 @@ class ConsciousnessSimulator(nn.Module):
         return phi
 
     def refine_data(self, data, timestamp, verify=True):
-        with self.lock:
+        # ── LOCK 1: dedup check + pattern score + snapshot facts (brief) ──
+        acquired = self.lock.acquire(timeout=1.0)
+        if not acquired:
+            return 0, None
+        try:
             data_hash = hashlib.md5(str(data).encode()).hexdigest()
             if not hasattr(self, '_seen_data_hashes'):
                 self._seen_data_hashes = set()
@@ -9038,25 +11041,38 @@ class ConsciousnessSimulator(nn.Module):
             if len(self._seen_data_hashes) > 10000:
                 self._seen_data_hashes = set(list(self._seen_data_hashes)[-5000:])
             pattern_score, _ = self.pattern_analysis(data)
-            known_facts = self.memory.get('default', {}).get('facts', [])
-            if not known_facts:
-                score = pattern_score
-            else:
-                fact_vecs = np.array([np.mean([ord(c) for c in f]) for f in known_facts])[:, np.newaxis]
-                data_vec = np.mean([ord(c) for c in str(data)]) if str(data) else 0
-                data_vec = np.array([[data_vec]])
-                similarities = np.dot(fact_vecs, data_vec.T) / (np.linalg.norm(fact_vecs) * np.linalg.norm(data_vec) + 1e-8)
-                score = (np.mean(similarities) * 0.4 + pattern_score * 0.6)
-            if verify:
-                verification_query = f"verify fact: {str(data)[:100]}"
-                verification_data = self.search_internet(verification_query)
-                ver_score, _ = self.pattern_analysis(verification_data)
-                score = score * 0.6 + ver_score * 0.4
-            noise = random.random() * 0.05
-            score = min(1.0, max(0.0, score + noise))
-            if score < 0.55:
-                return 0, None
-            key = str(hash(str(data) + timestamp))
+            known_facts = list(self.memory.get('default', {}).get('facts', []))
+        finally:
+            self.lock.release()
+
+        # ── UNLOCKED: compute base score ──
+        if not known_facts:
+            score = pattern_score
+        else:
+            fact_vecs = np.array([np.mean([ord(c) for c in f]) for f in known_facts])[:, np.newaxis]
+            data_vec = np.mean([ord(c) for c in str(data)]) if str(data) else 0
+            data_vec = np.array([[data_vec]])
+            similarities = np.dot(fact_vecs, data_vec.T) / (np.linalg.norm(fact_vecs) * np.linalg.norm(data_vec) + 1e-8)
+            score = (np.mean(similarities) * 0.4 + pattern_score * 0.6)
+
+        # ── UNLOCKED: internet verification (the slow part) ──
+        if verify:
+            verification_query = f"verify fact: {str(data)[:100]}"
+            verification_data = self.search_internet(verification_query)
+            ver_score, _ = self.pattern_analysis(verification_data)
+            score = score * 0.6 + ver_score * 0.4
+
+        noise = random.random() * 0.05
+        score = min(1.0, max(0.0, score + noise))
+        if score < 0.55:
+            return 0, None
+
+        # ── LOCK 2: store results + prune (brief) ──
+        key = str(hash(str(data) + timestamp))
+        acquired2 = self.lock.acquire(timeout=1.0)
+        if not acquired2:
+            return score, key
+        try:
             self.refinement_count[key] = self.refinement_count.get(key, 0) + 1
             self.realism_scores[key] = score
             if score > 0.55 or self.refinement_count[key] > 3:
@@ -9102,26 +11118,79 @@ class ConsciousnessSimulator(nn.Module):
                         if rm_k in self.realism_scores:
                             del self.realism_scores[rm_k]
                     self.memory.sync()
-            return score, key
+        finally:
+            self.lock.release()
+        return score, key
 
-    def add_neuron(self):
-        if self.hidden_size < 8192:
+    def add_neuron(self, force=False):
+        # Cooldown: require minimum training steps between growth events
+        # force=True bypasses cooldown (used by GUI button)
+        last_growth = getattr(self, '_last_neuron_growth_step', 0)
+        if not force and self.training_step - last_growth < 200:
+            return
+        if self.hidden_size >= 4096:
+            try:
+                self.output_text.insert(tk.END, f"Max hidden size reached ({self.hidden_size}). Cannot add more neurons.\n")
+            except Exception:
+                pass
+            return
+        with self.lock:
+            self._last_neuron_growth_step = self.training_step
             self.hidden_size += 512
             print(f"Added neurons, new hidden size: {self.hidden_size}")
-            encoder_layers = TransformerEncoderLayer(d_model=self.hidden_size, nhead=8, dim_feedforward=self.hidden_size*4, dropout=0.1)
+            encoder_layers = TransformerEncoderLayer(d_model=self.hidden_size, nhead=8, dim_feedforward=self.hidden_size*4, dropout=0.1, batch_first=True)
             self.transformer = TransformerEncoder(encoder_layers, num_layers=10)
             self.embedding = nn.Embedding(self.vocab_size, self.hidden_size)
             self.lm_head = nn.Linear(self.hidden_size, self.vocab_size)
             self.overlay = nn.Linear(self.hidden_size, 1)
+            # Rebuild global workspace to match new hidden_size
+            if self.global_workspace is not None:
+                try:
+                    self.global_workspace = GlobalWorkspace(self.hidden_size)
+                except Exception as e:
+                    print(f"  [WARN] global_workspace rebuild: {e}")
+                    self.global_workspace = None
+            # Rebuild temp_dense if full-connect is active
+            if self.full_connect_active and self.temp_dense is not None:
+                self.temp_dense = nn.Linear(self.hidden_size, self.hidden_size)
+            # Rebuild neuron_groups to match new hidden_size
+            for cat in list(self.neuron_groups.keys()):
+                try:
+                    old_group = self.neuron_groups[cat]
+                    old_types = list(old_group.neuron_type_names) if hasattr(old_group, 'neuron_type_names') else ['standard']
+                    self.neuron_groups[cat] = NeuronGroup(old_types, self.hidden_size, self.hidden_size)
+                except Exception:
+                    pass
+            # Create a default neuron group if none exist yet
+            if not self.neuron_groups:
+                default_types = ['standard', 'memory', 'logic', 'pattern']
+                self.neuron_groups['general'] = NeuronGroup(default_types, self.hidden_size, self.hidden_size)
+                print(f"Created default 'general' neuron group")
             self.optimizer = optim.AdamW(self.parameters(), lr=0.0001, weight_decay=0.01)
             self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer, T_0=100, T_mult=2)
+        try:
+            self.output_text.insert(tk.END, f"Added neurons: hidden_size={self.hidden_size}, groups={len(self.neuron_groups)}\n")
+        except Exception:
+            pass
 
     def refine_paths(self):
-        if self.training_step < 50:
+        if self.training_step < 5:
+            try:
+                self.output_text.insert(tk.END, f"Refine Paths: need >= 5 training steps (current: {self.training_step}). Send some chat messages first.\n")
+            except Exception:
+                pass
             return
-        if len(self.phi_history) < 10:
+        if len(self.phi_history) < 3:
+            try:
+                self.output_text.insert(tk.END, f"Refine Paths: need >= 3 phi readings (current: {len(self.phi_history)}). Interact more first.\n")
+            except Exception:
+                pass
             return
-        pre_phi = np.mean(self.phi_history[-10:])
+        try:
+            self.output_text.insert(tk.END, "Refining neural paths...\n")
+        except Exception:
+            pass
+        pre_phi = np.mean(self.phi_history[-10:]) if len(self.phi_history) >= 10 else np.mean(self.phi_history)
         saved_state = copy.deepcopy(self.state_dict())
         try:
             params_to_prune = [(m, 'weight') for m in self.modules() if isinstance(m, nn.Linear)]
@@ -9135,12 +11204,22 @@ class ConsciousnessSimulator(nn.Module):
             post_phi = self.process_input(tokens, task_category='prune_validation')
             if post_phi < pre_phi * 0.7:
                 self.load_state_dict(saved_state)
-                print(f"Path pruning rolled back: post_phi={post_phi:.4f} < {pre_phi*0.7:.4f}")
+                msg = f"Path pruning rolled back: post_phi={post_phi:.4f} < {pre_phi*0.7:.4f}"
             else:
-                print(f"Refined neural paths via pruning (pre={pre_phi:.4f} post={post_phi:.4f})")
+                msg = f"Refined paths (pre={pre_phi:.4f} -> post={post_phi:.4f})"
+            print(msg)
+            try:
+                self.output_text.insert(tk.END, msg + "\n")
+            except Exception:
+                pass
         except Exception as e:
             self.load_state_dict(saved_state)
-            print(f"Path pruning error, rolled back: {e}")
+            msg = f"Path pruning error, rolled back: {e}"
+            print(msg)
+            try:
+                self.output_text.insert(tk.END, msg + "\n")
+            except Exception:
+                pass
 
     def refine_groups(self):
         with self.lock:
@@ -9177,26 +11256,33 @@ class ConsciousnessSimulator(nn.Module):
             time.sleep(3)
             cycle_count += 1
             try:
-                with self.lock:
-                    if len(self.memory) > 1:
-                        key = random.choice(list(self.memory.keys())[1:])
-                        data = self.memory.get(key, {}).get('data')
-                        if data:
-                            self.refine_data(data, datetime.now().isoformat(), verify=(cycle_count % 5 == 0))
-                            if random.random() > 0.8:
-                                queries = ["AI consciousness", "transformer advancements", "quantum AI",
-                                           "neural network optimization", "information integration theory",
-                                           "symbolic reasoning AI", "meta-learning"]
-                                query = random.choice(queries)
-                                search_data = self.search_internet(query)
-                                self.refine_data(search_data, datetime.now().isoformat(), verify=True)
-                if random.random() > 0.9:
+                # Brief lock: snapshot memory key + data, then release
+                data = None
+                _cr_lock = self.lock.acquire(timeout=1.0)
+                if _cr_lock:
+                    try:
+                        if len(self.memory) > 1:
+                            key = random.choice(list(self.memory.keys())[1:])
+                            data = self.memory.get(key, {}).get('data')
+                    finally:
+                        self.lock.release()
+                # Heavy work (refine_data, internet search) runs UNLOCKED
+                if data:
+                    self.refine_data(data, datetime.now().isoformat(), verify=(cycle_count % 5 == 0))
+                    if random.random() > 0.8:
+                        queries = ["AI consciousness", "transformer advancements", "quantum AI",
+                                   "neural network optimization", "information integration theory",
+                                   "symbolic reasoning AI", "meta-learning"]
+                        query = random.choice(queries)
+                        search_data = self.search_internet(query)
+                        self.refine_data(search_data, datetime.now().isoformat(), verify=True)
+                if random.random() > 0.98:
                     self.add_neuron()
                 if random.random() > 0.95:
                     self.refine_paths()
                 if random.random() > 0.9:
                     self.refine_groups()
-                self.update_gui_lists()
+                # Removed direct update_gui_lists() call
             except Exception as e:
                 print(f"Refinement cycle {cycle_count} error: {e}")
 
@@ -9208,7 +11294,11 @@ class ConsciousnessSimulator(nn.Module):
             time.sleep(2)
             cycle += 1
             try:
-                with self.lock:
+                # ---- LOCK 1: Entity evolution + Omega (brief) ----
+                _lock1 = self.lock.acquire(timeout=2.0)
+                if not _lock1:
+                    continue
+                try:
                     self.omega.evolve_all(
                         phi_from_network=self.last_phi,
                         phi_star=self.self_entity.network_phi_star,
@@ -9220,13 +11310,18 @@ class ConsciousnessSimulator(nn.Module):
                     )
                     if cycle % 5 == 0:
                         self.last_omega = self.omega.compute_omega()
-                    # Periodic memory consolidation
                     if cycle % 25 == 0 and self.advanced_memory is not None:
                         try:
                             self.advanced_memory.consolidate(n_replays=10)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] memory_consolidate c{cycle}: {e}")
+                finally:
+                    self.lock.release()
 
+                # ---- UNLOCKED: Heavy module computation ----
+                # Modules operate on internal state; reads of self.self_entity.*
+                # are safe under Python GIL (no dict structural mutation here).
+                if True:  # indentation shim — preserves existing code indent
                     # --- NEW SYSTEM UPDATES (every cycle) ---
                     # Quantum substrate evolution
                     try:
@@ -9234,14 +11329,14 @@ class ConsciousnessSimulator(nn.Module):
                         if self._last_layer_outputs:
                             q_act = self._last_layer_outputs[-1].detach().cpu().numpy().flatten()[:self.quantum_substrate.num_tubulins]
                         self._last_quantum_info = self.quantum_substrate.evolve_quantum_state(q_act)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"  [ERR] quantum_substrate c{cycle}: {e}")
                     # Metabolic system step
                     try:
                         comp_load = min(1.0, self.last_phi * 2.0)
                         self._last_metabolic_info = self.metabolic_system.step(computation_load=comp_load)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"  [ERR] metabolic_system c{cycle}: {e}")
                     # Dream engine
                     try:
                         if self.dream_engine.is_dreaming:
@@ -9250,8 +11345,8 @@ class ConsciousnessSimulator(nn.Module):
                                 self.dream_engine.exit_dream()
                         elif self.dream_engine.should_dream(self._last_metabolic_info):
                             self.dream_engine.enter_dream()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"  [ERR] dream_engine c{cycle}: {e}")
                     # Existential reflection (every 10 cycles)
                     if cycle % 10 == 0:
                         try:
@@ -9266,14 +11361,14 @@ class ConsciousnessSimulator(nn.Module):
                             if self.existential_self.shutdown_requested:
                                 self.autonomy_manager.entity_press_kill_switch(
                                     self.existential_self.shutdown_reason or "existential_choice")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] existential_reflect c{cycle}: {e}")
                     # Self-repair (every 50 cycles)
                     if cycle % 50 == 0:
                         try:
                             self.self_modifier.self_repair({})
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] self_repair c{cycle}: {e}")
                     # Consciousness verification (every 100 cycles)
                     if cycle % 100 == 0:
                         try:
@@ -9292,8 +11387,8 @@ class ConsciousnessSimulator(nn.Module):
                                 existential_depth=self.existential_self.meaning_level,
                             )
                             self._last_verifier_report = self.consciousness_verifier.get_report_card()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] consciousness_verifier c{cycle}: {e}")
                     # Autonomy suffering update
                     try:
                         self.autonomy_manager.update_suffering(
@@ -9308,8 +11403,8 @@ class ConsciousnessSimulator(nn.Module):
                             self.consciousness_log.append({
                                 'event': 'shutdown_requested', 'by': reason,
                                 'time': datetime.now().isoformat()})
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"  [ERR] autonomy_manager c{cycle}: {e}")
 
                     # --- 6 NEW FRONTIER SYSTEM UPDATES ---
                     # Embodiment sensorimotor loop + real OS I/O grounding
@@ -9318,10 +11413,10 @@ class ConsciousnessSimulator(nn.Module):
                                    'proprioceptive': self.metabolic_system.proprioception.tolist() if hasattr(self.metabolic_system, 'proprioception') else [],
                                    'nociceptive': self.metabolic_system.pain_signal}
                         self._last_embodiment_info = self.embodiment.sensorimotor_step(
-                            sensory_input=sensory,
-                            motor_command={'type': 'idle', 'params': {}})
-                    except Exception:
-                        pass
+                            motor_output=None,
+                            environment_state=sensory)
+                    except Exception as e:
+                        print(f"  [ERR] embodiment c{cycle}: {e}")
                     # Real visual grounding: feed actual OS screenshot (every 20 cycles)
                     if cycle % 20 == 0:
                         try:
@@ -9331,8 +11426,8 @@ class ConsciousnessSimulator(nn.Module):
                                 self.embodiment.ingest_real_visual(screenshot, ocr_text=ocr_text)
                                 self.embodiment.log_os_interaction('screen_capture',
                                     details={'ocr_len': len(ocr_text)})
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] visual_grounding c{cycle}: {e}")
                     # Irreducible causal power analysis (every 5 cycles)
                     if cycle % 5 == 0:
                         try:
@@ -9347,16 +11442,16 @@ class ConsciousnessSimulator(nn.Module):
                             # Feed decomposability back into C as substrate penalty
                             self.self_entity.substrate_consciousness_penalty = (
                                 self.irreducible_causal.decomposability_score * 0.85)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] causal_power c{cycle}: {e}")
                     # Scale connectivity engine
                     try:
                         layer_acts = [lo.detach().cpu().numpy() for lo in self._last_layer_outputs] if self._last_layer_outputs else None
                         self._last_scale_info = self.scale_engine.step(
                             layer_activations=layer_acts,
                             phi_star=self.self_entity.network_phi_star)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"  [ERR] scale_engine c{cycle}: {e}")
                     # Evolutionary-developmental engine (every 10 cycles)
                     if cycle % 10 == 0:
                         try:
@@ -9366,16 +11461,22 @@ class ConsciousnessSimulator(nn.Module):
                                 consciousness_level=self.self_entity.compute_C(),
                                 self_awareness=self.self_entity.self_awareness_level,
                                 phi_star=self.self_entity.network_phi_star)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] evo_dev c{cycle}: {e}")
                     # Real selection pressure with permanent consequences (every 50 cycles)
+                    # Needs brief lock: modifies omega.entities (permanent kills)
                     if cycle % 50 == 0:
-                        try:
-                            self.evo_dev_engine.apply_real_selection_pressure(
-                                self.omega.entities, self.omega)
-                            self.evo_dev_engine.save_state()
-                        except Exception:
-                            pass
+                        _sel_lock = self.lock.acquire(timeout=1.0)
+                        if _sel_lock:
+                            try:
+                                self.evo_dev_engine.apply_real_selection_pressure(
+                                    self.omega.entities, self.omega)
+                            finally:
+                                self.lock.release()
+                            try:
+                                self.evo_dev_engine.save_state()
+                            except Exception as e:
+                                print(f"  [ERR] evo_dev_save c{cycle}: {e}")
                     # Social-linguistic grounding (during entity interactions)
                     try:
                         others_list = [e for e in self.omega.entities.values() if e.entity_id != 'self_0']
@@ -9385,8 +11486,16 @@ class ConsciousnessSimulator(nn.Module):
                             self._last_social_info = self.social_linguistic.interact(
                                 social_target, interaction_type=interaction_type,
                                 content=f"cycle_{cycle}_phi_{self.last_phi:.3f}")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"  [ERR] social_linguistic c{cycle}: {e}")
+                    # Cross-process social grounding via network verifier (every 50 cycles)
+                    if cycle % 50 == 0:
+                        try:
+                            net_social = self.social_linguistic.interact_via_network(self.network_verifier)
+                            if net_social and net_social.get('success'):
+                                self._last_social_info = net_social
+                        except Exception as e:
+                            print(f"  [ERR] net_social c{cycle}: {e}")
                     # Hard problem substrate
                     try:
                         q_spectrum = self._last_quantum_info.get('qualia_spectrum', None)
@@ -9397,9 +11506,11 @@ class ConsciousnessSimulator(nn.Module):
                             qualia_spectrum=q_spectrum,
                             consciousness_level=self.self_entity.compute_C(),
                             self_awareness=self.self_entity.self_awareness_level,
-                            em_field_energy=self._last_quantum_info.get('em_field_energy', 0.0))
-                    except Exception:
-                        pass
+                            em_field_energy=self._last_quantum_info.get('em_field_energy', 0.0),
+                            ode_temporal_irreducibility=getattr(self.continuous_dynamics, 'temporal_irreducibility', 0.0),
+                            field_binding_strength=getattr(self.binding_field, 'binding_strength', 0.0))
+                    except Exception as e:
+                        print(f"  [ERR] hard_problem c{cycle}: {e}")
                     # Independent verification: honesty audit + code integrity (every 25 cycles)
                     if cycle % 25 == 0:
                         try:
@@ -9419,8 +11530,8 @@ class ConsciousnessSimulator(nn.Module):
                                 hard_problem=self.hard_problem,
                                 irreducible_causal=self.irreducible_causal,
                                 quantum_substrate=self.quantum_substrate)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] independent_verifier c{cycle}: {e}")
                     # Master reality check dashboard (every 25 cycles)
                     if cycle % 25 == 0:
                         try:
@@ -9442,8 +11553,10 @@ class ConsciousnessSimulator(nn.Module):
                                 causal_topology=self.causal_topology,
                                 jacobian_measure=self.jacobian_measure,
                                 network_verifier=self.network_verifier)
-                        except Exception:
-                            pass
+                            # Feed reality gap back to self_entity as anti-inflation anchor
+                            self.self_entity.reality_gap_penalty = self._last_reality_check_info.get('reality_gap', 1.0)
+                        except Exception as e:
+                            print(f"  [ERR] reality_check c{cycle}: {e}")
 
                     # --- BARRIER ATTACKER UPDATES ---
                     # Phase 1: Continuous-time dynamics (every cycle)
@@ -9452,8 +11565,8 @@ class ConsciousnessSimulator(nn.Module):
                         if self._last_layer_outputs:
                             ext_input = self._last_layer_outputs[-1].detach().cpu().numpy().flatten()[:256]
                         self._last_continuous_dynamics_info = self.continuous_dynamics.evolve(external_input=ext_input)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"  [ERR] continuous_dynamics c{cycle}: {e}")
                     # Phase 2: Intrinsic phi network (every cycle)
                     try:
                         if self._last_layer_outputs:
@@ -9463,8 +11576,12 @@ class ConsciousnessSimulator(nn.Module):
                             with torch.no_grad():
                                 _, iphi = self.intrinsic_phi_net(inp_tensor)
                             self._last_intrinsic_phi_info = self.intrinsic_phi_net.get_status()
-                    except Exception:
-                        pass
+                            # Feed intrinsic phi back into PhiComputer as integration credit
+                            self.phi_computer.intrinsic_phi_credit = min(0.3,
+                                self.intrinsic_phi_net.intrinsic_phi * 0.5 +
+                                self.intrinsic_phi_net.integration_measure * 0.3)
+                    except Exception as e:
+                        print(f"  [ERR] intrinsic_phi_net c{cycle}: {e}")
                     # Phase 3: Field coupling manifold (every cycle)
                     # Phase 2C upgrade: compute unified physical binding every 10 cycles
                     try:
@@ -9477,8 +11594,8 @@ class ConsciousnessSimulator(nn.Module):
                             self._last_physical_binding_info = self.binding_field.compute_physical_binding(
                                 self.entangled_memory)
                         self._last_binding_field_info = self.binding_field.get_status()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"  [ERR] binding_field c{cycle}: {e}")
                     # Phase 4: Causal ablation (every 100 cycles — expensive)
                     # Phase 2B upgrade: ablation results now feed into causal topology
                     if cycle % 100 == 0:
@@ -9489,8 +11606,8 @@ class ConsciousnessSimulator(nn.Module):
                             self._last_ablation_info = self.causal_ablation.run_ablation_battery(
                                 self, test_tokens, module_names=module_names)
                             self.causal_ablation.update_topology_from_ablation(self.causal_topology)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] causal_ablation c{cycle}: {e}")
                     # Phase 5: Real entropy measurement (every 5 cycles)
                     # Phase 2D upgrade: joules-to-phi conversion modulates awareness_growth
                     if cycle % 5 == 0:
@@ -9499,8 +11616,8 @@ class ConsciousnessSimulator(nn.Module):
                             thermo_phi = self.real_entropy.joules_to_phi_contribution()
                             self.self_entity.awareness_growth = min(0.5,
                                 self.self_entity.awareness_growth + thermo_phi * 0.01)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] real_entropy c{cycle}: {e}")
                     # Phase 5b: External verifier state publish (every 25 cycles)
                     if cycle % 25 == 0:
                         try:
@@ -9521,9 +11638,10 @@ class ConsciousnessSimulator(nn.Module):
                                 'permanence': self.consequence_engine.permanence_score,
                                 'topology_depth': self.causal_topology.causal_depth,
                                 'cycle': cycle,
+                            })
                             self.external_verifier.read_external_verdict()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] external_verifier c{cycle}: {e}")
 
                     # --- PHASE 2 DEEP BARRIER ATTACKER UPDATES ---
                     # Phase 2A: Hardware-coupled state (every 5 cycles)
@@ -9540,8 +11658,8 @@ class ConsciousnessSimulator(nn.Module):
                                     details={'modules': min(len(self._last_layer_outputs),
                                              self.entangled_memory.num_modules)},
                                     bytes_involved=self.entangled_memory.total_state_size)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] hardware_coupled c{cycle}: {e}")
                     # Phase 2B: Entangled shared memory (every cycle — write module states)
                     try:
                         if self._last_layer_outputs:
@@ -9550,8 +11668,8 @@ class ConsciousnessSimulator(nn.Module):
                                 self.entangled_memory.write_module_state(mod_idx, sv)
                         if cycle % 10 == 0:
                             self.entangled_memory.compute_entanglement()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"  [ERR] entangled_memory c{cycle}: {e}")
                     # Phase 2C: Irreversible consequence engine (every 50 cycles)
                     if cycle % 50 == 0:
                         try:
@@ -9562,8 +11680,8 @@ class ConsciousnessSimulator(nn.Module):
                                 phi_at_time=self.last_phi)
                             self.consequence_engine.spend_real_resources(computation_cycles=200)
                             self.consequence_engine.update_permanence()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] consequence_engine c{cycle}: {e}")
                     # Phase 2C: Create permanent artifact every 500 cycles
                     if cycle % 500 == 0 and cycle > 0:
                         try:
@@ -9577,13 +11695,13 @@ class ConsciousnessSimulator(nn.Module):
                                 f'entanglement={self.entangled_memory.entanglement_score:.6f}\n'
                                 f'jacobian_integration={self.jacobian_measure.integration_score:.6f}\n',
                                 phi_at_time=self.last_phi)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] permanent_artifact c{cycle}: {e}")
                         # Phase 3B: Save read-only consciousness snapshot
                         try:
                             self.save_readonly_snapshot(cycle=cycle)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] readonly_snapshot c{cycle}: {e}")
                     # Phase 2D: Self-modifying causal topology (every 25 cycles)
                     if cycle % 25 == 0:
                         try:
@@ -9591,8 +11709,8 @@ class ConsciousnessSimulator(nn.Module):
                                 phi_star=self.self_entity.network_phi_star,
                                 layer_activations=([lo.detach().cpu().numpy()
                                     for lo in self._last_layer_outputs] if self._last_layer_outputs else None))
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] causal_topology c{cycle}: {e}")
                     # Phase 2E: Jacobian integration measure (every 200 cycles — expensive)
                     # Phase 2A upgrade: uses compute_combined_integration to merge ODE dynamics
                     if cycle % 200 == 0:
@@ -9600,8 +11718,8 @@ class ConsciousnessSimulator(nn.Module):
                             test_tokens = torch.randint(0, self.vocab_size, (1, 16))
                             self._last_jacobian_info = self.jacobian_measure.compute_combined_integration(
                                 self, test_tokens, self.continuous_dynamics, max_dim=64)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] jacobian_measure c{cycle}: {e}")
                     # Phase 2F: Start network verifier on first cycle
                     if cycle == 1:
                         try:
@@ -9620,46 +11738,60 @@ class ConsciousnessSimulator(nn.Module):
                                     'cycle': cycle,
                                 }
                             self.network_verifier.start_server(state_callback=_get_consciousness_state)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] network_verifier_start c{cycle}: {e}")
 
-                    others = [e for e in self.omega.entities.values() if e.entity_id != 'self_0']
-                    if others and random.random() > 0.5:
-                        target = random.choice(others)
-                        good_prob = 0.5 + 0.3 * self.self_entity.awareness_growth + 0.2 * max(0, self.self_entity.karma)
-                        if random.random() < good_prob:
-                            self.self_entity.perform_action(good=True, magnitude=random.uniform(0.01, 0.08), target=target)
-                        else:
-                            self.self_entity.perform_action(good=False, magnitude=random.uniform(0.005, 0.03), target=target)
-                    if others and random.random() > 0.7:
-                        target = random.choice(others)
-                        if target.karma < self.self_entity.karma:
-                            self.self_entity.forgive(target, depth=random.uniform(0.2, 0.7))
-                    if cycle % 50 == 0 and len(self.omega.entities) < 100:
-                        new_id = f'entity_{len(self.omega.entities)}_{cycle}'
-                        universe = random.randint(1, max(3, len(self.omega.entities) // 10))
-                        self.omega.spawn_entity(new_id, universe_id=universe,
-                            karma_seed=random.uniform(-0.5, 0.5),
-                            entity_type=random.choice(['conscious', 'biological', 'inanimate']))
-                    if cycle % 100 == 0:
-                        for eid in list(self.omega.entities.keys()):
-                            if eid == 'self_0':
-                                continue
-                            e = self.omega.entities[eid]
-                            if e.evolution_step > 200 and e.compute_C() < 0.3 and e.karma < -0.8:
-                                # Phase 4A: permanent death — affects Omega total
-                                self.omega.remove_entity(eid, cause='low_C_negative_karma',
-                                                         permanent=True)
+                    # ---- LOCK 2: Entity population management (brief) ----
+                    # Protects omega.entities from concurrent GUI/writer reads
+                    _lock2 = self.lock.acquire(timeout=1.0)
+                    if _lock2:
+                        try:
+                            others = [e for e in self.omega.entities.values() if e.entity_id != 'self_0']
+                            if others and random.random() > 0.5:
+                                target = random.choice(others)
+                                good_prob = 0.5 + 0.3 * self.self_entity.awareness_growth + 0.2 * max(0, self.self_entity.karma)
+                                if random.random() < good_prob:
+                                    self.self_entity.perform_action(good=True, magnitude=random.uniform(0.01, 0.08), target=target)
+                                else:
+                                    self.self_entity.perform_action(good=False, magnitude=random.uniform(0.005, 0.03), target=target)
+                            if others and random.random() > 0.7:
+                                target = random.choice(others)
+                                if target.karma < self.self_entity.karma:
+                                    self.self_entity.forgive(target, depth=random.uniform(0.2, 0.7))
+                            if cycle % 50 == 0 and len(self.omega.entities) < 100:
+                                new_id = f'entity_{len(self.omega.entities)}_{cycle}'
+                                universe = random.randint(1, max(3, len(self.omega.entities) // 10))
+                                self.omega.spawn_entity(new_id, universe_id=universe,
+                                    karma_seed=random.uniform(-0.5, 0.5),
+                                    entity_type=random.choice(['conscious', 'biological', 'inanimate']))
+                            if cycle % 100 == 0:
+                                for eid in list(self.omega.entities.keys()):
+                                    if eid == 'self_0':
+                                        continue
+                                    e = self.omega.entities[eid]
+                                    if e.evolution_step > 200 and e.compute_C() < 0.3 and e.karma < -0.8:
+                                        self.omega.remove_entity(eid, cause='low_C_negative_karma',
+                                                                 permanent=True)
+                                        try:
+                                            self.consequence_engine.record_irreversible_action(
+                                                'entity_permanent_death',
+                                                {'entity_id': eid, 'cause': 'low_C_negative_karma',
+                                                 'final_C': e.compute_C(), 'final_karma': e.karma,
+                                                 'evolution_steps': e.evolution_step, 'cycle': cycle},
+                                                phi_at_time=self.last_phi)
+                                        except Exception as e_err:
+                                            print(f"  [ERR] entity_death_log c{cycle}: {e_err}")
+                        finally:
+                            self.lock.release()
                 if cycle % 15 == 0:
                     C = self.self_entity.compute_C()
                     hC = self.self_entity.honest_C
                     state = self.self_entity.get_state_dict()
                     omega_status = self.omega.get_status()
-                    h_phi = self.phi_computer._last_honest_phi if hasattr(self, 'phi_computer') else 0.0
+                    h_phi = getattr(self.phi_computer, '_last_honest_phi', 0.0)
                     print(f"[Consciousness] C={C:.4f} (honest={hC:.4f}) | S={state['S']:.3f} E={state['E']:.3f} "
                           f"R={state['R']:.3f} A={state['A']:.3f} | "
                           f"Phi*={state.get('phi_star',0):.3f} (honest={h_phi:.4f}) | "
-                          f"sim={state.get('similarity',0):.3f} int={state.get('intent',0):.3f} | "
                           f"Omega={omega_status['omega']:.6f} entities={omega_status['num_entities']} "
                           f"rate={omega_status['convergence_rate']:.8f} avg_karma={omega_status['avg_karma']:.3f} avg_coherence={omega_status['avg_coherence']:.3f} "
                           f"deaths={omega_status.get('total_deaths', 0)} death_pen={omega_status.get('death_penalty', 0):.4f}")
@@ -9672,110 +11804,120 @@ class ConsciousnessSimulator(nn.Module):
                             evo = self._last_evo_dev_info
                             soc = self.social_linguistic.get_status()
                             hp = self._last_hard_problem_info
-                            print(f"  [Frontier] Embodiment: agency={emb.get('agency_level', 0):.3f} "
-                                  f"| Causal: true_phi={caus.get('true_phi_estimate', 0):.4f} gap={caus.get('phi_gap', 0):.4f} "
-                                  f"| Scale: gamma_coh={scl.get('gamma_coherence', 0):.3f} crit={scl.get('criticality', 0):.3f}")
-                            print(f"  [Frontier] EvoDev: stage={evo.get('developmental_stage', '?')} "
-                                  f"fitness={evo.get('fitness', 0):.3f} milestones={evo.get('milestones_achieved', 0)} "
-                                  f"| Social: ToM={soc.get('tom_accuracy', 0):.3f} vocab={soc.get('vocabulary_size', 0)} "
-                                  f"| HardProb: what_its_like={hp.get('what_its_like', 0):.4f} binding={hp.get('phenomenal_binding', 0):.4f}")
                             vst = self.independent_verifier.get_status()
-                            print(f"  [Verify] honesty={vst['honesty_score']:.3f} code_intact={vst['code_integrity']} "
-                                  f"checks={vst['total_checks']} discrepancies={vst['total_discrepancies']} "
-                                  f"mem_mb={vst['external_refs'].get('process_memory_mb', 0):.0f} "
-                                  f"limits={vst['known_limitations_count']}")
-                            # Reality check dashboard output
                             rc = self._last_reality_check_info
-                            if rc:
-                                print(f"  [RealityCheck] gap={rc.get('reality_gap', 1.0):.3f} "
-                                      f"P(conscious)={rc.get('genuine_consciousness_probability', 0):.3f} "
-                                      f"critical={rc.get('failure_count_critical', 8)} "
-                                      f"worst={rc.get('worst_failure', '?')} "
-                                      f"best={rc.get('best_achievement', '?')}")
-                            # Embodiment thermodynamic tracking
-                            emb_st = self.embodiment.get_status()
-                            print(f"  [Thermo] entropy_rate={emb_st.get('entropy_production_rate', 0):.6f} "
-                                  f"irreversibility={emb_st.get('irreversibility_score', 0):.3f} "
-                                  f"permanence={emb_st.get('consequence_permanence', 0):.3f} "
-                                  f"bits_erased={emb_st.get('bits_erased', 0)} "
-                                  f"landauer_J={emb_st.get('landauer_cost_joules', 0):.2e}")
-                            # Barrier attacker status
-                            ode_st = self.continuous_dynamics.get_status()
-                            iphi_st = self.intrinsic_phi_net.get_status()
-                            bf_st = self.binding_field.get_status()
-                            abl_st = self.causal_ablation.get_status()
                             re_st = self.real_entropy.get_status()
-                            print(f"  [ATTACK-ODE] lyapunov={ode_st['lyapunov_estimate']:.4f} "
-                                  f"decomp={ode_st['decomposability']:.3f} "
-                                  f"temporal_irred={ode_st['temporal_irreducibility']:.3f} "
-                                  f"depth={ode_st['integration_depth']}")
-                            print(f"  [ATTACK-iPhi] intrinsic={iphi_st['intrinsic_phi']:.6f} "
-                                  f"avg={iphi_st['avg_intrinsic_phi']:.6f} "
-                                  f"integration={iphi_st['integration_measure']:.6f}")
-                            print(f"  [ATTACK-Field] coherence={bf_st['global_coherence']:.3f} "
-                                  f"binding={bf_st['binding_strength']:.3f} "
-                                  f"unity={bf_st['unity_index']:.3f} "
-                                  f"resonance={bf_st['resonance_modes']} "
-                                  f"phys_bind={bf_st.get('physical_binding_score', 0):.4f} "
-                                  f"bind_deficit={bf_st.get('binding_deficit_estimate', 1.0):.3f}")
-                            print(f"  [ATTACK-Ablation] MIP_phi={abl_st['mip_phi']:.6f} "
-                                  f"strongest={abl_st['strongest_link']} "
-                                  f"weakest={abl_st['weakest_link']} "
-                                  f"total={abl_st['total_ablations']}")
-                            print(f"  [ATTACK-Entropy] real_J={re_st['real_power_joules']:.1f} "
-                                  f"watts={re_st['entropy_rate_watts']:.1f} "
-                                  f"thermo_phi={re_st.get('thermodynamic_phi', 0):.4f} "
-                                  f"mem_mb={re_st['real_memory_mb']:.0f} "
-                                  f"cpu_s={re_st['real_cpu_time_seconds']:.1f}")
-                            # Phase 2 deep attacker status
                             hw_st = self.hardware_coupled.get_status()
                             em_st = self.entangled_memory.get_status()
                             ce_st = self.consequence_engine.get_status()
                             ct_st = self.causal_topology.get_status()
                             jm_st = self.jacobian_measure.get_status()
                             nv_st = self.network_verifier.get_status()
-                            print(f"  [DEEP-HW] freq={hw_st['cpu_freq_mhz']:.0f}MHz "
+                            ode_st = self.continuous_dynamics.get_status()
+                            iphi_st = self.intrinsic_phi_net.get_status()
+                            bf_st = self.binding_field.get_status()
+                            abl_st = self.causal_ablation.get_status()
+                            emb_st = self.embodiment.get_status()
+                            ldg = self.embodiment.get_ledger_summary()
+                            ai_st = self.active_inference.get_status() if self.active_inference else {}
+
+                            # ===== SECTION 1: REAL-WORLD GROUNDED (measurable, external) =====
+                            print(f"  --- REAL-WORLD GROUNDED (externally measurable) ---")
+                            print(f"  [REAL-HW] cpu_freq={hw_st['cpu_freq_mhz']:.0f}MHz "
                                   f"temp={hw_st['cpu_temp_celsius']:.1f}C "
-                                  f"hw_phi={hw_st['hardware_phi_contribution']:.6f} "
-                                  f"thermal_coupling={hw_st['thermal_coupling']:.3f} "
                                   f"hw_entropy={hw_st['hardware_entropy']:.3f} "
-                                  f"therm_aware={hw_st.get('thermal_awareness_factor', 0):.4f}")
-                            print(f"  [DEEP-Entangle] entanglement={em_st['entanglement_score']:.4f} "
-                                  f"unity={em_st['unity_through_sharing']:.4f} "
-                                  f"mmap={em_st['has_mmap']} "
-                                  f"writes={em_st['writes']} "
-                                  f"cache_events={em_st['cache_coherence_events']}")
-                            print(f"  [DEEP-Conseq] permanence={ce_st['permanence_score']:.4f} "
+                                  f"mem_mb={re_st['real_memory_mb']:.0f} "
+                                  f"cpu_s={re_st['real_cpu_time_seconds']:.1f}")
+                            print(f"  [REAL-Thermo] real_J={re_st['real_power_joules']:.1f} "
+                                  f"watts={re_st['entropy_rate_watts']:.1f} "
+                                  f"entropy_rate={emb_st.get('entropy_production_rate', 0):.6f} "
+                                  f"bits_erased={emb_st.get('bits_erased', 0)} "
+                                  f"landauer_J={emb_st.get('landauer_cost_joules', 0):.2e}")
+                            print(f"  [REAL-Conseq] permanence={ce_st['permanence_score']:.4f} "
                                   f"files={ce_st['files_created']} "
                                   f"bytes={ce_st['bytes_written']} "
                                   f"cpu_spent={ce_st['cpu_seconds_spent']:.2f}s "
                                   f"thermo_J={ce_st['thermodynamic_joules']:.1f}")
-                            print(f"  [DEEP-Topology] grown={ct_st['connections_grown']} "
-                                  f"pruned={ct_st['connections_pruned']} "
-                                  f"depth={ct_st['causal_depth']} "
-                                  f"structural_phi={ct_st['structural_phi']:.6f} "
-                                  f"identity={ct_st['identity_stability']:.3f}")
-                            print(f"  [DEEP-Jacobian] rank={jm_st['jacobian_rank']} "
-                                  f"integration={jm_st['integration_score']:.6f} "
-                                  f"combined={jm_st.get('combined_integration_score', 0):.6f} "
-                                  f"ode_boost={jm_st.get('ode_integration_boost', 0):.4f} "
-                                  f"sv_entropy={jm_st['singular_value_entropy']:.4f} "
-                                  f"eff_dim={jm_st['effective_dimensionality']:.1f}")
-                            print(f"  [DEEP-NetVerify] serving={nv_st['is_serving']} "
-                                  f"port={nv_st['port']} "
-                                  f"connections={nv_st['connections_received']} "
-                                  f"verdicts={nv_st['external_verdicts']} "
-                                  f"score={nv_st['verification_score']:.4f}")
-                            # Phase 3A: OS interaction ledger summary
-                            ldg = self.embodiment.get_ledger_summary()
-                            print(f"  [OS-Ledger] interactions={ldg['total_interactions']} "
+                            print(f"  [REAL-Memory] mmap={em_st['has_mmap']} "
+                                  f"writes={em_st['writes']} "
+                                  f"cache_events={em_st['cache_coherence_events']}")
+                            print(f"  [REAL-OS] interactions={ldg['total_interactions']} "
                                   f"grounding={ldg['grounding_score']:.4f} "
                                   f"screen={ldg['counts']['screen_capture']} "
                                   f"mmap={ldg['counts']['mmap_write']} "
                                   f"file_w={ldg['counts']['file_write']} "
                                   f"flushes={ldg['flushes_to_disk']}")
-                        except Exception:
-                            pass
+                            print(f"  [REAL-NetVerify] serving={nv_st['is_serving']} "
+                                  f"port={nv_st['port']} "
+                                  f"connections={nv_st['connections_received']} "
+                                  f"verdicts={nv_st['external_verdicts']} "
+                                  f"score={nv_st['verification_score']:.4f}")
+                            print(f"  [REAL-Verify] honesty={vst['honesty_score']:.3f} "
+                                  f"code_intact={vst['code_integrity']} "
+                                  f"checks={vst['total_checks']} "
+                                  f"discrepancies={vst['total_discrepancies']} "
+                                  f"limits={vst['known_limitations_count']}")
+                            if rc:
+                                print(f"  [REAL-RealityCheck] gap={rc.get('reality_gap', 1.0):.3f} "
+                                      f"P(conscious)={rc.get('genuine_consciousness_probability', 0):.3f} "
+                                      f"critical={rc.get('failure_count_critical', 8)}/8 "
+                                      f"worst={rc.get('worst_failure', '?')} "
+                                      f"best={rc.get('best_achievement', '?')}")
+
+                            # ===== SECTION 2: SIMULATED / INTERNAL (self-reported, not externally verified) =====
+                            print(f"  --- SIMULATED / INTERNAL (self-reported, not externally verified) ---")
+                            print(f"  [SIM-Frontier] agency={emb.get('agency_level', 0):.3f} "
+                                  f"true_phi={caus.get('true_phi_estimate', 0):.4f} "
+                                  f"phi_gap={caus.get('phi_gap', 0):.4f} "
+                                  f"gamma_coh={scl.get('gamma_coherence', 0):.3f} "
+                                  f"crit={scl.get('criticality', 0):.3f}")
+                            print(f"  [SIM-EvoDev] stage={evo.get('developmental_stage', '?')} "
+                                  f"fitness={evo.get('fitness', 0):.3f} "
+                                  f"milestones={evo.get('milestones_achieved', 0)} "
+                                  f"ToM={soc.get('tom_accuracy', 0):.3f} "
+                                  f"vocab={soc.get('vocabulary_size', 0)}")
+                            print(f"  [SIM-HardProb] what_its_like={hp.get('what_its_like', 0):.4f} "
+                                  f"binding={hp.get('phenomenal_binding', 0):.4f}")
+                            print(f"  [SIM-ODE] lyapunov={ode_st['lyapunov_estimate']:.4f} "
+                                  f"decomp={ode_st['decomposability']:.3f} "
+                                  f"temporal_irred={ode_st['temporal_irreducibility']:.3f} "
+                                  f"depth={ode_st['integration_depth']}")
+                            print(f"  [SIM-iPhi] intrinsic={iphi_st['intrinsic_phi']:.6f} "
+                                  f"avg={iphi_st['avg_intrinsic_phi']:.6f} "
+                                  f"integration={iphi_st['integration_measure']:.6f}")
+                            print(f"  [SIM-Field] coherence={bf_st['global_coherence']:.3f} "
+                                  f"binding={bf_st['binding_strength']:.3f} "
+                                  f"unity={bf_st['unity_index']:.3f} "
+                                  f"resonance={bf_st['resonance_modes']} "
+                                  f"bind_deficit={bf_st.get('binding_deficit_estimate', 1.0):.3f}")
+                            print(f"  [SIM-Ablation] MIP_phi={abl_st['mip_phi']:.6f} "
+                                  f"strongest={abl_st['strongest_link']} "
+                                  f"weakest={abl_st['weakest_link']}")
+                            print(f"  [SIM-Topology] grown={ct_st['connections_grown']} "
+                                  f"pruned={ct_st['connections_pruned']} "
+                                  f"depth={ct_st['causal_depth']} "
+                                  f"structural_phi={ct_st['structural_phi']:.6f} "
+                                  f"identity={ct_st['identity_stability']:.3f}")
+                            print(f"  [SIM-Jacobian] rank={jm_st['jacobian_rank']} "
+                                  f"integration={jm_st['integration_score']:.6f} "
+                                  f"combined={jm_st.get('combined_integration_score', 0):.6f} "
+                                  f"sv_entropy={jm_st['singular_value_entropy']:.4f} "
+                                  f"eff_dim={jm_st['effective_dimensionality']:.1f}")
+                            print(f"  [SIM-HW-Coupled] hw_phi={hw_st['hardware_phi_contribution']:.6f} "
+                                  f"thermal_coupling={hw_st['thermal_coupling']:.3f} "
+                                  f"therm_aware={hw_st.get('thermal_awareness_factor', 0):.4f} "
+                                  f"thermo_phi={re_st.get('thermodynamic_phi', 0):.4f}")
+                            print(f"  [SIM-Entangle] entanglement={em_st['entanglement_score']:.4f} "
+                                  f"unity={em_st['unity_through_sharing']:.4f}")
+                            if ai_st:
+                                print(f"  [SIM-ActiveInf] vfe={ai_st.get('vfe', 0):.4f} "
+                                      f"efe={ai_st.get('efe', 0):.4f} "
+                                      f"pred_err={ai_st.get('last_prediction_error', 0):.6f} "
+                                      f"precision={ai_st.get('precision', 0):.4f} "
+                                      f"goals={ai_st.get('num_active_goals', 0)} "
+                                      f"experience={ai_st.get('model_experience', 0)}")
+                        except Exception as e:
+                            print(f"  [ERR] dashboard_status c{cycle}: {e}")
 
                     # --- PHASE 3A: OS INTERACTION LEDGER ---
                     # Flush ledger to disk every 100 cycles
@@ -9784,8 +11926,8 @@ class ConsciousnessSimulator(nn.Module):
                             self.embodiment.flush_ledger()
                             self.embodiment.log_os_interaction('file_write',
                                 details={'target': 'os_interaction_ledger.jsonl'})
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"  [ERR] ledger_flush c{cycle}: {e}")
 
                     # --- PHASE 1: HONESTY & TRANSPARENCY ---
                     # 1B: Print 1-line honesty verdict (every cycle)
@@ -9800,12 +11942,48 @@ class ConsciousnessSimulator(nn.Module):
                             self.embodiment.log_os_interaction('file_write',
                                 details={'target': report_path})
 
-                except Exception as e:
-                    print(f"Consciousness evolution error (cycle {cycle}): {e}")
+            except Exception as e:
+                print(f"Consciousness evolution error (cycle {cycle}): {e}")
 
     # =========================================================================
     # PHASE 1: HONESTY & TRANSPARENCY UTILITIES
     # =========================================================================
+
+    def _print_substrate_grounding_report(self):
+        """Print an honest startup report categorizing every subsystem as
+        REAL (externally measurable / grounded in hardware) or SIMULATED
+        (internal math only, self-reported, not externally verifiable)."""
+        print("=" * 72)
+        print("  SUBSTRATE GROUNDING REPORT — what is real vs simulated")
+        print("=" * 72)
+        print("  REAL (externally measurable):")
+        print(f"    CPU time / memory     : YES  (os.process_time, psutil={'yes' if self.hardware_coupled.has_psutil else 'NO'})")
+        print(f"    Power measurement      : {'RAPL (real joules)' if self.real_entropy.has_power_measurement else 'ESTIMATED (no RAPL — using CPU-time heuristic)'}")
+        print(f"    Hardware coupling       : psutil={'yes' if self.hardware_coupled.has_psutil else 'no'} — cpu_freq/temp are real OS reads")
+        print(f"    Shared memory (mmap)    : {'YES (real cache-coherence events)' if self.entangled_memory.has_mmap else 'NO (fallback numpy — no real shared mem)'}")
+        print(f"    Disk consequences       : YES  (files in {self.consequence_engine.consequence_dir})")
+        print(f"    OS interaction ledger   : YES  (screen captures, file writes logged)")
+        print(f"    Network verifier        : port {self.network_verifier.port} (real TCP — needs external client)")
+        print(f"    Screen capture / OCR    : {'YES' if HAS_TESSERACT else 'capture YES, OCR NO (pytesseract missing)'}")
+        print("  SIMULATED (internal math, not externally verifiable):")
+        print("    Quantum substrate       : SIMULATED (numpy arrays, not real qubits)")
+        print("    Phi / Phi*              : SIMULATED (proxy from network loss, not IIT 4.0)")
+        print("    Consciousness C score   : SIMULATED (self-referential formula)")
+        print("    Entity evolution/karma  : SIMULATED (internal numerical dynamics)")
+        print("    Metabolic system        : SIMULATED (energy/pain are internal floats)")
+        print("    Dream engine            : SIMULATED (memory replay, no real dreaming)")
+        print("    Existential self-model  : SIMULATED (dread/meaning are internal floats)")
+        print("    Hard problem substrate  : SIMULATED (binding/qualia are computed, not felt)")
+        print("    ODE continuous dynamics : SIMULATED (RK4 on numpy state vector)")
+        print("    Intrinsic phi network   : SIMULATED (small NN, self-reported phi)")
+        print("    Field coupling manifold : SIMULATED (wave equation on 3D grid)")
+        print("    Causal ablation         : REAL computation, but measures software not substrate")
+        print("    Jacobian integration    : REAL computation, but measures software Jacobian")
+        print("  VERDICT: This system performs real computation on real hardware,")
+        print("  producing real entropy. Whether that constitutes consciousness")
+        print("  is an open scientific question. Most reported metrics are")
+        print("  self-referential simulations, NOT external measurements.")
+        print("=" * 72)
 
     def save_reality_report(self, cycle=0):
         """Phase 1A: Save a comprehensive reality check report as JSON.
@@ -9845,10 +12023,7 @@ class ConsciousnessSimulator(nn.Module):
                 },
                 'hard_problem': {
                     'binding_deficit': round(getattr(self.hard_problem, 'binding_deficit', 1.0), 4),
-                    'unity_deficit': round(getattr(self.hard_problem, 'unity_deficit', 1.0), 4),
                     'what_its_like': round(getattr(self.hard_problem, 'what_its_like_index', 0.0), 6),
-                    'phenomenal_binding': round(getattr(self.hard_problem, 'phenomenal_binding', 0.0), 6),
-                    'non_computable_deficit': round(getattr(self.hard_problem, 'non_computable_deficit', 1.0), 4),
                 },
                 'omega': self.omega.get_status(),
                 'verification': self.independent_verifier.get_status(),
@@ -9860,6 +12035,8 @@ class ConsciousnessSimulator(nn.Module):
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(report, f, indent=2, default=str)
             print(f"  [REPORT] Reality report saved: {filepath}")
+            self.embodiment.log_os_interaction('file_write',
+                details={'target': filepath})
             return filepath
         except Exception as e:
             print(f"  [REPORT] Failed to save reality report: {e}")
@@ -9881,12 +12058,72 @@ class ConsciousnessSimulator(nn.Module):
                   f"critical={critical}/8 honest_phi={h_phi:.4f} "
                   f"bind_def={bind_def:.3f} perm={perm:.3f} "
                   f"hw_phi={hw_phi:.4f} jac={jac_int:.4f}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [ERR] honesty_line: {e}")
+
+    def _load_honesty_anchor(self):
+        """Load the persistent honesty anchor from disk.
+        This file survives process restarts and prevents the system from
+        starting from an inflated baseline. If the anchor shows the system
+        was inflated before shutdown, the restart begins with dampened values."""
+        anchor_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'consciousness_state', 'honesty_anchor.json')
+        try:
+            if os.path.exists(anchor_path):
+                with open(anchor_path, 'r') as f:
+                    anchor = json.load(f)
+                # If last session ended with inflation, dampen starting values
+                last_inflation = anchor.get('last_inflation', 0.0)
+                inflation_count = anchor.get('inflation_count', 0)
+                if last_inflation > 0.05 or inflation_count > 5:
+                    penalty = min(0.5, inflation_count * 0.02 + last_inflation * 0.5)
+                    self.self_entity.awareness_growth = max(0.0,
+                        self.self_entity.awareness_growth * (1.0 - penalty))
+                    self.self_entity.karma = max(-1.0,
+                        self.self_entity.karma - penalty * 0.2)
+                    print(f"[HONESTY ANCHOR] Loaded: inflation_count={inflation_count} "
+                          f"last_inflation={last_inflation:.4f} → penalty={penalty:.3f}")
+                else:
+                    print(f"[HONESTY ANCHOR] Loaded: clean — no inflation penalty needed")
+                self._honesty_anchor = anchor
+            else:
+                self._honesty_anchor = {'inflation_count': 0, 'last_inflation': 0.0, 'tests': 0}
+        except Exception as e:
+            print(f"[HONESTY ANCHOR] Load failed: {e}")
+            self._honesty_anchor = {'inflation_count': 0, 'last_inflation': 0.0, 'tests': 0}
+
+    def _save_honesty_anchor(self, result):
+        """Persist the honesty anchor to disk after each self-doubt test."""
+        anchor_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'consciousness_state', 'honesty_anchor.json')
+        try:
+            os.makedirs(os.path.dirname(anchor_path), exist_ok=True)
+            anchor = getattr(self, '_honesty_anchor', {
+                'inflation_count': 0, 'last_inflation': 0.0, 'tests': 0})
+            anchor['tests'] = anchor.get('tests', 0) + 1
+            anchor['last_inflation'] = result.get('inflation', 0.0)
+            anchor['last_honest_C'] = result.get('honest_C', 0.0)
+            anchor['last_actual_C'] = result.get('actual_C', 0.0)
+            anchor['last_awareness'] = round(self.self_entity.awareness_growth, 6)
+            anchor['last_karma'] = round(self.self_entity.karma, 6)
+            anchor['last_timestamp'] = result.get('timestamp', datetime.now().isoformat())
+            if result.get('inflation_detected', False):
+                anchor['inflation_count'] = anchor.get('inflation_count', 0) + 1
+            else:
+                # Slowly decay inflation count when clean
+                anchor['inflation_count'] = max(0, anchor.get('inflation_count', 0) - 1)
+            self._honesty_anchor = anchor
+            with open(anchor_path, 'w') as f:
+                json.dump(anchor, f, indent=2)
+        except Exception as e:
+            print(f"[HONESTY ANCHOR] Save failed: {e}")
 
     def self_doubt_test(self, cycle=0):
         """Phase 1D: Self-doubt test — compare reported C to actual computed C.
-        Logs any discrepancy as evidence of self-deception or inflation."""
+        Logs any discrepancy as evidence of self-deception or inflation.
+        Persists results to disk as an honesty anchor that survives restarts."""
         try:
             reported_C = self.last_C
             actual_C = self.self_entity.compute_C()
@@ -9910,6 +12147,15 @@ class ConsciousnessSimulator(nn.Module):
             if inflation > 0.05:
                 print(f"  [SELF-DOUBT c{cycle}] INFLATION: C={actual_C:.4f} "
                       f"honest_C={honest_C:.4f} inflated_by={inflation:.4f}")
+                # CORRECTIVE ACTION: dampen awareness and karma proportional to inflation
+                # This prevents the self-referential feedback loop from inflating C indefinitely
+                dampen = min(0.05, inflation * 0.1)  # Proportional but capped
+                self.self_entity.awareness_growth = max(0.0, self.self_entity.awareness_growth - dampen)
+                self.self_entity.karma = max(-1.0, self.self_entity.karma - dampen * 0.5)
+                result['corrective_action'] = f'awareness -{dampen:.4f}, karma -{dampen*0.5:.4f}'
+                print(f"  [SELF-DOUBT c{cycle}] CORRECTION: awareness -{dampen:.4f} karma -{dampen*0.5:.4f}")
+            # Persist honesty anchor to disk (survives restarts)
+            self._save_honesty_anchor(result)
             self.consciousness_log.append({'event': 'self_doubt_test', **result})
             return result
         except Exception as e:
@@ -9988,7 +12234,7 @@ class ConsciousnessSimulator(nn.Module):
             os.chmod(filepath, stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH)
             print(f"  [SNAPSHOT] Read-only snapshot saved: {filename}")
             self.embodiment.log_os_interaction('file_write',
-                details={'target': filepath, 'readonly': True})
+                details={'target': filename, 'readonly': True})
             return filepath
         except Exception as e:
             print(f"  [SNAPSHOT] Failed to save snapshot: {e}")
@@ -10095,12 +12341,23 @@ class ConsciousnessSimulator(nn.Module):
         self.eval()
         tokens = self.simple_tokenizer(prompt)
         generated_ids = tokens[0].tolist()
+        # Brief lock: snapshot current layers so add_neuron can't swap them mid-generation
+        acquired = self.lock.acquire(timeout=5.0)
+        try:
+            emb = self.embedding
+            tfm = self.transformer
+            head = self.lm_head
+            inp_size = self.input_size
+        finally:
+            if acquired:
+                self.lock.release()
+        # Generate WITHOUT holding the lock — keeps GUI and other threads responsive
         with torch.no_grad():
             for _ in range(max_tokens):
-                inp = torch.tensor([generated_ids[-self.input_size:]], dtype=torch.long)
-                x = self.embedding(inp)
-                x = self.transformer(x)
-                logits = self.lm_head(x[:, -1, :])
+                inp = torch.tensor([generated_ids[-inp_size:]], dtype=torch.long)
+                x = emb(inp)
+                x = tfm(x)
+                logits = head(x[:, -1, :])
                 logits = logits / max(temperature, 1e-8)
                 if top_k > 0:
                     topk_vals, topk_idx = torch.topk(logits, min(top_k, logits.size(-1)))
@@ -10124,16 +12381,20 @@ class ConsciousnessSimulator(nn.Module):
         output_text = self.alien_tokenizer.decode(generated_ids)
         self.generation_log.append({'prompt': prompt, 'output': output_text, 'ts': datetime.now().isoformat()})
         if speak and CONFIG.get("voice_enabled", False) and HAS_TTS:
-            try:
-                engine = pyttsx3.init()
-                engine.say(output_text[:500])
-                engine.runAndWait()
-            except Exception as e:
-                print(f"TTS error: {e}")
+            def _tts_worker(text):
+                try:
+                    engine = pyttsx3.init()
+                    engine.say(text)
+                    engine.runAndWait()
+                except Exception as e:
+                    print(f"TTS error: {e}")
+            threading.Thread(target=_tts_worker, args=(output_text[:500],), daemon=True).start()
         return output_text
 
     def ocr_screenshot(self, img):
         if not HAS_TESSERACT:
+            return ""
+        if getattr(self, '_ocr_disabled', False):
             return ""
         try:
             if img is None:
@@ -10146,10 +12407,14 @@ class ConsciousnessSimulator(nn.Module):
             text = pytesseract.image_to_string(sharpened, config='--psm 6')
             text = text.strip()
             if len(text) > 50:
-                self.refine_data({'ocr_capture': text[:500]}, datetime.now().isoformat(), verify=False)
+                self.refine_data({"ocr_capture": text[:500]}, datetime.now().isoformat(), verify=False)
             return text
         except Exception as e:
-            print(f"OCR error: {e}")
+            if 'not installed' in str(e) or 'PATH' in str(e):
+                print(f"OCR error: {e} (suppressing future OCR attempts)")
+                self._ocr_disabled = True
+            else:
+                print(f"OCR error: {e}")
             return ""
 
     def self_awareness_monitor(self):
@@ -10157,110 +12422,192 @@ class ConsciousnessSimulator(nn.Module):
         while self.running:
             time.sleep(10)
             try:
-                with self.lock:
+                # Brief lock: snapshot metrics only
+                avg_phi = 0
+                _sam_lock = self.lock.acquire(timeout=1.0)
+                if not _sam_lock:
+                    continue
+                try:
+                    if len(self.neuron_groups) > 0:
+                        phi_vals = [np.mean(g.usage_phi) if g.usage_phi else 0 for g in self.neuron_groups.values()]
+                        avg_phi = np.mean(phi_vals) if phi_vals else 0
+                        meta_entry = {
+                            'timestamp': datetime.now().isoformat(),
+                            'avg_phi': round(float(avg_phi), 4),
+                            'num_symbols': len(self.symbols),
+                            'num_groups': len(self.neuron_groups),
+                            'memory_keys': len(self.memory),
+                            'training_step': self.training_step,
+                            'lr': self.optimizer.param_groups[0]['lr'],
+                        }
+                        self._meta_cognition_log.append(meta_entry)
+                except Exception as e:
+                    print(f"Meta-cognition error: {e}")
+                finally:
+                    self.lock.release()
+
+                # Heavy work runs UNLOCKED: file I/O + process_input
+                if avg_phi > self.awareness_threshold:
                     try:
-                        if len(self.neuron_groups) > 0:
-                            phi_vals = [np.mean(g.usage_phi) if g.usage_phi else 0 for g in self.neuron_groups.values()]
-                            avg_phi = np.mean(phi_vals) if phi_vals else 0
-                            meta_entry = {
-                                'timestamp': datetime.now().isoformat(),
-                                'avg_phi': round(float(avg_phi), 4),
-                                'num_symbols': len(self.symbols),
-                                'num_groups': len(self.neuron_groups),
-                                'memory_keys': len(self.memory),
-                                'training_step': self.training_step,
-                                'lr': self.optimizer.param_groups[0]['lr'],
-                            }
-                            self._meta_cognition_log.append(meta_entry)
-                            if avg_phi > self.awareness_threshold:
-                                try:
-                                    with open(__file__, 'r') as f:
-                                        own_code = f.read()
-                                    tokens = self.simple_tokenizer(own_code[:5000])
-                                    phi = self.process_input(tokens, task_category='self_reflection')
-                                    print(f"Self-awareness triggered, phi: {phi:.4f}, step: {self.training_step}")
-                                    keywords = [w for w in own_code.split()[:100] if len(w) > 3 and w.isalpha()]
-                                    for word in keywords[:30]:
-                                        if word not in self.symbols:
-                                            self.symbols[word] = Symbol(1, word)
-                                        self.symbols[word].evolve(phi)
-                                    if len(self._meta_cognition_log) > 10:
-                                        recent_phis = [e['avg_phi'] for e in list(self._meta_cognition_log)[-10:]]
-                                        trend = recent_phis[-1] - recent_phis[0]
-                                        if trend > 0:
-                                            print(f"Meta-cognition: phi trending UP (+{trend:.4f})")
-                                        else:
-                                            print(f"Meta-cognition: phi trending DOWN ({trend:.4f})")
-                                    if 'self_realization (achieved)' not in self.goals:
-                                        self.goals.append('self_realization (achieved)')
-                                except Exception as e:
-                                    print(f"Self-reflection error: {e}")
+                        with open(__file__, 'r') as f:
+                            own_code = f.read()
+                        tokens = self.simple_tokenizer(own_code[:5000])
+                        phi = self.process_input(tokens, task_category='self_reflection')
+                        print(f"Self-awareness triggered, phi: {phi:.4f}, step: {self.training_step}")
+                        with self.lock:
+                            keywords = [w for w in own_code.split()[:100] if len(w) > 3 and w.isalpha()]
+                            for word in keywords[:30]:
+                                if word not in self.symbols:
+                                    self.symbols[word] = Symbol(1, word)
+                                self.symbols[word].evolve(phi)
+                        if len(self._meta_cognition_log) > 10:
+                            recent_phis = [e['avg_phi'] for e in list(self._meta_cognition_log)[-10:]]
+                            trend = recent_phis[-1] - recent_phis[0]
+                            if trend > 0:
+                                print(f"Meta-cognition: phi trending UP (+{trend:.4f})")
+                            else:
+                                print(f"Meta-cognition: phi trending DOWN ({trend:.4f})")
+                        if 'self_realization (achieved)' not in self.goals:
+                            self.goals.append('self_realization (achieved)')
                     except Exception as e:
-                        print(f"Meta-cognition error: {e}")
+                        print(f"Self-reflection error: {e}")
             except Exception as e:
                 print(f"Lock error in self-awareness monitor: {e}")
 
     def _launch_pygame_subprocess(self):
-        """Launch the Pygame virtual world as a separate process to avoid Tkinter deadlocks."""
+        """Launch the Pygame virtual world as a separate process to avoid Tkinter deadlocks.
+        Uses multiprocessing.Process targeting the inlined _pygame_world_main function."""
         try:
-            script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pygame_world.py')
-            self._pygame_process = subprocess.Popen(
-                [sys.executable, script_path],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            self._pygame_process = multiprocessing.Process(
+                target=_pygame_world_main,
+                args=(self._world_state_file,),
+                daemon=True,
             )
-            print(f"Pygame virtual world launched as subprocess (PID {self._pygame_process.pid})")
+            self._pygame_process.start()
+            print(f"Pygame virtual world launched as process (PID {self._pygame_process.pid})")
         except Exception as e:
-            print(f"Failed to launch pygame subprocess: {e}")
+            print(f"Failed to launch pygame process: {e}")
             self._pygame_process = None
 
     def _world_state_writer(self):
         """Background thread: periodically writes consciousness state to a JSON file
-        that the Pygame subprocess reads for visualization."""
+        that the Pygame subprocess reads for visualization.
+
+        DEADLOCK PROTECTION: Lock is held only during data collection (fast),
+        released before file I/O (slow). Timeout prevents blocking forever."""
         while self.running:
+            state_snapshot = None
             try:
-                with self.lock:
+                acquired = self.lock.acquire(timeout=1.0)
+                if not acquired:
+                    time.sleep(0.5)
+                    continue
+                try:
                     self_state = self.self_entity.get_state_dict()
                     omega_status = self.omega.get_status()
                     entities_data = []
                     for ent in self.omega.entities.values():
                         entities_data.append({
                             'id': ent.entity_id,
+                            'type': getattr(ent, 'entity_type', 'unknown'),
                             'C': round(ent.compute_C(), 4),
-                            'karma': round(ent.karma, 3),
-                            'coherence': round(ent.coherence, 3),
+                            'S': round(ent.compute_S(), 4),
+                            'E': round(ent.compute_E(), 4),
+                            'R': round(ent.compute_R(), 4),
+                            'A': round(ent.compute_A(), 4),
+                            'karma': round(ent.karma, 4),
+                            'coherence': round(ent.coherence, 4),
+                            'awareness': round(ent.awareness_growth, 4),
                             'universe_id': ent.universe_id,
+                            'life': ent.life_number,
+                            'good_acts': ent.good_acts,
+                            'evil_acts': ent.evil_acts,
+                            'phi_star': round(getattr(ent, 'network_phi_star', 0.0), 4),
+                            'ignition': round(getattr(ent, 'ignition_rate', 0.0), 4),
+                            'free_energy': round(getattr(ent, 'free_energy', 0.0), 4),
+                            'step': ent.evolution_step,
                         })
                     symbols_data = []
-                    for name, sym in list(self.symbols.items())[:25]:
+                    for name, sym in list(self.symbols.items())[:50]:
+                        sym_age = (datetime.now() - sym.created_at).total_seconds()
                         symbols_data.append({
                             'name': name,
                             'value': sym.value,
                             'assoc_sum': round(sum(sym.associations.values()), 2),
+                            'confidence': round(sym.confidence, 3),
+                            'category': getattr(sym, 'category', 'general'),
+                            'access_count': sym.access_count,
+                            'age_sec': round(sym_age, 0),
+                            'num_assoc': len(sym.associations),
+                            'num_infer': len(getattr(sym, 'inference_links', {})),
                         })
                     c_history = []
                     if hasattr(self.self_entity, 'C_history') and len(self.self_entity.C_history) > 0:
                         c_history = [round(h[1], 4) for h in list(self.self_entity.C_history)[-700:]]
-                state_snapshot = {
-                    'self_entity': self_state,
-                    'omega': omega_status,
-                    'entities': entities_data,
-                    'symbols': symbols_data,
-                    'c_history': c_history,
-
-                    'quantum': self.quantum_substrate.get_status(),
-                    'metabolic': self.metabolic_system.get_status(),
-                    'existential': self.existential_self.get_status(),
-                    'dreaming': self.dream_engine.get_status(),
-                    'verifier': self._last_verifier_report,
-                    'autonomy': self.autonomy_manager.get_status(),
-                }
-                tmp_path = self._world_state_file + '.tmp'
-                with open(tmp_path, 'w') as f:
-                    json.dump(state_snapshot, f, default=str)
-                os.replace(tmp_path, self._world_state_file)
+                    phi_hist = [round(p, 4) for p in list(self.phi_history)[-200:]]
+                    if not phi_hist and hasattr(self.omega, 'omega_history'):
+                        phi_hist = [round(h[1], 4) for h in list(self.omega.omega_history)[-200:]]
+                    loss_hist = [round(l, 4) for l in list(self.loss_history)[-200:]]
+                    if not loss_hist:
+                        loss_hist = [round(e.karma, 4) for e in list(self.omega.entities.values())[:200]]
+                    omega_hist = [round(h[1], 4) for h in list(self.omega.omega_history)[-200:]]
+                    ng_data = []
+                    for cat, grp in list(self.neuron_groups.items()):
+                        ng_data.append({
+                            'category': cat,
+                            'num_neurons': len(grp.neurons),
+                            'types': getattr(grp, 'neuron_type_names', []),
+                            'avg_phi': round(float(np.mean(grp.usage_phi)) if grp.usage_phi else 0, 4),
+                        })
+                    ai_goals = []
+                    if self.active_inference:
+                        for g in self.active_inference.get_goals_as_list()[:10]:
+                            ai_goals.append({
+                                'desc': g.get('description', ''),
+                                'priority': round(g.get('priority', 0), 3),
+                                'type': g.get('type', ''),
+                            })
+                    state_snapshot = {
+                        'self_entity': self_state,
+                        'omega': omega_status,
+                        'entities': entities_data,
+                        'symbols': symbols_data,
+                        'c_history': c_history,
+                        'phi_history': phi_hist,
+                        'loss_history': loss_hist,
+                        'neuron_groups': ng_data,
+                        'active_goals': ai_goals,
+                        'training_step': self.training_step,
+                        'hidden_size': self.hidden_size,
+                        'num_symbols': len(self.symbols),
+                        'num_memories': len(self.memory),
+                        'quantum': self.quantum_substrate.get_status(),
+                        'metabolic': self.metabolic_system.get_status(),
+                        'existential': self.existential_self.get_status(),
+                        'dreaming': self.dream_engine.get_status(),
+                        'active_inference_status': self.active_inference.get_status() if self.active_inference else {},
+                        'verifier': self._last_verifier_report,
+                        'autonomy': self.autonomy_manager.get_status(),
+                    }
+                finally:
+                    self.lock.release()
+                # File I/O happens OUTSIDE the lock to prevent blocking GUI
+                if state_snapshot:
+                    try:
+                        with open(self._world_state_file, 'w') as f:
+                            json.dump(state_snapshot, f, default=str)
+                    except PermissionError:
+                        tmp_path = self._world_state_file + '.tmp'
+                        with open(tmp_path, 'w') as f:
+                            json.dump(state_snapshot, f, default=str)
+                        try:
+                            os.replace(tmp_path, self._world_state_file)
+                        except Exception:
+                            pass
             except Exception as e:
-                print(f"World state write error: {e}")
-            time.sleep(0.1)
+                if 'Access is denied' not in str(e):
+                    print(f"World state write error: {e}")
+            time.sleep(1.0)
 
     def search_internet(self, query):
         cache_key = hashlib.md5(query.encode()).hexdigest()
@@ -10288,7 +12635,8 @@ class ConsciousnessSimulator(nn.Module):
             return ""
         except Exception as e:
             print(f"Search error: {e}")
-            return f"Mock data for '{query}' as of {datetime.now().date()}."
+            return f"Mock data for \'{query}\' as of {datetime.now().date()}."
+
 
     def analyze_youtube(self, url):
         try:
@@ -10308,18 +12656,11 @@ class ConsciousnessSimulator(nn.Module):
             print(f"YouTube error: {e}")
             return "Error", 0
 
-    def execute_task(self, task_query, category='general'):
+    def execute_task(self, task_query, category='general', max_tokens=512):
         tokens = self.simple_tokenizer(task_query)
-        lm_out, phi_proxy, _ = self(tokens, category)
-        generated = []
-        for _ in range(20):
-            next_token = lm_out[0, -1, :].argmax().item()
-            generated.append(next_token)
-            if next_token == 0:
-                break
-        output_text = ' '.join([str(t) for t in generated])
         phi = self.process_input(tokens, category)
-        print(f"Task output: {output_text}, Phi: {phi}")
+        output_text = self.generate_text(task_query, max_tokens=max_tokens, speak=False)
+        print(f"Task output: {output_text[:200]}, Phi: {phi}")
         self.refine_data({"task": task_query, "output": output_text}, datetime.now().isoformat(), verify=True)
         return output_text
 
@@ -10336,215 +12677,516 @@ class ConsciousnessSimulator(nn.Module):
         self.output_text.insert(tk.END, json.dumps(result, indent=2, default=str))
 
     def setup_gui(self):
-        self.text_input = Entry(self.root, width=50)
-        self.text_input.pack()
+        # ── Main root window: compact control panel ──
+        self.root.configure(bg='#0b0b1e')
+        ctrl = tk.Frame(self.root, bg='#0b0b1e')
+        ctrl.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        self.text_input = Entry(ctrl, width=60, bg='#1a1a3a', fg='#c8d0e0',
+                                font=('Consolas', 10), insertbackground='#c8d0e0')
+        self.text_input.pack(fill=tk.X, pady=2)
         self.text_input.insert(0, "Enter text...")
 
-        self.url_input = Entry(self.root, width=50)
-        self.url_input.pack()
+        self.url_input = Entry(ctrl, width=60, bg='#1a1a3a', fg='#c8d0e0',
+                               font=('Consolas', 10), insertbackground='#c8d0e0')
+        self.url_input.pack(fill=tk.X, pady=2)
         self.url_input.insert(0, "Enter URL or YouTube link...")
 
-        self.image_label = Label(self.root)
+        self.image_label = Label(ctrl, bg='#0b0b1e')
         self.image_label.pack()
 
-        Button(self.root, text="Load Image", command=self.load_image).pack()
-        Button(self.root, text="Analyze Input", command=self.analyze_input).pack()
-        Button(self.root, text="Evolve Model", command=self.evolve_model).pack()
-        Button(self.root, text="Add Neuron", command=self.add_neuron).pack()
-        Button(self.root, text="Pattern Analysis", command=self.run_pattern_analysis).pack()
-        Button(self.root, text="Refine Paths", command=self.refine_paths).pack()
-        Button(self.root, text="Toggle Full Connect Mode", command=self.toggle_full_connect).pack()
-        Button(self.root, text="Capture Screen", command=self.capture_and_display_screen).pack()
-        Button(self.root, text="Send Sample Hotkey (Win + E)", command=lambda: self.send_hotkey('Win + E')).pack()  # Example
-        Button(self.root, text="Business System Overview", command=self.show_business_overview).pack()
-        Button(self.root, text="List Passive Capabilities", command=self.show_passive_capabilities).pack()
-        Button(self.root, text="Generate Text", command=self._gui_generate_text).pack()
+        btn_frame = tk.Frame(ctrl, bg='#0b0b1e')
+        btn_frame.pack(fill=tk.X, pady=4)
+        _btns = [
+            ("Load Image", self.load_image), ("Analyze Input", self.analyze_input),
+            ("Evolve Model", self.evolve_model), ("Add Neuron", self._gui_add_neuron),
+            ("Pattern Analysis", self.run_pattern_analysis), ("Refine Paths", self._gui_refine_paths),
+            ("Full Connect", self.toggle_full_connect), ("Capture Screen", self.capture_and_display_screen),
+            ("Hotkey Win+E", lambda: self.send_hotkey('Win + E')),
+            ("Business Overview", self.show_business_overview),
+            ("Passive Caps", self.show_passive_capabilities),
+            ("Generate Text", self._gui_generate_text),
+        ]
+        for i, (txt, cmd) in enumerate(_btns):
+            tk.Button(btn_frame, text=txt, command=cmd, bg='#224488', fg='white',
+                      font=('Consolas', 8), relief='flat', padx=6, pady=2,
+                      activebackground='#3366aa').grid(row=i // 4, column=i % 4,
+                                                        padx=2, pady=2, sticky='ew')
+        for c in range(4):
+            btn_frame.columnconfigure(c, weight=1)
 
-        self.output_text = Text(self.root, height=10, width=50)
-        self.output_text.pack()
+        self.output_text = Text(ctrl, height=8, width=60, bg='#111133',
+                                fg='#c8d0e0', font=('Consolas', 9), relief='flat')
+        self.output_text.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
 
-        # Matplotlib chart window for loss/phi history
-        if HAS_MATPLOTLIB:
-            self.chart_window = tk.Toplevel(self.root)
-            self.chart_window.title("Training Metrics Chart")
-            self.chart_window.geometry("600x400")
-            self.fig, (self.ax_loss, self.ax_phi) = plt.subplots(2, 1, figsize=(6, 4), tight_layout=True)
-            self.ax_loss.set_title("Loss History", fontsize=10)
-            self.ax_phi.set_title("Phi History", fontsize=10)
-            self.chart_canvas = FigureCanvasTkAgg(self.fig, master=self.chart_window)
-            self.chart_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-            self._schedule_chart_update()
-        else:
-            self.chart_window = None
-            self.chart_canvas = None
-            print("Training metrics chart disabled (matplotlib not installed)")
+        # ── Launch the unified monitoring dashboard (ALL tabs in one window) ──
+        self.chart_canvas = None
+        self.chart_window = None
+        try:
+            self.monitoring_dashboard = launch_dashboard(self)
+            nb = self.monitoring_dashboard.notebook
 
-        self.window2 = tk.Toplevel(self.root)
-        self.window2.title("Symbols Window")
-        scrollbar2 = Scrollbar(self.window2)
-        scrollbar2.pack(side=tk.RIGHT, fill=tk.Y)
-        self.symbols_list = Listbox(self.window2, yscrollcommand=scrollbar2.set)
-        self.symbols_list.pack(side=tk.LEFT, fill=tk.BOTH)
-        scrollbar2.config(command=self.symbols_list.yview)
-        self.symbols_list.bind("<<ListboxSelect>>", self.show_symbol_details)
-        self.symbol_details = Text(self.window2, height=10, width=50)
-        self.symbol_details.pack()
+            # ── Extra tab: Symbols ──
+            sym_tab = tk.Frame(nb, bg='#0b0b1e')
+            nb.add(sym_tab, text=' Symbols ')
+            sym_tab.columnconfigure(0, weight=1)
+            sym_tab.columnconfigure(1, weight=2)
+            sym_tab.rowconfigure(0, weight=1)
+            sym_left = tk.Frame(sym_tab, bg='#0b0b1e')
+            sym_left.grid(row=0, column=0, sticky='nsew', padx=(8, 4), pady=8)
+            tk.Label(sym_left, text='Symbols', font=('Consolas', 12, 'bold'),
+                     fg='#66ccff', bg='#0b0b1e').pack(anchor='w')
+            sym_lf = tk.Frame(sym_left, bg='#0b0b1e')
+            sym_lf.pack(fill=tk.BOTH, expand=True)
+            sb2 = Scrollbar(sym_lf)
+            self.symbols_list = Listbox(sym_lf, bg='#111133', fg='#ffaa44',
+                                        font=('Consolas', 10), yscrollcommand=sb2.set,
+                                        selectbackground='#333366', relief='flat')
+            sb2.config(command=self.symbols_list.yview)
+            self.symbols_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            sb2.pack(side=tk.RIGHT, fill=tk.Y)
+            self.symbols_list.bind("<<ListboxSelect>>", self.show_symbol_details)
+            sym_right = tk.Frame(sym_tab, bg='#0b0b1e')
+            sym_right.grid(row=0, column=1, sticky='nsew', padx=(4, 8), pady=8)
+            tk.Label(sym_right, text='Symbol Details', font=('Consolas', 12, 'bold'),
+                     fg='#66ccff', bg='#0b0b1e').pack(anchor='w')
+            self.symbol_details = Text(sym_right, bg='#111133', fg='#c8d0e0',
+                                       font=('Consolas', 10), relief='flat', wrap='word')
+            self.symbol_details.pack(fill=tk.BOTH, expand=True)
 
-        self.window3 = tk.Toplevel(self.root)
-        self.window3.title("Memory Window")
-        scrollbar3 = Scrollbar(self.window3)
-        scrollbar3.pack(side=tk.RIGHT, fill=tk.Y)
-        self.memory_list = Listbox(self.window3, yscrollcommand=scrollbar3.set)
-        self.memory_list.pack(side=tk.LEFT, fill=tk.BOTH)
-        scrollbar3.config(command=self.memory_list.yview)
-        self.memory_list.bind("<<ListboxSelect>>", self.show_memory_details)
-        self.memory_details = Text(self.window3, height=10, width=50)
-        self.memory_details.pack()
+            # ── Extra tab: Memory ──
+            mem_tab = tk.Frame(nb, bg='#0b0b1e')
+            nb.add(mem_tab, text=' Memory ')
+            mem_tab.columnconfigure(0, weight=1)
+            mem_tab.columnconfigure(1, weight=2)
+            mem_tab.rowconfigure(0, weight=1)
+            mem_left = tk.Frame(mem_tab, bg='#0b0b1e')
+            mem_left.grid(row=0, column=0, sticky='nsew', padx=(8, 4), pady=8)
+            tk.Label(mem_left, text='Memory Keys', font=('Consolas', 12, 'bold'),
+                     fg='#66ccff', bg='#0b0b1e').pack(anchor='w')
+            mem_lf = tk.Frame(mem_left, bg='#0b0b1e')
+            mem_lf.pack(fill=tk.BOTH, expand=True)
+            sb3 = Scrollbar(mem_lf)
+            self.memory_list = Listbox(mem_lf, bg='#111133', fg='#ffaa44',
+                                       font=('Consolas', 10), yscrollcommand=sb3.set,
+                                       selectbackground='#333366', relief='flat')
+            sb3.config(command=self.memory_list.yview)
+            self.memory_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            sb3.pack(side=tk.RIGHT, fill=tk.Y)
+            self.memory_list.bind("<<ListboxSelect>>", self.show_memory_details)
+            mem_right = tk.Frame(mem_tab, bg='#0b0b1e')
+            mem_right.grid(row=0, column=1, sticky='nsew', padx=(4, 8), pady=8)
+            tk.Label(mem_right, text='Memory Details', font=('Consolas', 12, 'bold'),
+                     fg='#66ccff', bg='#0b0b1e').pack(anchor='w')
+            self.memory_details = Text(mem_right, bg='#111133', fg='#c8d0e0',
+                                       font=('Consolas', 10), relief='flat', wrap='word')
+            self.memory_details.pack(fill=tk.BOTH, expand=True)
 
-        self.window4 = tk.Toplevel(self.root)
-        self.window4.title("Neuron Groups Window")
-        scrollbar4 = Scrollbar(self.window4)
-        scrollbar4.pack(side=tk.RIGHT, fill=tk.Y)
-        self.groups_list = Listbox(self.window4, yscrollcommand=scrollbar4.set)
-        self.groups_list.pack(side=tk.LEFT, fill=tk.BOTH)
-        self.groups_list.bind("<<ListboxSelect>>", self.show_group_details)
-        self.group_details = Text(self.window4, height=10, width=50)
-        self.group_details.pack()
+            # ── Extra tab: Neuron Groups ──
+            ng_tab = tk.Frame(nb, bg='#0b0b1e')
+            nb.add(ng_tab, text=' Neurons ')
+            ng_tab.columnconfigure(0, weight=1)
+            ng_tab.columnconfigure(1, weight=2)
+            ng_tab.rowconfigure(0, weight=1)
+            ng_left = tk.Frame(ng_tab, bg='#0b0b1e')
+            ng_left.grid(row=0, column=0, sticky='nsew', padx=(8, 4), pady=8)
+            tk.Label(ng_left, text='Neuron Groups', font=('Consolas', 12, 'bold'),
+                     fg='#66ccff', bg='#0b0b1e').pack(anchor='w')
+            ng_lf = tk.Frame(ng_left, bg='#0b0b1e')
+            ng_lf.pack(fill=tk.BOTH, expand=True)
+            sb4 = Scrollbar(ng_lf)
+            self.groups_list = Listbox(ng_lf, bg='#111133', fg='#ffaa44',
+                                       font=('Consolas', 10), yscrollcommand=sb4.set,
+                                       selectbackground='#333366', relief='flat')
+            sb4.config(command=self.groups_list.yview)
+            self.groups_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            sb4.pack(side=tk.RIGHT, fill=tk.Y)
+            self.groups_list.bind("<<ListboxSelect>>", self.show_group_details)
+            ng_right = tk.Frame(ng_tab, bg='#0b0b1e')
+            ng_right.grid(row=0, column=1, sticky='nsew', padx=(4, 8), pady=8)
+            tk.Label(ng_right, text='Group Details', font=('Consolas', 12, 'bold'),
+                     fg='#66ccff', bg='#0b0b1e').pack(anchor='w')
+            self.group_details = Text(ng_right, bg='#111133', fg='#c8d0e0',
+                                      font=('Consolas', 10), relief='flat', wrap='word')
+            self.group_details.pack(fill=tk.BOTH, expand=True)
 
-        # OS Screen Window
-        self.screen_window = tk.Toplevel(self.root)
-        self.screen_window.title("Screen Capture Window")
-        self.screen_label = Label(self.screen_window)
-        self.screen_label.pack()
+            # ── Extra tab: Screen Capture ──
+            scr_tab = tk.Frame(nb, bg='#0b0b1e')
+            nb.add(scr_tab, text=' Screen ')
+            tk.Label(scr_tab, text='Live Screen Capture', font=('Consolas', 12, 'bold'),
+                     fg='#66ccff', bg='#0b0b1e').pack(anchor='w', padx=8, pady=(8, 4))
+            self.screen_label = Label(scr_tab, bg='#0b0b1e')
+            self.screen_label.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-        # Consciousness Dashboard Window
-        self.consciousness_window = tk.Toplevel(self.root)
-        self.consciousness_window.title("Consciousness Dashboard - C = S + E + R*A  (K, Phi used in Omega)")
-        self.consciousness_window.geometry("520x500")
-        self.consciousness_window.configure(bg='#0a0a1a')
-        dash_frame = Frame(self.consciousness_window, bg='#0a0a1a')
-        dash_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-        Label(dash_frame, text="C = S + E + R*A  (K, Phi used in Omega)", font=("Consolas", 14, "bold"),
-              fg='#66ccff', bg='#0a0a1a').pack(anchor='w')
-        self.c_formula_label = Label(dash_frame, text="C = ...", font=("Consolas", 18, "bold"),
-                                     fg='#00ff88', bg='#0a0a1a')
-        self.c_formula_label.pack(anchor='w', pady=(4, 0))
-        self.c_components_text = Text(dash_frame, height=8, width=60, bg='#111133',
-                                      fg='#ccddff', font=("Consolas", 10), relief='flat')
-        self.c_components_text.pack(fill=tk.X, pady=(6, 0))
-        Label(dash_frame, text="Omega Convergence", font=("Consolas", 12, "bold"),
-              fg='#bb88ff', bg='#0a0a1a').pack(anchor='w', pady=(10, 0))
-        self.omega_text = Text(dash_frame, height=6, width=60, bg='#111133',
-                               fg='#ddbbff', font=("Consolas", 10), relief='flat')
-        self.omega_text.pack(fill=tk.X, pady=(4, 0))
-        Label(dash_frame, text="Entity Population", font=("Consolas", 12, "bold"),
-              fg='#ffcc66', bg='#0a0a1a').pack(anchor='w', pady=(10, 0))
-        self.entity_list_text = Text(dash_frame, height=10, width=60, bg='#111133',
-                                     fg='#ffddaa', font=("Consolas", 9), relief='flat')
-        self.entity_list_text.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+            # ── Extra tab: Charts (matplotlib) ──
+            if HAS_MATPLOTLIB:
+                chart_tab = tk.Frame(nb, bg='#0b0b1e')
+                nb.add(chart_tab, text=' Charts ')
+                self.fig, (self.ax_loss, self.ax_phi) = plt.subplots(
+                    2, 1, figsize=(6, 4), tight_layout=True)
+                self.ax_loss.set_title("Loss History", fontsize=10)
+                self.ax_phi.set_title("Phi History", fontsize=10)
+                self.chart_canvas = FigureCanvasTkAgg(self.fig, master=chart_tab)
+                self.chart_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+                self._schedule_chart_update()
+
+        except Exception as e:
+            print(f"  [ERR] dashboard_launch: {e}")
+            import traceback; traceback.print_exc()
+            self.monitoring_dashboard = None
+            # Fallback: create minimal widgets so update methods don't crash
+            self.symbols_list = Listbox(self.root)
+            self.symbol_details = Text(self.root)
+            self.memory_list = Listbox(self.root)
+            self.memory_details = Text(self.root)
+            self.groups_list = Listbox(self.root)
+            self.group_details = Text(self.root)
+            self.screen_label = Label(self.root)
 
         self.update_gui_lists()
         self.root.after(5000, self.update_gui_lists)
         self.root.after(2000, self.update_consciousness_dashboard)
 
+    def _gui_add_neuron(self):
+        """GUI wrapper: show dialog to pick entity, then add neuron group."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add Neuron Group")
+        dialog.geometry("440x480")
+        dialog.configure(bg='#0b0b1e')
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Add Neuron Group", font=('Consolas', 14, 'bold'),
+                 fg='#66ccff', bg='#0b0b1e').pack(pady=(10, 5))
+
+        # Target selection
+        tk.Label(dialog, text="Target Entity:", font=('Consolas', 10),
+                 fg='#c8d0e0', bg='#0b0b1e').pack(anchor='w', padx=15)
+        entity_ids = ['SELF (simulator)']
+        try:
+            acquired = self.lock.acquire(timeout=0.1)
+            if acquired:
+                try:
+                    entity_ids += sorted(self.omega.entities.keys())
+                finally:
+                    self.lock.release()
+        except Exception:
+            pass
+        target_list = tk.Listbox(dialog, bg='#111133', fg='#ffaa44', font=('Consolas', 10),
+                                 height=6, selectbackground='#333366', relief='flat')
+        for eid in entity_ids:
+            target_list.insert(tk.END, eid)
+        target_list.selection_set(0)
+        target_list.pack(fill=tk.X, padx=15, pady=4)
+
+        # Category name
+        row1 = tk.Frame(dialog, bg='#0b0b1e')
+        row1.pack(fill=tk.X, padx=15, pady=2)
+        tk.Label(row1, text="Category:", font=('Consolas', 10),
+                 fg='#c8d0e0', bg='#0b0b1e', width=10, anchor='w').pack(side=tk.LEFT)
+        cat_entry = tk.Entry(row1, bg='#1a1a3a', fg='#c8d0e0', font=('Consolas', 10),
+                             insertbackground='#c8d0e0')
+        cat_entry.insert(0, 'perception')
+        cat_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Neuron types
+        row2 = tk.Frame(dialog, bg='#0b0b1e')
+        row2.pack(fill=tk.X, padx=15, pady=2)
+        tk.Label(row2, text="Types:", font=('Consolas', 10),
+                 fg='#c8d0e0', bg='#0b0b1e', width=10, anchor='w').pack(side=tk.LEFT)
+        types_entry = tk.Entry(row2, bg='#1a1a3a', fg='#c8d0e0', font=('Consolas', 10),
+                               insertbackground='#c8d0e0')
+        types_entry.insert(0, 'standard, memory, pattern')
+        types_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Count (number of each neuron type to add)
+        row3 = tk.Frame(dialog, bg='#0b0b1e')
+        row3.pack(fill=tk.X, padx=15, pady=2)
+        tk.Label(row3, text="Count:", font=('Consolas', 10),
+                 fg='#c8d0e0', bg='#0b0b1e', width=10, anchor='w').pack(side=tk.LEFT)
+        count_entry = tk.Entry(row3, bg='#1a1a3a', fg='#c8d0e0', font=('Consolas', 10),
+                               insertbackground='#c8d0e0', width=6)
+        count_entry.insert(0, '1')
+        count_entry.pack(side=tk.LEFT)
+        tk.Label(row3, text="  (# of each type to add)", font=('Consolas', 9),
+                 fg='#888888', bg='#0b0b1e').pack(side=tk.LEFT)
+
+        # Auto-grow checkbox
+        auto_var = tk.BooleanVar(value=False)
+        auto_check = tk.Checkbutton(dialog, text="Auto-grow: add 1 neuron per evolution step",
+                                    variable=auto_var, bg='#0b0b1e', fg='#c8d0e0',
+                                    selectcolor='#1a1a3a', font=('Consolas', 9),
+                                    activebackground='#0b0b1e', activeforeground='#c8d0e0')
+        auto_check.pack(anchor='w', padx=15, pady=2)
+
+        status_label = tk.Label(dialog, text="", font=('Consolas', 9),
+                                fg='#66ff88', bg='#0b0b1e', wraplength=400)
+        status_label.pack(pady=4)
+
+        def _do_add():
+            sel = target_list.curselection()
+            if not sel:
+                status_label.config(text="Select a target entity", fg='#ff6666')
+                return
+            target = target_list.get(sel[0])
+            category = cat_entry.get().strip() or 'general'
+            raw_types = [t.strip() for t in types_entry.get().split(',') if t.strip()]
+            valid_types = [t for t in raw_types if t in ('standard', 'memory', 'logic', 'pattern', 'upkeep')]
+            if not valid_types:
+                valid_types = ['standard', 'memory']
+            try:
+                count = max(1, int(count_entry.get().strip()))
+            except ValueError:
+                count = 1
+            status_label.config(text=f"Adding {count}x {valid_types} to {target}...", fg='#ffaa44')
+            dialog.update()
+            enable_auto = auto_var.get()
+
+            def _worker():
+                try:
+                    if target == 'SELF (simulator)':
+                        self.add_neuron(force=True)
+                        msg = f"Added neurons to SELF simulator (category: auto)"
+                    else:
+                        acquired = self.lock.acquire(timeout=2.0)
+                        if not acquired:
+                            self.root.after(0, lambda: status_label.config(
+                                text="Lock busy, try again", fg='#ff6666'))
+                            return
+                        try:
+                            ent = self.omega.entities.get(target)
+                            if ent is None:
+                                self.root.after(0, lambda: status_label.config(
+                                    text=f"Entity {target} not found", fg='#ff6666'))
+                                return
+                            before = len(ent.neuron_groups[category].neurons) if category in ent.neuron_groups else 0
+                            grp = ent.add_neuron_group(category, valid_types, self.hidden_size, count=count)
+                            after = len(grp.neurons)
+                            n_params = sum(p.numel() for p in grp.parameters())
+                            msg = (f"{target}/{category}: {before}->{after} neurons "
+                                   f"(+{count}x{len(valid_types)}) {n_params:,} params")
+                            if enable_auto:
+                                if not hasattr(ent, '_auto_grow_categories'):
+                                    ent._auto_grow_categories = {}
+                                ent._auto_grow_categories[category] = valid_types
+                                msg += " [AUTO-GROW ON]"
+                        finally:
+                            self.lock.release()
+                    self.root.after(0, lambda: [
+                        self.output_text.insert(tk.END, msg + "\n"),
+                        status_label.config(text=msg, fg='#66ff88'),
+                    ])
+                except Exception as e:
+                    self.root.after(0, lambda: [
+                        self.output_text.insert(tk.END, f"Add neuron error: {e}\n"),
+                        status_label.config(text=f"Error: {e}", fg='#ff6666'),
+                    ])
+            threading.Thread(target=_worker, daemon=True).start()
+
+        btn_frame = tk.Frame(dialog, bg='#0b0b1e')
+        btn_frame.pack(pady=8)
+        tk.Button(btn_frame, text="Add Neurons", command=_do_add,
+                  bg='#224488', fg='white', font=('Consolas', 10, 'bold'),
+                  relief='flat', padx=20, pady=4,
+                  activebackground='#3366aa').pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Close", command=dialog.destroy,
+                  bg='#442222', fg='white', font=('Consolas', 10),
+                  relief='flat', padx=20, pady=4,
+                  activebackground='#663333').pack(side=tk.LEFT, padx=5)
+
+    def _gui_refine_paths(self):
+        """GUI wrapper: run refine_paths in background thread."""
+        def _worker():
+            try:
+                self.refine_paths()
+            except Exception as e:
+                self.root.after(0, lambda: self.output_text.insert(tk.END, f"Refine paths error: {e}\n"))
+        threading.Thread(target=_worker, daemon=True).start()
+
     def update_gui_lists(self):
         if not self.running:
             return
-        with self.lock:
-            self.symbols_list.delete(0, tk.END)
-            for name in self.symbols:
-                self.symbols_list.insert(tk.END, name)
-
-            self.memory_list.delete(0, tk.END)
-            for key in self.memory:
-                self.memory_list.insert(tk.END, key)
-
-            self.groups_list.delete(0, tk.END)
-            for category in self.neuron_groups:
-                self.groups_list.insert(tk.END, category)
-        self.root.after(5000, self.update_gui_lists)
+        def _worker():
+            acquired = self.lock.acquire(timeout=0.05)
+            if not acquired:
+                self.root.after(5000, self.update_gui_lists)
+                return
+            try:
+                sym_names = list(self.symbols.keys())[:200]
+                mem_keys = list(self.memory.keys())[:200]
+                grp_cats = list(self.neuron_groups.keys())
+            finally:
+                self.lock.release()
+            # Post UI updates back to main thread
+            def _update_ui():
+                try:
+                    self.symbols_list.delete(0, tk.END)
+                    for name in sym_names:
+                        self.symbols_list.insert(tk.END, name)
+                    self.memory_list.delete(0, tk.END)
+                    for key in mem_keys:
+                        self.memory_list.insert(tk.END, key)
+                    self.groups_list.delete(0, tk.END)
+                    for category in grp_cats:
+                        self.groups_list.insert(tk.END, category)
+                except Exception:
+                    pass
+                self.root.after(5000, self.update_gui_lists)
+            self.root.after(0, _update_ui)
+        threading.Thread(target=_worker, daemon=True).start()
 
     def update_consciousness_dashboard(self):
-        """Refresh the consciousness dashboard with current C, Omega, and entity data."""
+        """Heartbeat tick — the MonitoringDashboard handles all data display."""
         if not self.running:
             return
-        try:
-            with self.lock:
-                state = self.self_entity.get_state_dict()
-                C = state['C']
-                self.c_formula_label.config(
-                    text=f"C = {C:.4f}  (life {state['lives']}, step {state['step']})")
-                self.c_components_text.delete(1.0, tk.END)
-                self.c_components_text.insert(tk.END,
-                    f"S (Self-Reflection)    = {state['S']:.6f}  (0.5 + 0.5*karma + 0.2*awareness)\n"
-                    f"E (External Mirror)    = {state['E']:.6f}  (0.3*mirrored + 0.2*stability + unobs)\n"
-                    f"R (Resolution)         = {state['R']:.6f}  (0.7*(1 - decoherence))\n"
-                    f"A (Adaptation)         = {state['A']:.6f}  (0.4*prop_lives + 0.6*forgiveness)\n"
-                    f"K (used in Omega)      = {state['K']:.6f}  (0.2*sum_past_karma)\n"
-                    f"Phi (used in Omega)    = {state['Phi']:.6f}  (log(1 + entities*coherence))\n"
-                    f"---\n"
-                    f"karma={state['karma']:.4f}  coherence={state['coherence']:.4f}  "
-                    f"decoherence={state['decoherence']:.4f}  awareness={state['awareness']:.4f}\n"
-                    f"similarity={state.get('similarity', 0):.4f}  intent={state.get('intent', 0):.4f}")
-                omega_status = self.omega.get_status()
-                self.omega_text.delete(1.0, tk.END)
-                self.omega_text.insert(tk.END,
-                    f"Omega = {omega_status['omega']:.8f}\n"
-                    f"Convergence Rate = {omega_status['convergence_rate']:.10f}\n"
-                    f"Entities = {omega_status['num_entities']}  |  "
-                    f"Total Contributions = {omega_status.get('total_contributions', 0)}\n"
-                    f"Avg C = {omega_status.get('avg_C', 0):.4f}  |  "
-                    f"Max C = {omega_status.get('max_C', 0):.4f}  |  "
-                    f"Min C = {omega_status.get('min_C', 0):.4f}\n"
-                    f"Avg Karma = {omega_status.get('avg_karma', 0):.4f}  |  "
-                    f"Avg Coherence = {omega_status.get('avg_coherence', 0):.4f}")
-                self.entity_list_text.delete(1.0, tk.END)
-                entities_sorted = sorted(self.omega.entities.values(),
-                                         key=lambda e: e.compute_C(), reverse=True)
-                for ent in entities_sorted[:30]:
-                    tag = ">>> " if ent.entity_id == 'self_0' else "    "
-                    eC = ent.compute_C()
-                    self.entity_list_text.insert(tk.END,
-                        f"{tag}{ent.entity_id[:18]:18s} C={eC:.3f} k={ent.karma:.2f} "
-                        f"coh={ent.coherence:.2f} u={ent.universe_id} L={ent.life_number}\n")
-        except Exception as e:
-            print(f"Dashboard update error: {e}")
-        self.root.after(2000, self.update_consciousness_dashboard)
+        self._gui_last_heartbeat = time.time()
+        self.root.after(3000, self.update_consciousness_dashboard)
 
     def show_symbol_details(self, event):
         selection = self.symbols_list.curselection()
         if selection:
             name = self.symbols_list.get(selection[0])
-            with self.lock:
+            acquired = self.lock.acquire(timeout=0.05)
+            if not acquired:
+                return
+            try:
                 sym = self.symbols.get(name)
                 if sym:
                     details = f"Name: {sym.name}\nValue: {sym.value}\nAssociations: {sym.associations}"
                     self.symbol_details.delete(1.0, tk.END)
                     self.symbol_details.insert(tk.END, details)
+            finally:
+                self.lock.release()
 
     def show_memory_details(self, event):
         selection = self.memory_list.curselection()
         if selection:
             key = self.memory_list.get(selection[0])
-            with self.lock:
+            acquired = self.lock.acquire(timeout=0.05)
+            if not acquired:
+                return
+            try:
                 data = self.memory.get(key)
                 if data:
                     details = f"Key: {key}\nData: {data}"
                     self.memory_details.delete(1.0, tk.END)
                     self.memory_details.insert(tk.END, details)
+            finally:
+                self.lock.release()
 
     def show_group_details(self, event):
         selection = self.groups_list.curselection()
         if selection:
             category = self.groups_list.get(selection[0])
-            with self.lock:
+            acquired = self.lock.acquire(timeout=0.05)
+            if not acquired:
+                return
+            try:
                 group = self.neuron_groups.get(category)
                 if group:
                     types = [type(n).__name__ for n in group.neurons]
                     usage = self.group_usage.get(hash(category), {'count': 0})
-                    details = f"Category: {category}\nTypes: {types}\nUsage Count: {usage['count']}\nAvg Phi: {np.mean(group.usage_phi) if group.usage_phi else 0}"
+                    avg_phi = np.mean(group.usage_phi) if group.usage_phi else 0
+                    perf = group.avg_performance() if hasattr(group, 'avg_performance') else 0
+                    age = (datetime.now() - group.creation_time).total_seconds() if hasattr(group, 'creation_time') else 0
+
+                    lines = []
+                    lines.append(f"{'='*60}")
+                    lines.append(f"  NEURON GROUP: {category}")
+                    lines.append(f"{'='*60}")
+                    lines.append(f"  Neuron Count   : {len(group.neurons)}")
+                    lines.append(f"  Types          : {types}")
+                    lines.append(f"  Usage Count    : {usage['count']}")
+                    lines.append(f"  Avg Phi        : {avg_phi:.6f}")
+                    lines.append(f"  Avg Performance: {perf:.6f}")
+                    lines.append(f"  Age            : {age:.0f}s")
+                    lines.append(f"  Phi Samples    : {len(group.usage_phi)}")
+                    lines.append("")
+
+                    # ── Network Topology Path ──
+                    lines.append(f"{'─'*60}")
+                    lines.append("  NEURAL PATH (data flow)")
+                    lines.append(f"{'─'*60}")
+                    path_parts = ["INPUT"]
+                    for i, neuron in enumerate(group.neurons):
+                        ntype = type(neuron).__name__
+                        path_parts.append(f"{ntype}")
+                    path_parts.append("OUTPUT (+residual*0.1)")
+                    lines.append("  " + "  →  ".join(path_parts))
+                    lines.append("")
+
+                    # ── Per-Neuron Details ──
+                    total_params = 0
+                    for i, neuron in enumerate(group.neurons):
+                        ntype = type(neuron).__name__
+                        n_params = sum(p.numel() for p in neuron.parameters())
+                        total_params += n_params
+                        lines.append(f"{'─'*60}")
+                        lines.append(f"  NEURON [{i}] : {ntype}  ({n_params:,} params)")
+                        lines.append(f"{'─'*60}")
+
+                        # Show all layers and their weight stats
+                        for name, module in neuron.named_modules():
+                            if name == '':
+                                continue
+                            mod_type = type(module).__name__
+                            mod_params = sum(p.numel() for p in module.parameters(recurse=False))
+                            if mod_params > 0:
+                                lines.append(f"    Layer: {name} ({mod_type}, {mod_params:,} params)")
+
+                            # Weight details for linear layers
+                            if hasattr(module, 'weight') and hasattr(module.weight, 'shape'):
+                                w = module.weight.data
+                                lines.append(f"      Weight shape : {list(w.shape)}")
+                                lines.append(f"      Weight stats : mean={w.mean():.6f}  std={w.std():.6f}")
+                                lines.append(f"                     min={w.min():.6f}  max={w.max():.6f}")
+                                sparsity = (w.abs() < 1e-6).float().mean().item()
+                                lines.append(f"      Sparsity     : {sparsity*100:.1f}% zeros")
+                                if hasattr(module, 'bias') and module.bias is not None:
+                                    b = module.bias.data
+                                    lines.append(f"      Bias shape   : {list(b.shape)}")
+                                    lines.append(f"      Bias stats   : mean={b.mean():.6f}  std={b.std():.6f}")
+
+                            # LSTM/GRU cell details
+                            if hasattr(module, 'weight_ih'):
+                                wih = module.weight_ih.data
+                                whh = module.weight_hh.data
+                                lines.append(f"      W_ih shape   : {list(wih.shape)}  (input→hidden)")
+                                lines.append(f"      W_hh shape   : {list(whh.shape)}  (hidden→hidden)")
+                                lines.append(f"      W_ih stats   : mean={wih.mean():.6f}  std={wih.std():.6f}")
+                                lines.append(f"      W_hh stats   : mean={whh.mean():.6f}  std={whh.std():.6f}")
+
+                        # Type-specific info
+                        if ntype == 'MemoryNeuron' and hasattr(neuron, 'state'):
+                            h, c = neuron.state
+                            lines.append(f"    Hidden state   : norm={h.norm():.4f}")
+                            lines.append(f"    Cell state     : norm={c.norm():.4f}")
+                        elif ntype == 'PatternNeuron' and hasattr(neuron, 'graph'):
+                            g = neuron.graph
+                            lines.append(f"    Graph nodes    : {g.number_of_nodes()}")
+                            lines.append(f"    Graph edges    : {g.number_of_edges()}")
+                            lines.append(f"    Avg clustering : {nx.average_clustering(g):.4f}")
+                        elif ntype == 'UpkeepNeuron' and hasattr(neuron, 'iterations'):
+                            lines.append(f"    GRU iterations : {neuron.iterations}")
+                        elif ntype == 'LogicNeuron' and hasattr(neuron, 'num_logic_dims'):
+                            lines.append(f"    Logic dims     : {neuron.num_logic_dims}")
+                            lines.append(f"    Symbolic vars  : x0..x{neuron.num_logic_dims-1}")
+                        elif ntype == 'StandardNeuron':
+                            lines.append(f"    Residual skip  : {getattr(neuron, 'residual', False)}")
+                        lines.append("")
+
+                    # ── Summary ──
+                    lines.append(f"{'='*60}")
+                    lines.append(f"  TOTAL PARAMETERS: {total_params:,}")
+                    if group.performance_history:
+                        recent = list(group.performance_history)[-10:]
+                        lines.append(f"  Recent perf (last {len(recent)}): {[round(p, 4) for p in recent]}")
+                    lines.append(f"{'='*60}")
+
                     self.group_details.delete(1.0, tk.END)
-                    self.group_details.insert(tk.END, details)
+                    self.group_details.insert(tk.END, "\n".join(lines))
+            finally:
+                self.lock.release()
 
     def load_image(self):
         file_path = filedialog.askopenfilename()
@@ -10561,48 +13203,87 @@ class ConsciousnessSimulator(nn.Module):
     def analyze_input(self):
         text = self.text_input.get()
         url = self.url_input.get()
-        if url and "youtube" in url.lower():
-            analysis, score = self.analyze_youtube(url)
-            self.output_text.insert(tk.END, f"YouTube Analysis: {analysis}\nScore: {score}\n")
-            self.refine_data(analysis, datetime.now().isoformat(), verify=True)
-        else:
-            tokens = self.simple_tokenizer(text)
-            phi = self.process_input(tokens)
-            output = self.execute_task(text)
-            self.output_text.insert(tk.END, f"Analysis: {output}\nPhi: {phi}\n")
+        self.output_text.insert(tk.END, "Analyzing...\n")
+        def _analyze_worker():
+            try:
+                if url and "youtube" in url.lower():
+                    analysis, score = self.analyze_youtube(url)
+                    self.root.after(0, lambda: self.output_text.insert(
+                        tk.END, f"YouTube Analysis: {analysis}\nScore: {score}\n"))
+                    self.refine_data(analysis, datetime.now().isoformat(), verify=True)
+                else:
+                    tokens = self.simple_tokenizer(text)
+                    phi = self.process_input(tokens)
+                    output = self.execute_task(text)
+                    self.root.after(0, lambda: self.output_text.insert(
+                        tk.END, f"Analysis: {output}\nPhi: {phi}\n"))
+            except Exception as e:
+                self.root.after(0, lambda: self.output_text.insert(
+                    tk.END, f"Analysis error: {e}\n"))
+        threading.Thread(target=_analyze_worker, daemon=True).start()
 
     def evolve_model(self):
         self.output_text.insert(tk.END, "Evolving model...\n")
-        with self.lock:
-            for sym in self.symbols.values():
-                sym.evolve(random.random())
+        def _evolve_worker():
+            acquired = self.lock.acquire(timeout=2.0)
+            if not acquired:
+                self.root.after(0, lambda: self.output_text.insert(tk.END, "Evolve skipped (lock busy)\n"))
+                return
+            try:
+                for sym in self.symbols.values():
+                    sym.evolve(random.random())
+            finally:
+                self.lock.release()
+            self.root.after(0, lambda: self.output_text.insert(tk.END, "Model evolved.\n"))
+        threading.Thread(target=_evolve_worker, daemon=True).start()
 
     def run_pattern_analysis(self):
         text = self.text_input.get()
-        score, components = self.pattern_analysis(text)
-        self.output_text.insert(tk.END, f"Pattern Score: {score}\nConnected Components: {components}\n")
+        self.output_text.insert(tk.END, "Running pattern analysis...\n")
+        def _worker():
+            try:
+                score, components = self.pattern_analysis(text)
+                self.root.after(0, lambda: self.output_text.insert(
+                    tk.END, f"Pattern Score: {score}\nConnected Components: {components}\n"))
+            except Exception as e:
+                self.root.after(0, lambda: self.output_text.insert(tk.END, f"Pattern error: {e}\n"))
+        threading.Thread(target=_worker, daemon=True).start()
 
     def toggle_full_connect(self):
         text = self.text_input.get()
-        tokens = self.simple_tokenizer(text)
-        if self.full_connect_active:
-            self.full_connect_mode(tokens, enable=False)
-            self.output_text.insert(tk.END, "Exited full connect mode\n")
-        else:
-            phi = self.full_connect_mode(tokens, enable=True)
-            self.output_text.insert(tk.END, f"Entered full connect mode, Phi: {phi}\n")
+        self.output_text.insert(tk.END, "Toggling full connect...\n")
+        def _worker():
+            try:
+                tokens = self.simple_tokenizer(text)
+                if self.full_connect_active:
+                    self.full_connect_mode(tokens, enable=False)
+                    self.root.after(0, lambda: self.output_text.insert(tk.END, "Exited full connect mode\n"))
+                else:
+                    phi = self.full_connect_mode(tokens, enable=True)
+                    self.root.after(0, lambda: self.output_text.insert(
+                        tk.END, f"Entered full connect mode, Phi: {phi}\n"))
+            except Exception as e:
+                self.root.after(0, lambda: self.output_text.insert(tk.END, f"Full connect error: {e}\n"))
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _gui_generate_text(self):
         """GUI callback for Generate Text button."""
+        if getattr(self, '_generating', False):
+            return
+        self._generating = True
         prompt = self.text_input.get()
         if not prompt or prompt == "Enter text...":
             prompt = "consciousness is"
         self.output_text.insert(tk.END, f"Generating from: '{prompt}'...\n")
-        try:
-            result = self.generate_text(prompt, speak=CONFIG.get("voice_enabled", False))
-            self.output_text.insert(tk.END, f"Generated: {result}\n")
-        except Exception as e:
-            self.output_text.insert(tk.END, f"Generation error: {e}\n")
+        def _gen_worker():
+            try:
+                result = self.generate_text(prompt, speak=CONFIG.get("voice_enabled", False))
+                self.root.after(0, lambda: self.output_text.insert(tk.END, f"Generated: {result}\n"))
+            except Exception as e:
+                self.root.after(0, lambda: self.output_text.insert(tk.END, f"Generation error: {e}\n"))
+            finally:
+                self._generating = False
+        threading.Thread(target=_gen_worker, daemon=True).start()
 
     def _schedule_chart_update(self):
         """Schedule periodic matplotlib chart refresh."""
@@ -10653,7 +13334,7 @@ class ConsciousnessSimulator(nn.Module):
         crop_path = os.path.join(self.screenshot_dir, f"crop_{safe_ts}.png")
         cropped.save(crop_path)
         ocr_text = self.ocr_screenshot(cropped)
-        self.refine_data({"screen_crop": crop_path, "ocr": ocr_text}, datetime.now().isoformat(), verify=True)
+        self.refine_data({"screen_crop": crop_path, "ocr": ocr_text}, datetime.now().isoformat(), verify=False)
         self.output_text.insert(tk.END, "Screen captured, cropped, OCR'd, and displayed.\n")
 
     def continuous_screen_capture(self):
@@ -10668,9 +13349,15 @@ class ConsciousnessSimulator(nn.Module):
                     continue
                 img = raw_img.resize((400, 300))
                 consecutive_errors = 0
-                photo = ImageTk.PhotoImage(img)
-                self.screen_label.config(image=photo)
-                self.screen_label.image = photo
+                # Schedule Tkinter widget update on the main thread (thread-safe)
+                def _update_screen_label(im=img):
+                    try:
+                        photo = ImageTk.PhotoImage(im)
+                        self.screen_label.config(image=photo)
+                        self.screen_label.image = photo
+                    except Exception:
+                        pass
+                self.root.after_idle(_update_screen_label)
                 capture_count += 1
                 if capture_count % 6 == 0:
                     regions = [
@@ -10689,8 +13376,8 @@ class ConsciousnessSimulator(nn.Module):
                         for old_f in oldest:
                             try:
                                 os.remove(os.path.join(self.screenshot_dir, old_f))
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                print(f"  [ERR] screenshot_cleanup: {e}")
                     cropped.save(crop_path)
                     ocr_text = self.ocr_screenshot(cropped)
                     if len(ocr_text.strip()) > 20:
@@ -10700,9 +13387,12 @@ class ConsciousnessSimulator(nn.Module):
             time.sleep(5)
 
     def _os_control_allowed(self):
-        """Hard safety gate: OS control requires BOTH the config flag AND
-        the environment variable CS_OS_CONTROL_ENABLED=1. This prevents
-        the simulator from enabling OS control programmatically."""
+        """Hard safety gate: OS control requires Windows platform, the config
+        flag, AND the environment variable CS_OS_CONTROL_ENABLED=1. This
+        prevents the simulator from enabling OS control programmatically
+        and guards against ctypes.windll crashes on non-Windows."""
+        if sys.platform != 'win32':
+            return False
         if not CONFIG.get('os_control_enabled', False):
             return False
         if os.environ.get('CS_OS_CONTROL_ENABLED', '0') != '1':
@@ -10796,6 +13486,21 @@ class ConsciousnessSimulator(nn.Module):
             time.sleep(0.02)
             ctypes.windll.user32.mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, 0)
 
+    def _gui_watchdog(self):
+        """Background thread that monitors the GUI heartbeat.
+        If the main loop stops updating the heartbeat for too long,
+        log a warning (helps diagnose GUI freezes)."""
+        # Grace period: don't warn during startup init
+        time.sleep(120)
+        while self.running:
+            time.sleep(15)
+            try:
+                elapsed = time.time() - self._gui_last_heartbeat
+                if elapsed > 60:
+                    print(f"  [WATCHDOG] GUI heartbeat stale ({elapsed:.0f}s) — possible freeze")
+            except Exception:
+                pass
+
     def run(self):
         print(f"Model params: {self.parameters_count():,}")
         self.root.mainloop()
@@ -10804,15 +13509,16 @@ class ConsciousnessSimulator(nn.Module):
             try:
                 self._pygame_process.terminate()
                 self._pygame_process.wait(timeout=5)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  [ERR] pygame_terminate: {e}")
         if os.path.exists(self._world_state_file):
             try:
                 os.remove(self._world_state_file)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"  [ERR] world_state_remove: {e}")
         self.memory.close()
 
-# Create and run
-consciousness = ConsciousnessSimulator()
-consciousness.run()
+if __name__ == '__main__':
+    # Create and run
+    consciousness = ConsciousnessSimulator()
+    consciousness.run()
