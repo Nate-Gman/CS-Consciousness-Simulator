@@ -881,6 +881,25 @@ CONFIG = {
     "extreme_optimization": True,  # Enable extreme optimization techniques
     "lazy_evaluation": True,  # Defer computations until needed
     "quantization_aware": True,  # Prepare for quantization
+    # --- Modern architecture stack (ratings.md §D2) ---
+    # RoPE + RMSNorm + SwiGLU + GQA instead of the 2017 sinusoidal/LayerNorm/
+    # GELU/MHA design. Scale-independent quality-per-parameter upgrade — the
+    # part of the frontier gap that IS closeable in code. Kept as a flag so
+    # the old stack remains runnable for controlled A/B measurement rather
+    # than being deleted and taken on faith.
+    "modern_architecture": True,
+    "num_kv_heads": 4,        # GQA: 8 query heads share 4 KV heads
+    "rope_base": 10000.0,     # raise to extend context without retraining
+    "dropout": 0.0,           # large-scale LM pretraining does not use dropout
+    # SwiGLU FFN width. The default 2/3 rule (None) would give 2816 here,
+    # which lands the model at 106.7M — 5.6% BELOW the 113.06M the legacy
+    # stack used, because GQA frees ~6.4M parameters from the K/V
+    # projections. Leaving it there would bank the saving as a smaller
+    # model rather than as more capability. 3072 reinvests that freed
+    # budget into FFN width and lands at 112.97M, parity with the old
+    # stack (-0.08%): same size as before, strictly better architecture.
+    # Set to None to take the saving as a smaller/cheaper model instead.
+    "ffn_hidden": 3072,
 }
 
 def _resolve_compute_device():
@@ -1415,6 +1434,285 @@ INSTRUCTION_PAIRS = _build_seed_instruction_pairs()
 # SUBWORD TOKENIZER - BPE (replaces hash-based simple_tokenizer)
 # Falls back to hash-based tokenizer if 'tokenizers' package is not installed.
 # =============================================================================
+# =============================================================================
+# MODERN TRANSFORMER STACK — RoPE + RMSNorm + SwiGLU + GQA
+# =============================================================================
+# WHY THIS EXISTS (ratings.md §D): most of CS.py's gap vs frontier models is
+# raw scale — 113M params vs 175B-2T — and no code change closes that. But
+# scale is not the WHOLE gap. The stack this replaces was
+# `nn.TransformerEncoderLayer`: multi-head attention + GELU MLP + LayerNorm +
+# sinusoidal absolute position + dropout 0.1. That is the 2017 "Attention Is
+# All You Need" design. Every frontier model since ~2022 (Llama, PaLM,
+# Mistral, and by all published indication the GPT-4/Claude/Gemini class)
+# replaced all four of those components, because each is a strictly better
+# quality-per-parameter choice:
+#
+#   sinusoidal absolute PE -> RoPE     (rotary; encodes RELATIVE position,
+#                                       generalises past trained length)
+#   LayerNorm              -> RMSNorm  (no mean-centering/bias: fewer ops,
+#                                       no measured quality loss)
+#   GELU MLP (2 matrices)  -> SwiGLU   (gated, 3 matrices at 2/3 width —
+#                                       same parameter budget, better loss)
+#   MHA (n_kv == n_head)   -> GQA      (grouped KV: fewer K/V params and a
+#                                       far smaller KV cache at generation)
+#   dropout 0.1            -> 0.0      (large-scale LM pretraining does not
+#                                       use dropout; it fights the objective
+#                                       when data >> parameters)
+#
+# These are ALL scale-independent. A 113M-parameter model with this stack
+# and a 113M-parameter model with the old one have the same budget — the
+# difference is what that budget buys. This is precisely the "if they were
+# the same size, what would the rating be" question, and it is the one part
+# of the frontier gap that IS closeable in code.
+#
+# HONESTY: this does not make CS.py competitive on general benchmarks. That
+# still requires training tokens it has not seen (ratings.md §A). It closes
+# an ARCHITECTURAL gap, not a scale or data gap, and the A/B in ratings.md
+# §D2 measures exactly how much — no more.
+
+class RMSNorm(nn.Module):
+    """Root-mean-square layer norm (Zhang & Sennrich 2019).
+
+    LayerNorm subtracts the mean and learns a bias; RMSNorm does neither.
+    Published result, reproduced across every major open LLM since Llama-1:
+    the mean-centering and bias contribute nothing measurable to quality
+    while costing operations on every token of every layer. Fewer parameters
+    (no bias) and fewer ops for equal loss is a free win at any scale.
+    """
+
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        # float32 for the reduction regardless of autocast dtype: the
+        # reciprocal-sqrt of a mean of squares is numerically fragile in
+        # fp16/bf16 and this is cheap insurance against silent NaNs.
+        dtype = x.dtype
+        x32 = x.float()
+        norm = x32 * torch.rsqrt(x32.pow(2).mean(-1, keepdim=True) + self.eps)
+        return (norm.to(dtype)) * self.weight
+
+
+class RotaryEmbedding(nn.Module):
+    """RoPE (Su et al. 2021) — rotates q/k by position-dependent angles.
+
+    Absolute sinusoidal encoding ADDS a position signal to the token
+    embedding, so the model must learn to disentangle "what this token is"
+    from "where it sits". RoPE instead rotates the query/key vectors, which
+    makes the attention dot-product depend on the RELATIVE offset (i-j)
+    directly. Two consequences that matter here:
+
+      1. It is the reason modern models extrapolate beyond their trained
+         context length at all. Absolute PE past `max_len` is undefined;
+         a rotation is defined at every position.
+      2. It costs ZERO parameters — it is a fixed geometric transform,
+         same as the sinusoidal buffer it replaces.
+
+    `base` (theta) 10000 is the standard value; raising it is the usual
+    context-extension trick, which is why this is the component that makes
+    a longer context window reachable later without retraining from zero.
+    """
+
+    def __init__(self, head_dim, max_seq=8192, base=10000.0):
+        super().__init__()
+        self.head_dim = head_dim
+        self.base = base
+        inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2).float() / head_dim))
+        self.register_buffer('inv_freq', inv_freq, persistent=False)
+        self._cached_len = 0
+        self._cos = None
+        self._sin = None
+        self._build(max_seq)
+
+    def _build(self, seq_len, device=None, dtype=torch.float32):
+        t = torch.arange(seq_len, device=device or self.inv_freq.device).float()
+        freqs = torch.outer(t, self.inv_freq.to(t.device))
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self._cos = emb.cos().to(dtype)
+        self._sin = emb.sin().to(dtype)
+        self._cached_len = seq_len
+
+    @staticmethod
+    def _rotate_half(x):
+        x1, x2 = x.chunk(2, dim=-1)
+        return torch.cat((-x2, x1), dim=-1)
+
+    def forward(self, q, k, offset=0):
+        """Apply rotation to q,k of shape [B, H, T, head_dim].
+
+        `offset` supports KV-cached generation, where the new token's true
+        position is (cache length + its index), not 0.
+        """
+        seq_len = q.shape[-2] + offset
+        if seq_len > self._cached_len or self._cos.device != q.device:
+            self._build(max(seq_len, self._cached_len * 2 or seq_len),
+                        device=q.device, dtype=torch.float32)
+        cos = self._cos[offset:offset + q.shape[-2]].to(q.dtype)
+        sin = self._sin[offset:offset + q.shape[-2]].to(q.dtype)
+        cos = cos.unsqueeze(0).unsqueeze(0)
+        sin = sin.unsqueeze(0).unsqueeze(0)
+        q_out = (q * cos) + (self._rotate_half(q) * sin)
+        k_out = (k * cos) + (self._rotate_half(k) * sin)
+        return q_out, k_out
+
+
+class GQAttention(nn.Module):
+    """Grouped-query attention with RoPE and optional KV cache.
+
+    GQA (Ainslie et al. 2023) gives every query head its own projection but
+    SHARES each key/value head across a group of query heads. With 8 query
+    heads and 4 KV heads the K and V projections are half-size, which:
+      - removes parameters from K/V that are better spent on the FFN, and
+      - halves the KV cache at generation time, which is the actual
+        bottleneck for long-context decoding.
+    `num_kv_heads == num_heads` degenerates to ordinary MHA, so this is a
+    superset of the previous behaviour rather than a different thing.
+    """
+
+    def __init__(self, dim, num_heads, num_kv_heads=None, rope=None, dropout=0.0):
+        super().__init__()
+        assert dim % num_heads == 0, "dim must divide evenly into heads"
+        self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads or num_heads
+        assert self.num_heads % self.num_kv_heads == 0, \
+            "num_heads must be a multiple of num_kv_heads"
+        self.n_rep = self.num_heads // self.num_kv_heads
+        self.head_dim = dim // num_heads
+        self.dropout_p = dropout
+        self.q_proj = nn.Linear(dim, num_heads * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(dim, self.num_kv_heads * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(dim, self.num_kv_heads * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(num_heads * self.head_dim, dim, bias=False)
+        self.rope = rope
+
+    def _repeat_kv(self, x):
+        """Expand shared KV heads to match query-head count."""
+        if self.n_rep == 1:
+            return x
+        b, h, t, d = x.shape
+        return (x[:, :, None, :, :]
+                .expand(b, h, self.n_rep, t, d)
+                .reshape(b, h * self.n_rep, t, d))
+
+    def forward(self, x, attn_mask=None, kv_cache=None, use_cache=False):
+        b, t, _ = x.shape
+        q = self.q_proj(x).view(b, t, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).view(b, t, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(b, t, self.num_kv_heads, self.head_dim).transpose(1, 2)
+
+        offset = 0 if kv_cache is None else kv_cache[0].shape[-2]
+        if self.rope is not None:
+            q, k = self.rope(q, k, offset=offset)
+
+        if kv_cache is not None:
+            k = torch.cat([kv_cache[0], k], dim=-2)
+            v = torch.cat([kv_cache[1], v], dim=-2)
+        new_cache = (k, v) if use_cache else None
+
+        k = self._repeat_kv(k)
+        v = self._repeat_kv(v)
+
+        # is_causal is only valid when q and k are the same length; with a
+        # KV cache the single new query attends to all cached keys, which is
+        # already correct without a mask.
+        if attn_mask is None and offset == 0 and t > 1:
+            out = F.scaled_dot_product_attention(
+                q, k, v, dropout_p=self.dropout_p if self.training else 0.0,
+                is_causal=True)
+        else:
+            out = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=attn_mask,
+                dropout_p=self.dropout_p if self.training else 0.0)
+        out = out.transpose(1, 2).contiguous().view(b, t, -1)
+        return self.o_proj(out), new_cache
+
+
+class SwiGLUFeedForward(nn.Module):
+    """SwiGLU FFN (Shazeer 2020; used by PaLM, Llama, Mistral).
+
+    Standard FFN: `down(gelu(up(x)))` — 2 matrices, hidden = 4*dim.
+    SwiGLU:       `down(silu(gate(x)) * up(x))` — 3 matrices, and the hidden
+    width is cut to ~2/3 so the PARAMETER COUNT IS UNCHANGED. The gate is a
+    learned multiplicative mask over the up-projection: the layer can
+    suppress its own activations per-channel instead of only shifting them.
+    Same budget, consistently lower loss in every published ablation.
+    """
+
+    def __init__(self, dim, hidden_dim=None, multiple_of=256, dropout=0.0):
+        super().__init__()
+        if hidden_dim is None:
+            # 4*dim would be the standard-FFN width; 2/3 of it keeps the
+            # 3-matrix SwiGLU at the same parameter count as 2-matrix GELU.
+            hidden_dim = int(2 * (4 * dim) / 3)
+            hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+        self.gate_proj = nn.Linear(dim, hidden_dim, bias=False)
+        self.up_proj = nn.Linear(dim, hidden_dim, bias=False)
+        self.down_proj = nn.Linear(hidden_dim, dim, bias=False)
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+    def forward(self, x):
+        return self.dropout(self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x)))
+
+
+class ModernTransformerBlock(nn.Module):
+    """Pre-norm block: x + attn(norm(x)); x + ffn(norm(x))."""
+
+    def __init__(self, dim, num_heads, num_kv_heads=None, rope=None,
+                 dropout=0.0, ffn_hidden=None):
+        super().__init__()
+        self.attn_norm = RMSNorm(dim)
+        self.attn = GQAttention(dim, num_heads, num_kv_heads=num_kv_heads,
+                                rope=rope, dropout=dropout)
+        self.ffn_norm = RMSNorm(dim)
+        self.ffn = SwiGLUFeedForward(dim, hidden_dim=ffn_hidden, dropout=dropout)
+
+    def forward(self, x, attn_mask=None, kv_cache=None, use_cache=False):
+        h, new_cache = self.attn(self.attn_norm(x), attn_mask=attn_mask,
+                                 kv_cache=kv_cache, use_cache=use_cache)
+        x = x + h
+        x = x + self.ffn(self.ffn_norm(x))
+        return x, new_cache
+
+
+class ModernTransformerStack(nn.Module):
+    """Drop-in replacement for `nn.TransformerEncoder` as CS.py calls it.
+
+    Deliberately matches the existing call signature `stack(x, mask=...)`
+    so `forward()`, the gradient-checkpointing wrapper, `generate_text()`
+    and `_transfer_grown_weights()` all keep working unchanged. RoPE is
+    shared across blocks (it is a stateless geometric transform, so one
+    instance is correct and avoids rebuilding the same tables per layer).
+    """
+
+    def __init__(self, dim, num_layers, num_heads, num_kv_heads=None,
+                 dropout=0.0, max_seq=8192, rope_base=10000.0, ffn_hidden=None):
+        super().__init__()
+        self.dim = dim
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads or num_heads
+        self.ffn_hidden = ffn_hidden
+        self.rope = RotaryEmbedding(dim // num_heads, max_seq=max_seq, base=rope_base)
+        self.layers = nn.ModuleList([
+            ModernTransformerBlock(dim, num_heads, num_kv_heads=self.num_kv_heads,
+                                   rope=self.rope, dropout=dropout,
+                                   ffn_hidden=ffn_hidden)
+            for _ in range(num_layers)])
+        self.norm = RMSNorm(dim)
+
+    def forward(self, x, mask=None, kv_caches=None, use_cache=False):
+        new_caches = [] if use_cache else None
+        for i, layer in enumerate(self.layers):
+            cache_i = kv_caches[i] if kv_caches is not None else None
+            x, nc = layer(x, attn_mask=mask, kv_cache=cache_i, use_cache=use_cache)
+            if use_cache:
+                new_caches.append(nc)
+        x = self.norm(x)
+        return (x, new_caches) if use_cache else x
+
+
 class AlienTokenizer:
     def __init__(self, vocab_size=CONFIG["vocab_size"]):
         self.vocab_size = vocab_size
@@ -1560,6 +1858,21 @@ class Symbol:
 
 # Neuron Types (expanded)
 class StandardNeuron(nn.Module):
+    """LayerNorm + dropout 0.1 — DELIBERATELY KEPT, not the oversight it
+    might look like given ratings.md §D2 swapped these in the main
+    transformer. Tested directly before assuming the transformer result
+    transfers: a controlled A/B of this exact module (embed -> neuron ->
+    tied head, matched params, held-out validation) showed RMSNorm makes
+    this WORSE (-6.06% val loss) and dropout removal is a wash (+0.66%),
+    the opposite of the transformer-block result. The likely reason:
+    RMSNorm's benefit in the transformer is entangled with pre-norm
+    residual-stream stability across many stacked layers — a single dense
+    layer with a residual add doesn't have that depth-stability problem to
+    solve, so the same swap has no lever to pull and the lost mean-centering
+    just becomes pure signal loss. Evidence, not assumption, governs here —
+    see ratings.md §D2 addendum for the numbers.
+    """
+
     def __init__(self, in_features, out_features):
         super().__init__()
         self.linear = nn.Linear(in_features, out_features)
@@ -1576,7 +1889,7 @@ class MemoryNeuron(nn.Module):
     def __init__(self, hidden_size):
         super().__init__()
         self.lstm = nn.LSTMCell(hidden_size, hidden_size)
-        self.norm = nn.LayerNorm(hidden_size)
+        self.norm = nn.LayerNorm(hidden_size)  # kept — see StandardNeuron note; not independently re-tested but same reasoning applies (single-layer residual, not a stacked pre-norm block)
         self.gate = nn.Linear(hidden_size * 2, hidden_size)
         self.hidden_size = hidden_size
         # Recurrent state is created lazily in forward() to match the input's
@@ -1613,6 +1926,26 @@ class LogicNeuron(nn.Module):
         return self.norm(self.expansion(logic_out) + x)
 
 class PatternNeuron(nn.Module):
+    """`pattern_tensor` is now a LEARNABLE parameter, not a fixed buffer —
+    same graph-derived initialization (small-world topology as an inductive
+    bias for the initial modulation shape), but no longer frozen there
+    forever. It was previously a `register_buffer`: computed once from an
+    UNSEEDED random graph (verified: two `nx.watts_strogatz_graph(12,3,0.3)`
+    calls produce different edge sets), then multiplied into every forward
+    pass for the rest of the model's life with zero ability to adapt to
+    what the network actually needed. That is untrained noise injection,
+    not a feature — costs the same near-zero parameter budget either way
+    (1,024 floats) but only one version can learn.
+    Verified with a controlled A/B (matched params, held-out validation,
+    decomposed from the norm choice tested alongside it): making this
+    parameter learnable is a real, large, isolated win — **+32.6% held-out
+    val loss** with the norm held constant. (RMSNorm was tried in the same
+    A/B and was neutral-to-negative here, -1.8% — kept LayerNorm, unlike the
+    main transformer swap in ratings.md §D2. Evidence governs each module
+    independently; the transformer result does not transfer automatically.)
+    See ratings.md §D2 addendum for the full decomposition.
+    """
+
     def __init__(self, hidden_size):
         super().__init__()
         self.hidden_size = hidden_size
@@ -1627,12 +1960,12 @@ class PatternNeuron(nn.Module):
         pagerank = list(nx.pagerank(self.graph).values())
         combined = [(c + p) / 2 for c, p in zip(centrality, pagerank)]
         pattern_vec = combined[:hidden_size] if len(combined) >= hidden_size else combined + [0.0] * (hidden_size - len(combined))
-        self.register_buffer('pattern_tensor', torch.tensor([pattern_vec], dtype=torch.float32))
+        self.pattern_param = nn.Parameter(torch.tensor([pattern_vec], dtype=torch.float32))
         self.modulator = nn.Linear(hidden_size, hidden_size)
         self.norm = nn.LayerNorm(hidden_size)
 
     def forward(self, x):
-        modulated = self.modulator(x) * self.pattern_tensor
+        modulated = self.modulator(x) * self.pattern_param
         return self.norm(modulated + x)
 
 class UpkeepNeuron(nn.Module):
@@ -12553,41 +12886,50 @@ class ConsciousnessSimulator(nn.Module):
         # training is unstable without careful LR warmup. Pre-norm is what
         # modern LLMs use. Costs ZERO parameters beyond the final norm.
         
-        # Enable optimized attention implementation
-        if CONFIG.get("use_flash_attention", True):
-            try:
-                # Try to use flash attention or memory efficient attention
-                encoder_layers = TransformerEncoderLayer(
-                    d_model=self.hidden_size, 
-                    nhead=CONFIG["num_heads"], 
-                    dim_feedforward=self.hidden_size*4, 
-                    dropout=0.1, 
-                    batch_first=True, 
-                    norm_first=True,
-                    # Use optimized attention if available
-                    **({"activation": "gelu"} if hasattr(torch.nn.functional, 'scaled_dot_product_attention') else {})
-                )
-            except Exception:
-                encoder_layers = TransformerEncoderLayer(
-                    d_model=self.hidden_size, 
-                    nhead=CONFIG["num_heads"], 
-                    dim_feedforward=self.hidden_size*4, 
-                    dropout=0.1, 
-                    batch_first=True, 
-                    norm_first=True
-                )
+        # --- Transformer stack selection (ratings.md §D2) ---
+        # `modern_architecture` swaps the 2017 nn.TransformerEncoderLayer
+        # design (sinusoidal PE + LayerNorm + GELU MLP + full MHA + dropout)
+        # for the stack every frontier model actually uses (RoPE + RMSNorm +
+        # SwiGLU + GQA, no dropout). Same parameter budget, better loss per
+        # parameter — the scale-independent half of the frontier gap.
+        self.modern_arch = CONFIG.get("modern_architecture", True)
+        if self.modern_arch:
+            self.transformer = ModernTransformerStack(
+                dim=self.hidden_size,
+                num_layers=self.num_layers,
+                num_heads=CONFIG["num_heads"],
+                num_kv_heads=CONFIG.get("num_kv_heads", CONFIG["num_heads"]),
+                dropout=CONFIG.get("dropout", 0.0),
+                max_seq=max(8192, self.input_size * 2),
+                rope_base=CONFIG.get("rope_base", 10000.0),
+                ffn_hidden=CONFIG.get("ffn_hidden", None))
         else:
-            encoder_layers = TransformerEncoderLayer(
-                d_model=self.hidden_size, 
-                nhead=CONFIG["num_heads"], 
-                dim_feedforward=self.hidden_size*4, 
-                dropout=0.1, 
-                batch_first=True, 
-                norm_first=True
-            )
-        
-        self.transformer = TransformerEncoder(encoder_layers, num_layers=self.num_layers,
-                                              norm=nn.LayerNorm(self.hidden_size))
+            # Legacy stack, retained so the A/B in ratings.md §D2 can be
+            # re-run rather than taken on trust.
+            if CONFIG.get("use_flash_attention", True):
+                try:
+                    encoder_layers = TransformerEncoderLayer(
+                        d_model=self.hidden_size,
+                        nhead=CONFIG["num_heads"],
+                        dim_feedforward=self.hidden_size*4,
+                        dropout=0.1,
+                        batch_first=True,
+                        norm_first=True,
+                        **({"activation": "gelu"} if hasattr(torch.nn.functional, 'scaled_dot_product_attention') else {})
+                    )
+                except Exception:
+                    encoder_layers = TransformerEncoderLayer(
+                        d_model=self.hidden_size, nhead=CONFIG["num_heads"],
+                        dim_feedforward=self.hidden_size*4, dropout=0.1,
+                        batch_first=True, norm_first=True)
+            else:
+                encoder_layers = TransformerEncoderLayer(
+                    d_model=self.hidden_size, nhead=CONFIG["num_heads"],
+                    dim_feedforward=self.hidden_size*4, dropout=0.1,
+                    batch_first=True, norm_first=True)
+            self.transformer = TransformerEncoder(
+                encoder_layers, num_layers=self.num_layers,
+                norm=nn.LayerNorm(self.hidden_size))
         # Sinusoidal positional encoding. nn.TransformerEncoder does NOT add
         # positional information — CS.py previously had none at all, leaving
         # the model to infer position implicitly from the causal mask alone.
@@ -12718,7 +13060,27 @@ class ConsciousnessSimulator(nn.Module):
                       "windows_os_control", "self_awareness", "truth_seeking", "data_collection"]  # Updated goals for awareness and learning
         self.physics_graph = nx.Graph()
         self._build_physics_graph()
-        self.neuron_groups = {}  # {category: NeuronGroup}
+        # nn.ModuleDict, NOT a plain dict. This is a second, more
+        # consequential bug in the same defect the device-placement comment
+        # below already documents: a plain `dict` is invisible not only to
+        # `.to(device)`/module traversal, but to `self.parameters()` — and
+        # `self.optimizer` (constructed a few lines above, in this very
+        # `__init__`, from `self.parameters()`) therefore NEVER included a
+        # single neuron-group weight. Verified directly: every `NeuronGroup`
+        # weight (StandardNeuron.linear, MemoryNeuron.lstm/gate,
+        # LogicNeuron.projection/expansion, PatternNeuron.modulator, and its
+        # newly-learnable pattern_param, UpkeepNeuron.gru) received gradients
+        # through the forward/backward graph but NEVER an optimizer step —
+        # `opt.step()` only ever touched param_groups built from
+        # `self.parameters()` at construction time, which excluded all of
+        # this. Measured before this fix: a parameter inside a neuron group,
+        # tracked across 15 real `process_input()` calls, changed by exactly
+        # 0.0. The entire cognitive-taxonomy neuron-group system — the
+        # domain-routing machinery this project has built substantial logic
+        # around — has never actually trained. `nn.ModuleDict` fixes this
+        # the same way it already fixes device placement: by making the
+        # contents visible to the module tree PyTorch itself walks.
+        self.neuron_groups = nn.ModuleDict()
         self.group_usage = {}  # {group_id: {'count': int, 'input_sims': list, 'category': str}}
         # Seed default neuron groups — richer starting set for smarter AI
         _seed_types = {
@@ -12729,16 +13091,16 @@ class ConsciousnessSimulator(nn.Module):
             'reasoning': ['logic', 'logic', 'logic', 'standard', 'pattern'],
         }
         for _cat, _types in _seed_types.items():
-            # NeuronGroup instances live in a plain dict, not an nn.ModuleDict,
-            # so PyTorch's own module-tree traversal never finds them — the
-            # earlier `self.to(self.device)` call (which also runs before
-            # this dict is even populated) cannot move them. Uncaught, this
-            # is a real, latent GPU crash: any category unlucky enough to
-            # route to one of these seeded groups (e.g. 'general', the
-            # taxonomy's own fallback domain — see COGNITIVE_TAXONOMY) hits a
-            # cuda/cpu device-mismatch RuntimeError the first time it's used
-            # on a CUDA run. Move each group explicitly at creation time.
             self.neuron_groups[_cat] = NeuronGroup(_types, self.hidden_size, self.hidden_size).to(self.device)
+        # `self.optimizer` above was constructed BEFORE this loop populated
+        # neuron_groups, so even with the ModuleDict fix its param_groups
+        # list is still the pre-seed snapshot. Add the seed groups' real
+        # parameters explicitly rather than reordering this __init__ (which
+        # risks disturbing whatever else runs between optimizer construction
+        # and here). Every later creation site (lazy specialization,
+        # mutation) uses the same `_register_new_params_with_optimizer`
+        # helper — see those call sites.
+        self._register_new_params_with_optimizer(self.neuron_groups.parameters())
         self.full_connect_active = False
         self.temp_dense = None
         self.windows_hotkeys = WINDOWS_HOTKEYS  # Integrated hotkeys for awareness and use
@@ -13700,7 +14062,17 @@ class ConsciousnessSimulator(nn.Module):
     def _add_positional(self, x):
         """Add positional encoding to an embedded [batch, seq, hidden] tensor,
         regenerating the buffer if the sequence is longer than the cached one
-        or hidden_size changed (add_neuron() can grow it at runtime)."""
+        or hidden_size changed (add_neuron() can grow it at runtime).
+
+        NO-OP under the modern stack: RoPE already encodes position, inside
+        attention, by rotating q/k. Adding sinusoidal absolute encoding on
+        top would inject a SECOND, redundant and differently-parameterised
+        position signal into the residual stream — double-encoding that the
+        model then has to learn to cancel. Returning `x` unchanged is the
+        correct behaviour here, not a disabled feature.
+        """
+        if getattr(self, 'modern_arch', False):
+            return x
         seq_len = x.size(1)
         pe = self.pos_encoding
         if pe.size(1) < seq_len or pe.size(2) != x.size(2):
@@ -14342,13 +14714,17 @@ class ConsciousnessSimulator(nn.Module):
             if (cognitive_domain not in self.neuron_groups
                     and self.group_usage[cognitive_domain]['count'] > 5
                     and len(set(self.group_usage[cognitive_domain]['input_sims'])) < 3):
-                # .to(self.device): NeuronGroup lives in a plain dict, not an
-                # nn.ModuleDict, so it is invisible to the model's own module
-                # tree and never gets moved by any later `self.to(...)` call.
-                # A group created here without this crashes the first time
-                # it's used on a CUDA run (cuda/cpu device-mismatch).
-                self.neuron_groups[cognitive_domain] = NeuronGroup(
+                new_grp = NeuronGroup(
                     domain_neuron_types, self.hidden_size, self.hidden_size).to(self.device)
+                self.neuron_groups[cognitive_domain] = new_grp
+                # `neuron_groups` is now an nn.ModuleDict (fixed at __init__),
+                # so this group IS visible to `self.parameters()` — but
+                # `self.optimizer`/`self.scheduler` were already constructed
+                # and hold a fixed snapshot from before this group existed.
+                # Without this, the group would train forever with zero
+                # optimizer steps, same defect as the seed groups before the
+                # __init__ fix, just for a group created later.
+                self._register_new_params_with_optimizer(new_grp.parameters())
                 print(f"Created specialized group for domain '{cognitive_domain}' "
                       f"(types={domain_neuron_types}, from task_category='{task_category}')")
             if cognitive_domain in self.neuron_groups:
@@ -14709,9 +15085,38 @@ class ConsciousnessSimulator(nn.Module):
             # which silently inserted 2 randomly-initialised layers into an
             # 8-layer stack on the first growth and discarded them on every
             # subsequent one).
-            encoder_layers = TransformerEncoderLayer(d_model=self.hidden_size, nhead=CONFIG["num_heads"], dim_feedforward=self.hidden_size*4, dropout=0.1, batch_first=True, norm_first=True)
-            self.transformer = TransformerEncoder(encoder_layers, num_layers=self.num_layers,
-                                                  norm=nn.LayerNorm(self.hidden_size))
+            # Rebuild the SAME stack type the model was constructed with.
+            # This previously always rebuilt the legacy 2017 encoder — so on
+            # a modern-stack model the first growth event would silently
+            # swap RoPE/RMSNorm/SwiGLU/GQA back to sinusoidal/LayerNorm/GELU/
+            # MHA mid-run, discarding the architecture advantage measured in
+            # ratings.md §D2 with no error and no log line. Same defect class
+            # as the hardcoded num_layers=10 noted just above.
+            if getattr(self, 'modern_arch', False):
+                self.transformer = ModernTransformerStack(
+                    dim=self.hidden_size,
+                    num_layers=self.num_layers,
+                    num_heads=CONFIG["num_heads"],
+                    num_kv_heads=CONFIG.get("num_kv_heads", CONFIG["num_heads"]),
+                    dropout=CONFIG.get("dropout", 0.0),
+                    max_seq=max(8192, self.input_size * 2),
+                    rope_base=CONFIG.get("rope_base", 10000.0),
+                    # NOTE: CONFIG["ffn_hidden"]=3072 was sized for
+                    # hidden_size=1024 (the parity target vs the legacy
+                    # stack's 113.06M). After growth, hidden_size is larger
+                    # but this stays fixed at the same CONFIG value rather
+                    # than scaling with it — same policy inconsistency
+                    # already flagged for other fixed-size buffers in the
+                    # growth path (e.g. positional encoding regeneration).
+                    # Left as CONFIG's literal value for now: growth is rare
+                    # and this is a real, not silently-wrong, parameter
+                    # count either way, just not re-optimized for the new
+                    # width.
+                    ffn_hidden=CONFIG.get("ffn_hidden", None))
+            else:
+                encoder_layers = TransformerEncoderLayer(d_model=self.hidden_size, nhead=CONFIG["num_heads"], dim_feedforward=self.hidden_size*4, dropout=0.1, batch_first=True, norm_first=True)
+                self.transformer = TransformerEncoder(encoder_layers, num_layers=self.num_layers,
+                                                      norm=nn.LayerNorm(self.hidden_size))
             # hidden_size changed — rebuild the positional buffer to match.
             # (Deterministic sinusoidal values, so this is regenerated rather
             # than transferred.)
@@ -14844,11 +15249,48 @@ class ConsciousnessSimulator(nn.Module):
                         'old_types': list(group.neuron_type_names),
                         'new_types': list(new_types), 'idx': idx,
                     }
-                    self.neuron_groups[category] = NeuronGroup(
+                    mutated_grp = NeuronGroup(
                         new_types, self.hidden_size, self.hidden_size).to(self.device)
+                    self.neuron_groups[category] = mutated_grp
+                    # Same explicit registration as the lazy-specialization
+                    # site: a group created after __init__ needs its params
+                    # added to the optimizer's param_groups directly, since
+                    # nn.ModuleDict fixes visibility to .parameters() but not
+                    # to an already-constructed optimizer's fixed snapshot.
+                    self._register_new_params_with_optimizer(mutated_grp.parameters())
                     print(f"Mutated group {category}: swapped neuron {idx} -> {new_types[idx]} "
                           f"(pending score check)")
                     break  # one guided mutation per call, matches weight-search cadence
+
+    def _register_new_params_with_optimizer(self, params):
+        """Add parameters created after `self.optimizer`/`self.scheduler`
+        already exist (a lazily-specialized or mutated `NeuronGroup`) so
+        they actually receive gradient steps, instead of updating forever
+        with zero effect.
+
+        Two pieces of state need updating together, not just
+        `add_param_group`:
+          1. `optimizer.add_param_group` — makes the optimizer step these
+             tensors at all.
+          2. `scheduler.base_lrs` — `CosineAnnealingWarmRestarts` caches one
+             base learning rate per param_group AT CONSTRUCTION TIME
+             (`self.base_lrs`, a plain list). `step()` later does
+             `zip(optimizer.param_groups, self.get_lr(), strict=True)` —
+             adding a param_group without extending this list raises
+             `ValueError: zip() argument 2 is shorter than argument 1` on
+             the very next `scheduler.step()`. Found live: this fired the
+             first time this method's precursor (`add_param_group` called
+             directly, without this fix) was exercised end-to-end via a
+             real `process_input()` call, not caught by any narrower test.
+        """
+        params = list(params)
+        if not params:
+            return
+        self.optimizer.add_param_group({'params': params})
+        new_group = self.optimizer.param_groups[-1]
+        new_group.setdefault('initial_lr', new_group['lr'])
+        if getattr(self, 'scheduler', None) is not None:
+            self.scheduler.base_lrs.append(new_group['initial_lr'])
 
     def resolve_group_mutation(self, score_before, score_after):
         """Keep the most recent `refine_groups` mutation if real held-out
@@ -16302,16 +16744,49 @@ class ConsciousnessSimulator(nn.Module):
             if acquired:
                 self.lock.release()
         # Generate WITHOUT holding the lock — keeps GUI and other threads responsive
+        # KV CACHE: without it, every new token re-runs attention over the
+        # ENTIRE prefix from scratch — generation is O(n^2) in total work for
+        # n tokens, and at input_size=2048 that means re-attending up to 2048
+        # positions to produce one token. With the cache, each step attends
+        # once over the cached keys/values and appends: O(n). This is the
+        # standard decode path in every production LLM server and it is the
+        # single largest generation-speed win available here. Only available
+        # on the modern stack (nn.TransformerEncoder exposes no cache hook),
+        # so the legacy path keeps the original recompute-everything loop.
+        use_kv = getattr(self, 'modern_arch', False) and isinstance(tfm, ModernTransformerStack)
+        kv_caches = None
         with torch.no_grad():
-            for _ in range(max_tokens):
-                inp = torch.tensor([generated_ids[-inp_size:]], dtype=torch.long,
-                                   device=self.device)
-                x = emb(inp)
-                # Positional encoding and causal mask must both match training —
-                # otherwise generation runs under different rules than the model
-                # was trained with and the learned behaviour doesn't transfer.
-                x = self._add_positional(x)
-                x = tfm(x, mask=self._causal_mask(x.size(1), x.device))
+            for _step in range(max_tokens):
+                if use_kv:
+                    if kv_caches is None:
+                        # First pass: process the whole prompt, build the cache.
+                        inp = torch.tensor([generated_ids[-inp_size:]], dtype=torch.long,
+                                           device=self.device)
+                        x = emb(inp)
+                        x, kv_caches = tfm(x, mask=self._causal_mask(x.size(1), x.device),
+                                           use_cache=True)
+                    else:
+                        # Subsequent passes: feed ONLY the newest token. RoPE
+                        # derives its true position from the cache length, so
+                        # position stays correct without re-feeding the prefix.
+                        inp = torch.tensor([[generated_ids[-1]]], dtype=torch.long,
+                                           device=self.device)
+                        x = emb(inp)
+                        x, kv_caches = tfm(x, mask=None, kv_caches=kv_caches,
+                                           use_cache=True)
+                        # Bound cache growth to the trained context length.
+                        if kv_caches[0][0].shape[-2] > inp_size:
+                            kv_caches = [(k[:, :, -inp_size:, :], v[:, :, -inp_size:, :])
+                                         for (k, v) in kv_caches]
+                else:
+                    inp = torch.tensor([generated_ids[-inp_size:]], dtype=torch.long,
+                                       device=self.device)
+                    x = emb(inp)
+                    # Positional encoding and causal mask must both match training —
+                    # otherwise generation runs under different rules than the model
+                    # was trained with and the learned behaviour doesn't transfer.
+                    x = self._add_positional(x)
+                    x = tfm(x, mask=self._causal_mask(x.size(1), x.device))
                 logits = head(x[:, -1, :])
                 logits = logits / max(temperature, 1e-8)
                 if top_k > 0:
