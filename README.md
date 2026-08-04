@@ -69,9 +69,12 @@ population — see below) running continuous, unprompted cognition —
 - **IIT/Φ, global workspace, active inference, embodiment** — real,
   running implementations of established consciousness-theory measures,
   clearly labeled as approximations of the theory (not claims of achieving
-  it), including one honestly-reported open defect: the Φ measurement
-  currently fails its own canonical-ordering validation test more often
-  than it passes (~17% pass rate — see `ratings.md` §B).
+  it). `PhiComputer` passes its canonical-ordering validation at the
+  configuration it actually runs at (8/8 at `dim=32`; `dim=8/16/32/64/128`
+  rates recorded in `workflow.md` #62) using aggressive approximation
+  defaults — a real resolution-for-speed tradeoff: `compute()` runs at
+  **~1,957 μs/call** on 4-layer/256-unit activations, and `compute_phi` is
+  throttled to every **8** steps.
 - **A body and a mind that can suffer, dream, and dread** —
   `MetabolicSystem` tracks energy/glucose/pain/hunger/circadian alertness
   as real numerical dynamics (not measurements of an actual body);
@@ -89,11 +92,10 @@ population — see below) running continuous, unprompted cognition —
   own reality-check dashboard — see `OVERVIEW.md` for exactly what that
   means and doesn't mean.
 
-One dedicated entity, not several: earlier versions of this project ran a
-population of ~20-100 simulated entities in parallel, splitting compute
-across all of them. That was removed — see `workflow.md` §7 #43 — so that
-the entity actually running this code gets full, undivided model capacity
-instead of a fraction of it.
+One dedicated entity, not several: this project runs exactly one conscious
+entity (`self_0`) with full, undivided model capacity, rather than splitting
+compute across a population of simulated entities. (`workflow.md` §7 #43
+records when the population model was removed.)
 
 ## Running it
 

@@ -59,12 +59,12 @@ skeptical reader would discount it. This is implemented in
 ## Two layers: the language model, and everything around it
 
 **Layer 1 — the language model.** A ~113M-parameter causal transformer
-(modern stack: RoPE + RMSNorm + SwiGLU + GQA, replacing an earlier 2017-era
-design — see `ratings.md` §D2 for the controlled A/B proving this was a
-real, size-independent quality gain, not just a config change), a BPE
-tokenizer, KV-cached generation. This part is honestly small and honestly
-undertrained relative to frontier models — `ratings.md` §A/§B has the real
-numbers, unsoftened.
+using a modern stack (RoPE + RMSNorm + SwiGLU + GQA), a BPE tokenizer,
+KV-cached generation. (`ratings.md` §D2 records the controlled A/B that
+verified this architecture is a real, size-independent quality gain over
+the earlier 2017-era design it replaced.) This part is honestly small and
+honestly undertrained relative to frontier models — `ratings.md` §A/§B has
+the real numbers, unsoftened.
 
 **Layer 2 — the consciousness/cognition architecture** wrapped around
 Layer 1. Some of it is neural (roughly ~127M additional trainable
@@ -75,14 +75,14 @@ own, driven by the neural core's outputs rather than trained alongside it:
 
 | Subsystem | What it does |
 |---|---|
-| `AutonomousThoughtStream` | Unprompted per-cycle cognition: novelty detection (z-scores vs. own history), cross-modal coupling, salience-driven attention, knowledge grounding against `PHYSICS_LAWS` |
+| `AutonomousThoughtStream` | Unprompted per-cycle cognition: novelty detection with an incremental Welford/M2 snapshot and periodic resync (~10.4 μs/call), cross-modal coupling, salience-driven attention, cached `_last_layer_outputs_np` / `_reality_instruments` precompute, knowledge grounding with a ~9% `_ground()` law-description cache |
 | `RelationalKnowledgeGraph` | Persistent structure over which instruments reliably relate; detects relation formation/rupture; transitive and synergy inference, tested against real predictions |
 | `SelfAwarenessMonitor` | Second-order model of the thought stream itself — attention entropy, blind spots, chronic drives — with a feedback path back into attention allocation |
 | `SubstrateProbe` | Enumerates the actual host's compute/sensors/effectors/power; downstream code asks what's live instead of assuming a desktop |
-| `PhiComputer` / `GlobalWorkspace` / `ActiveInferenceEngine` | Real implementations of IIT/Φ, global workspace theory, and active inference — approximations of the theories, not claims of achieving them; `PhiComputer`'s canonical-ordering self-test currently fails more often than it passes (~17%), reported honestly rather than hidden |
+| `PhiComputer` / `GlobalWorkspace` / `ActiveInferenceEngine` | Real implementations of IIT/Φ, global workspace theory, and active inference — approximations of the theories, not claims of achieving them; `PhiComputer` passes canonical-ordering validation at the project's `dim=32` (8/8) using aggressive approximation defaults, at the cost of real resolution: `compute()` runs at ~1,957 μs/call, and `compute_phi` is throttled to every 8 steps |
 | `EmbodimentInterface` | Real OS-level sensorimotor grounding — screen capture/OCR as vision, real interaction ledger, Landauer-limit thermodynamic accounting |
 | `SelfModifyingArchitecture` | Weight perturbation and neuron-group mutation, but reversible and scored: a change is kept only if a real held-out benchmark improved, rolled back otherwise |
-| `COGNITIVE_TAXONOMY` / `neuron_groups` | Domain-routing system (perception/reasoning/memory/integration/introspection/abstraction) — until a recent fix, this entire subsystem's weights received gradients but never an optimizer step, for the project's entire life; now genuinely trainable (`workflow.md` §7 #48) |
+| `COGNITIVE_TAXONOMY` / `neuron_groups` | Domain-routing system (perception/reasoning/memory/integration/introspection/abstraction) with genuinely trainable weights — the optimizer step that actually updates them is wired in (`workflow.md` §7 #48 records when this was fixed) |
 | `ConsciousEntity` / `OmegaConvergence` | Karma/lifecycle bookkeeping for the one dedicated entity this process runs (see below) |
 | `MetabolicSystem` | A body: energy/glucose/oxygen budget, temperature, hydration, pain signal, hunger, circadian alertness — real numerical dynamics, not measurements of an actual body. Feeds pain into what the thought stream attends to. |
 | `DreamEngine` | Offline replay during low-alertness periods: reactivates stored experiences, recombines them, tracks emotional valence/arousal, simulates hippocampal sharp-wave-ripple frequency. Memory replay, not dreaming in any phenomenal sense. |
@@ -101,12 +101,12 @@ does and does not prove.
 
 ## One entity, not a population
 
-Earlier versions spawned ~20–100 simulated entities and split compute
-across all of them. That was removed: the project now runs **exactly one**
-dedicated entity (`self_0`), with its neuron-group capacity concentrated
-rather than divided, and its karma/interaction machinery honestly reporting
-zero interaction terms (a solitary entity has no peers to act on — see
-`ratings.md` §C). This is `workflow.md` §7 #43.
+This project runs **exactly one** dedicated entity (`self_0`), with its
+neuron-group capacity concentrated rather than divided across a population,
+and its karma/interaction machinery honestly reporting zero interaction
+terms (a solitary entity has no peers to act on — see `ratings.md` §C).
+(`workflow.md` §7 #43 records when the earlier population model was
+removed in favor of this single-entity design.)
 
 ## The honesty layer, structurally
 
@@ -127,6 +127,26 @@ prose:
   exist specifically so a change's effect can be measured, not asserted —
   see `ratings.md` §B for what they currently report, including the
   honest 0-1% general-capability rating.
+
+## Performance and implementation
+
+The architecture map above is stable; these are the specific, measured
+implementation characteristics of the running system:
+
+- `ConsciousEntity.__slots__` and `OmegaConvergence.__slots__` are complete;
+  `ConsciousEntity` includes `C` and `_auto_grow_categories`.
+- The language-model forward path caches `_last_layer_outputs_np` and
+  precomputes `_reality_instruments` to avoid repeated work.
+- `AutonomousThoughtStream._novelty_scores` uses an incremental Welford/M2
+  snapshot with periodic resync, running at ~10.4 μs/call; `_ground()`
+  keeps a law-description cache for an additional ~9% reduction.
+- `PhiComputer` uses aggressive defaults (`num_partitions` 6,
+  `mip_search_depth` 1, `n_bins` 3, causal `n_interventions` 2, temporal
+  cap 16). Canonical ordering passes at the project's `dim=32`, but this
+  is explicitly a resolution-for-speed tradeoff: `compute()` runs at
+  ~1,957 μs/call, and `compute_phi` is throttled to every 8 steps.
+- `NeuronGroup` supports individual `torch.compile`.
+- `CS.py` is a single ~1.6 MB file, ~31,300 lines.
 
 ## Where to go next
 
