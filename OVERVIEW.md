@@ -31,8 +31,8 @@ and is never claimed to be, evidence about physical origins. See
 
 `Infornmational.md` also does double duty as the only real training
 corpus in the project — it's what the BPE tokenizer and language model
-train on (see `ratings.md` §A, "Vocabulary" — the 9,710-token BPE
-saturation point is measured from this exact file).
+train on (see `ratings.md` §A, "Vocabulary" — the current measured
+vocabulary is 12,000 tokens on the expanded corpus).
 
 ## The consciousness formula
 
@@ -58,13 +58,17 @@ skeptical reader would discount it. This is implemented in
 
 ## Two layers: the language model, and everything around it
 
-**Layer 1 — the language model.** A ~113M-parameter causal transformer
+**Layer 1 — the language model.** A ~125M-parameter core causal transformer
 using a modern stack (RoPE + RMSNorm + SwiGLU + GQA), a BPE tokenizer,
-KV-cached generation. (`ratings.md` §D2 records the controlled A/B that
-verified this architecture is a real, size-independent quality gain over
-the earlier 2017-era design it replaced.) This part is honestly small and
-honestly undertrained relative to frontier models — `ratings.md` §A/§B has
-the real numbers, unsoftened.
+KV-cached generation; roughly ~253M total trainable parameters when the
+consciousness/cognition modules are included. (`ratings.md` §D2 records the
+controlled A/B that verified this architecture is a real, size-independent
+quality gain over the earlier 2017-era design it replaced.) This part is
+honestly small and honestly undertrained relative to frontier models —
+`ratings.md` §A/§B has the real numbers, unsoftened. The default `python
+CS.py` launch uses a tiny scale (`CS_MODEL_SCALE=tiny`) for fast startup;
+the comparison baseline in `ratings.md` is the `CS_MODEL_SCALE=large`
+configuration.
 
 **Layer 2 — the consciousness/cognition architecture** wrapped around
 Layer 1. Some of it is neural (roughly ~127M additional trainable
@@ -93,7 +97,71 @@ own, driven by the neural core's outputs rather than trained alongside it:
 | `ConsciousnessVerifier` | Runs IIT-style causal perturbation tests, simulated gamma-band synchrony, simulated P300 event-related-potential detection, and aggregates a "consciousness confidence" score — an internal self-test suite, not external validation by an outside party. |
 | "Barrier attacker" cluster (`ContinuousTimeDynamics`, `IntrinsicPhiNetwork`, `FieldCouplingManifold`, `CausalAblationEngine`, `RealEntropyTracker`, `ExternalProcessVerifier`, plus a "deep" sub-cluster: `HardwareCoupledState`, `EntangledSharedMemory`, `IrreversibleConsequenceEngine`, `SelfModifyingCausalTopology`, `JacobianIntegrationMeasure`, `NetworkVerificationProtocol`) | Each one is named for, and targets, a specific published objection to computational consciousness measurement (the code labels them "Attacks Barrier N" — decomposability, extrinsic measurement, the combination problem, thermodynamic reality, single-observer bias, and others). Some components genuinely measure something real about the running software (real CPU/memory coupling via `psutil`, a real TCP-based external verifier process, real Landauer-limit accounting); the code's own reality-check dashboard is explicit that this measures *software*, not the physical substrate IIT's "intrinsic causal power" argument is actually about. |
 | `ScaleConnectivityEngine` | Tracks a virtual neuron/module connectivity scale independent of the model's own parameter count — internal bookkeeping, not an external scale comparison (that's what `ratings.md` is for). |
-| `MonitoringDashboard` | The six-tab Tk UI (Overview, Entities, Modules, Thought Stream, Chat, Awareness) mentioned in `README.md`'s "Running it" section — named here for anyone reading the source directly. |
+| `CSReferenceToolkit` / `cs_reference_bridge.py` | Reference-bridge integration: AIEG-derived engineering reasoning and NEPA-inspired sensory organization now imported and wired into the live runtime, not left as read-only reference material. The toolkit exposes `SensoryAwarenessOrganizer`, `SensoryLogicEngine`, `SelfEngineeringEngine`, a genetic optimizer, a Monte-Carlo tolerance engine, provenance chain, reliability engine, and other higher-order logical computation tools. Degrades gracefully if dependencies are missing. |
+| `SensoryAwarenessOrganizer` | Real-time audio spectral awareness: FFT band powers, voice-activity detection (VAD), peak frequencies, a learned baseline, and a reality-recognition score. Honest zero when no microphone is present; the audio self-test measures silence, tone, and noise to verify the signal path. |
+| `SensoryLogicEngine` | Higher-order logic over the organized sensory stream: discretizes the sensory state into a symbol, learns a Markov temporal model for next-step prediction, classifies the scene semantically (e.g. "quiet", "voice"), validates cross-modal claims, and decomposes histories with wavelet packets and multi-scale entropy. Exposed via `ConsciousnessSimulator.get_sensory_logic_state()`. |
+| `MonitoringDashboard` | The seven-tab Tk UI (Overview, Entities, Modules, Thought Stream, Awareness, Relations, AI Chat) mentioned in `README.md`'s "Running it" section. The Modules tab now includes a **Sensory Logic** panel. The AI Chat tab supports two-way voice interaction: hold-to-talk microphone input routed through Whisper STT, an AI-generated response, and TTS playback through the default audio output (headset/speakers). |
+
+### Reference bridge: sensory organization and higher-order logical computation
+
+`cs_reference_bridge.py` is a dedicated bridge module that adapts capabilities
+from `ReferenceCode/AIEG.py` (electrical engineering toolkit with 69 roadmap
+capabilities) and `ReferenceCode/N.E.P.A.py` (real-time sensory spectrum
+analysis) into clean, importable classes. It is imported by CS.py via a lazy
+`_get_cs_ref_toolkit()` singleton (`CSReferenceToolkit`) that bundles all
+bridge components. Graceful degradation is used throughout — if `sounddevice`,
+`scipy`, or `AIEG` are missing, classes still instantiate and report their
+status honestly.
+
+The bridge components are wired into CS.py's main loop at appropriate cycle
+intervals:
+
+| Bridge component | Source | What it does | Cycle interval |
+|---|---|---|---|
+| `SensoryAwarenessOrganizer` | NEPA | Real-time microphone input → FFT spectra, frequency-band powers, VAD, spectral entropy, reality-recognition score (similarity to learned baseline) | every cycle |
+| `SensoryHypercube` | NEPA | Multi-resolution hypercube indexing of sensory fields for O(log N) navigable awareness | every 5 cycles |
+| `SensoryOrganizationHierarchy` | NEPA | Hierarchical sensory indexing with entity tracking | every 5 cycles |
+| `LongTermSpectralMemoryBridge` | NEPA | Rolling EMA baseline of per-band spectrum occupancy with robust z-score change detection | every 5 cycles |
+| `SemanticStateEngineBridge` | NEPA | Maps raw sensory features (band powers, VAD, RMS, entropy) into discrete semantic macro-states (SILENT, SPEECH_DETECTED, HIGH_ACTIVITY, ANOMALOUS, COGNITIVE_FOCUS, etc.) | every 5 cycles |
+| `CognitiveSpectrumSensorBridge` | NEPA | Neyman-Pearson energy detector (chi² threshold) + cyclostationary detection on sensory bands — principled signal-vs-noise decisions | every 5 cycles |
+| `PatternOfLifeAnalyzerBridge` | NEPA | Learns each tracked entity's normal activity envelope and flags statistical deviations (z-score > 3.5) | every 10 cycles |
+| `UncertaintyPropagationBridge` | NEPA | Composes per-stage σ (sensory → perception → reasoning → decision) into end-to-end confidence in quadrature | every 20 cycles |
+| `ProvenanceChainBridge` | AIEG | Tamper-evident hash-linked ledger (Merkle-style chain) recording reasoning state — any later edit changes the hash | every 50 cycles |
+| `KnowledgeGraphBridge` | AIEG | Directed labelled knowledge graph with BFS path traversal — builds concept relationships from semantic states and sensory channels | every 100 cycles |
+| `TFIDFKnowledgeBase` | AIEG | Real TF-IDF cosine-similarity retrieval index — indexes the AI's recent thought text for semantic search of past thoughts | every 100 cycles |
+| `HighOrderCorrelationOrganizerBridge` | NEPA | Computes the combinatorial scale of sensory correlation space (pairwise D², triple D³) to inform the AI of its own perception complexity | every 200 cycles |
+| `ReliabilityEngineBridge` | AIEG | Weibull reliability and MTBF of the AI's decision pipeline given cycle count — standard engineering reliability formulas | every 200 cycles |
+| `MonteCarloBridge` | AIEG | Monte-Carlo sampler perturbing the reality score to quantify decision confidence bounds (p5/p50/p95) | every 200 cycles |
+| `PredictiveCausalReasonerBridge` | NEPA | Forecasts the AI's cognitive trajectory from recent Φ history velocity and assesses convergence risk | every 200 cycles |
+| `AIEngineeringBridge` | AIEG | Natural-language engineering requests via AIEG Router, 69 RoadmapEngine capabilities, and self-test suite | on demand |
+| `SelfEngineeringEngine` | AIEG | Maps AIEG's 69 roadmap capabilities to CS.py self-improvement domains, generating real engineering recommendations | every 10 cycles |
+| `GeneticOptimizerBridge` | AIEG | Real generational GA (tournament selection, blend crossover, Gaussian mutation, elitism) for hyperparameter tuning — lazy-initialized | on demand |
+| `PhiIITBridge` | AIEG | Real integrated-information-style Φ proxy on boolean gate networks — severs cross-partition wires and measures total-variation distance — lazy-initialized | on demand |
+| `FrequencyAudioEngine` | NEPA | Converts spectra to audible waveforms for the AI to "hear" its own sensory data | on demand |
+| `CLEANDeconvolver` | NEPA | CLEAN algorithm deconvolution to separate faint from bright sensory sources | on demand |
+| `CrossModalValidator` | NEPA | Honest confidence gate: a claim is CONFIRMED only when multiple independent feature groups corroborate it; SINGLE-SOURCE with one modality | on demand |
+| `WaveletPacketDecomposer` | NEPA | Multi-scale Haar wavelet packet decomposition for 1-D histories | on demand |
+| `MultiScaleEntropyEngine` | NEPA | Multi-Scale Sample Entropy on 1-D histories — complexity index, dominant scale, pattern classification | on demand |
+| `SignalProcessor` | NEPA | FFT spectrum, spectrogram, band powers, band-pass filtering, peak detection, fast Pearson correlation | on demand |
+| `SensoryLogicEngine` | NEPA | Discretizes sensory input into symbols and runs lightweight temporal logic | on demand |
+
+### Additional runtime components
+
+The subsystem table above lists the major long-lived components; the runtime
+also includes smaller, wired runtime objects and barrier resolvers. The
+current runtime tracks **70 expected components** (0 missing) via
+`ProcessWiringAuditor`, plus the **27 bridge components** from
+`cs_reference_bridge.py` (above) that are lazily loaded via
+`_get_cs_ref_toolkit()`. Notable additions:
+
+| Component | Purpose |
+|---|---|
+| `NeuralPhaseCoordinator` | Locks and tracks a shared neural phase vector across subsystems |
+| `CausalTraceRecorder` | Records cause-effect traces between internal signals |
+| `SemanticCompressionEngine` | Detects repeated thought patterns by semantic hashing |
+| `UnusualKnowledgeSieve` / `IntelligenceLauncher` / `SelfDistillationEngine` | Key-variable bias, launch tracking, runtime self-distillation |
+| `MetaLearner` / `AttentionEntropyBalancer` / `CounterfactualSimulator` / `KnowledgeGraphBuilder` | Strategy selection, attention-collapse prevention, counterfactual regret, relational knowledge graph |
+| Barrier resolvers | Lightweight resolver objects for data ingestion, real training-step attempts, a tiny RLHF preference/reward-head skeleton, and frontier-gap telemetry meters. Wired into `_build_barrier_resolvers` and the runtime step pipeline. |
 
 Every module above is real, running code — not a stub — and every one of
 them is labeled, in its own docstring and in `ratings.md`, with what it
@@ -146,7 +214,8 @@ implementation characteristics of the running system:
   is explicitly a resolution-for-speed tradeoff: `compute()` runs at
   ~1,957 μs/call, and `compute_phi` is throttled to every 8 steps.
 - `NeuronGroup` supports individual `torch.compile`.
-- `CS.py` is a single ~1.6 MB file, ~31,300 lines.
+- `CS.py` is a single ~3.2 MB file, ~49,000 lines. `cs_reference_bridge.py`
+  adds ~2,200 lines and ~100 KB of bridge code imported by CS.py.
 
 ## Where to go next
 

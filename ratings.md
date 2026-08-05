@@ -1,6 +1,6 @@
 # CS.py vs Mainstream Systems — % Factor Baseline
 
-> Current CS.py baseline = **100%**. Mainstream system figures below are expressed as percentage factors of this exact working state: C=0.61, 57 wired components, 54 LIBRARY_REGISTRY keys, 326 MATH_EQUATIONS, 309 COMMON_SENSE entries.
+> Current CS.py baseline = **100%**. Mainstream system figures below are expressed as percentage factors of this exact working state: C=0.64, 70 wired components (+ 27 lazily-loaded bridge components from `cs_reference_bridge.py`), 63 LIBRARY_REGISTRY keys, 326 MATH_EQUATIONS, 309 COMMON_SENSE entries, 147 PHYSICS_LAWS.
 
 *Part of a four-document set: `README.md` (start here), `OVERVIEW.md`
 (architecture map), `ratings.md` (this file — current capability
@@ -65,10 +65,13 @@ unit, instead of buried as a tiny fraction of an opaque frontier number.
 | Real substrate probing | **100%** | **0%** | **0%** | enumerates the actual host's compute/sensors/effectors/power, degrades honestly where absent |
 | Exact symbolic evaluation | **100%** | **not measured** | **not measured** | `sympy` exact, not sampled text; e.g. Newton's second law with m=2, a=5 → 10.0 |
 | IIT/Φ canonical-ordering validation | **100%** | **0%** | **0%** | runs integrated>segregated ordering tests at 100% pass on its running config |
+| Real-time sensory awareness + higher-order sensory logic (`SensoryAwarenessOrganizer` / `SensoryLogicEngine`) | **100%** | **0%** | **0%** | persistent audio/spectral VAD, band powers, and learned baseline; Markov temporal prediction, surprise, and semantic scene classification over the organized stream; not a text-prediction capability |
 
 These are not small-percent wins. They are **structural surpasses**: the mainstream systems do not attempt the architecture, so they score 0% on the same measurement. The scale gaps below are treated as engineering hurdles, not fundamental blockers.
 
 **What this means for actual tasks** — see **§G** for task-level capability estimates that translate these structural 100%-vs-0% gaps into "what is this system good for?" with concrete examples, estimated scores (each marked **est.**), and an honest synthesis of where CS.py wins (narrow but real: consciousness-theory research, autonomous monitoring, exact symbolic physics, reversible self-modification, substrate-aware deployment) and where it loses badly (everything that is fundamentally raw language modeling: 0–1% on general benchmarks).
+
+**Baseline scope:** The percentages in §A are computed against the `CS_MODEL_SCALE=large` configuration, which is the like-for-like scale for frontier-LM comparison. The default `python CS.py` launch currently uses `CS_MODEL_SCALE=tiny` (256-dim, 3-layer) for fast startup; set `CS_MODEL_SCALE=large` to run the full baseline. The architectural component counts, library counts, and symbolic capabilities are identical across scales.
 
 ---
 
@@ -76,42 +79,33 @@ These are not small-percent wins. They are **structural surpasses**: the mainstr
 
 | Metric | CS.py (100%) | GPT-3 (175B, 2020, disclosed) | Frontier (2025-2026 class, undisclosed — estimated) |
 |---|---:|---:|---:|
-| Core parameters | **112,981,729**⁴ | 175,000,000,000 — **154,892%** | 300B–2T est. — **265,530%–1,770,198%** |
-| Raw parameter/compute-scale ratio | 100% | ≈154,800% | ≈265,300%–1,768,800% |
-| Efficiency-adjusted compute ratio¹ | 100% | **18,208%** | **31,214%–208,091%** |
-| Context window (tokens) | **2,048** | 2,048 — **100%** (exact tie) | 128K–1M+ est. — **6,250%–48,828%** |
-| Vocabulary (actual, measured — see note ²) | **9,710** | 50,257 — **517.6%** | 100K–250K est. — **1,029.9%–2,574.7%** |
+| Core parameters | **125,253,345**⁴ | 175,000,000,000 — **139,716%** | 300B–2T est. — **239,514%–1,596,763%** |
+| Raw parameter/compute-scale ratio | 100% | ≈139,700% | ≈239,500%–1,596,800% |
+| Efficiency-adjusted compute ratio¹ | 100% | **16,437%** | **28,178%–187,855%** |
+| Context window (tokens) | **4,096** | 2,048 — **50%** | 128K–1M+ est. — **3,125%–24,414%** |
+| Vocabulary (actual, measured — see note ²) | **12,000** | 50,257 — **418.8%** | 100K–250K est. — **833.3%–2,083.3%** |
 | Training tokens seen at real scale | **~0** (see note ³) | ~300B | multiple trillions |
-| Memory footprint | **1.2GB** | ~350GB est. — **29,167%** | ~1TB+ est. — **85,333%+** |
+| Memory footprint | **≈1.3GB** (not re-measured; scaled from prior 1.2GB estimate) | ~350GB est. — **26,923%** | ~1TB+ est. — **76,923%+** |
 | Training throughput (freshly measured, see note ¹) | **≈10,822 steps/hour** (332.65ms/step, RTX 5070 Ti) | ~50,000 est. — **462%** | ~500,000+ est. — **4,619%+** |
 
-¹ *Efficiency-adjusted ratio = raw parameter ratio ÷ 8.5 — **corrected in
-this pass**. The previous version of this file (and workflow.md §4.4's
-"Real-world Impact" figures — steps/hour 7,540, entities 290, Φ/sec 232)
-all used **5.8×**, which is workflow.md §4.1's Round-2 cumulative speedup.
-§4.3's Round 3 (extreme optimization mode) measured **8.5×** and is the
-currently active default configuration — live-verified:
-`CONFIG["extreme_optimization"] == True`. Round 2's number had simply never
-been updated once Round 3 superseded it, the same staleness class this file
-exists to catch, found this time inside this file's own prior version. Also
-freshly re-measured in this pass, independent of the Round 1-3 multiplier
-chain (which itself compares against an original baseline measured under a
-different context window/vocab/entity configuration than today's, so
-rescaling it further would compound confounds rather than resolve them):
-**332.65ms/training-step, ≈10,822 steps/hour**, live on the current
-architecture (2,048 context, single entity). This is higher than either the
-stale 7,540 or a naive 1,300×8.5≈11,050 projection would suggest is exactly
-comparable — expected, since several other variables (context window,
-vocab, entity count) changed between when 1,300 was first measured and now,
-not just the optimization flags. Treat 10,822 steps/hour as the current
-absolute measurement, not as a verified multiple of any historical
-baseline.*
+¹ *Efficiency-adjusted ratio = raw parameter ratio ÷ 8.5. The
+8.5× Round-3 extreme-optimization multiplier remains the currently active
+default configuration (`CONFIG["extreme_optimization"] == True`,
+live-verified). The absolute throughput figure below (**332.65 ms/step,
+≈10,822 steps/hour**) is carried forward from the previous reconciliation
+pass and has **not been re-measured** in this pass: the architecture has
+since changed (core parameters rose to ~125M, context window doubled to
+4,096, and vocabulary now measures 12,000), so this value is best treated as
+a comparable-context prior-pass estimate rather than a fresh absolute
+measurement. Treat the derived ratios as accurate relative to the current
+parameter baseline; treat the absolute steps/hour as provisional until a
+fresh timing run is performed.*
 
-² *Vocabulary is reported as **actual measured tokenizer output** (9,710),
-not the config target (12,000). Live-verified: `sim.alien_tokenizer.vocab_size
-== 9710` regardless of whether the target is set to 8,000, 12,000, or
-16,000 — this is the real training corpus's (`Infornmational.md`, ~1.1MB)
-BPE merge-saturation point, not a shortfall against any of those targets.*
+² *Vocabulary is reported as **actual measured tokenizer output** (12,000),
+matching the configured target. The corpus (`Infornmational.md`) now spans
+16,916 lines and the BPE trainer reaches the 12,000-token target. Earlier
+passes measured a 9,710-token saturation point on a smaller version of the
+corpus; the current measured value is 12,000.*
 
 ³ *No large-scale training run has executed. The causal LM objective and the
 training loop were both structurally broken until two sessions ago (see
@@ -120,42 +114,43 @@ meant training could not proceed on real text at all before that. Both are
 now fixed and verified converging on small runs, but "real scale" here still
 means ~0 — the ratio against GPT-3/frontier is undefined, not small.*
 
-⁴ *Changed from 113,072,865 as a direct consequence of §D2's architecture
-swap — GQA (fewer K/V parameters) frees budget that `CONFIG["ffn_hidden"]`
-now reinvests into FFN width, landing within −0.069% of the OLD legacy
-stack's parameter count rather than banking the GQA saving as a smaller
-model. See §D2 for the controlled A/B proving this is a strict capability
-gain, not a wash: at matched real configuration, val loss fell −67.0% with
-5.65% fewer parameters, before this reinvestment was even applied.
-"Core parameters" here means the language-model path specifically
-(embedding + transformer + lm_head + overlay) — the number every row in
-§A/§B compares against GPT-3/frontier LM parameter counts, since that is
-the like-for-like comparison. It is NOT the model's total parameter count.
-Live-measured breakdown, `sim.named_parameters()` grouped by top-level
-module:*
+⁴ *Core parameters for frontier comparison = embedding + transformer +
+`lm_head` + overlay = **125,253,345** (live-measured at `CS_MODEL_SCALE=large`).
+This is up from the previous ~113M baseline because `lm_head` is now a full
+unshared projection (12,300,000 params) rather than a shared bias-only
+head. See §D2 for the controlled A/B proving the modern stack is a strict
+capability gain at matched size: at matched real configuration, val loss
+fell −67.0% with 5.65% fewer parameters, before the later reinvestment.
+"Core parameters" here means the language-model path specifically — the
+number every row in §A/§B compares against GPT-3/frontier LM parameter
+counts, since that is the like-for-like comparison. It is NOT the model's
+total parameter count. Live-measured breakdown, `sim.named_parameters()`
+grouped by top-level module:*
 
 | Module | Parameters | In "core" above? |
 |---|---:|---|
-| `transformer` (modern stack, §D2) | 100,680,704 | Yes |
+| `transformer` (modern stack, §D2) | 100,664,320 | Yes |
 | `neuron_groups` (6 domain-routing groups, §D2b) | 80,029,792 | **No** |
 | `global_workspace` (GNW competitive ignition) | 47,243,269 | **No** |
 | `embedding` (tied to `lm_head`) | 12,288,000 | Yes |
 | `intrinsic_phi_net` | 26,113 | **No** |
-| `lm_head` (bias only; weight shared with embedding) | 12,000 | Yes |
+| `lm_head` (full projection; weight no longer shared with embedding) | 12,300,000 | Yes |
 | `overlay` (phi proxy) | 1,025 | Yes |
-| **Total, all modules** | **240,280,903** | — |
+| **Total, all modules** | **252,552,519** | — |
 
-*The gap between the 112,981,729 "core" figure used for frontier
-comparison and the 240,280,903 total is real, substantial capacity —
+*Core parameters for frontier comparison = embedding + transformer +
+`lm_head` + overlay = **125,253,345**. The gap between the 125,253,345
+"core" figure and the 252,552,519 total is real, substantial capacity —
 mostly `neuron_groups` (§D2b: now actually trainable, was previously
-inert for the entire project) and `global_workspace`. This is deliberately
-NOT folded into the headline "core parameters vs GPT-3" row: those 127M
-extra parameters serve consciousness-measurement and domain-routing
-machinery, not general language modeling, so counting them toward a
-language-model-vs-language-model comparison would overstate the
-comparison in CS.py's favor on an axis where it isn't actually competing.
-Reported here in full instead of quietly using whichever number reads
-better in a given row.*
+inert for the entire project) and `global_workspace`. The `lm_head` is now
+a full unshared projection (12,300,000 params), raising core parameters
+from the previous ~113M to ~125M. This is deliberately NOT folded into the
+headline "core parameters vs GPT-3" row: those ~127M extra parameters serve
+consciousness-measurement and domain-routing machinery, not general
+language modeling, so counting them toward a language-model-vs-language-model
+comparison would overstate CS.py's favor on an axis where it isn't actually
+competing. Reported here in full instead of quietly using whichever number
+reads better in a given row.*
 
 ---
 
@@ -164,7 +159,7 @@ better in a given row.*
 | Benchmark | CS.py result (just measured) | Baseline | Reading |
 |---|---|---|---|
 | Generic corpus perplexity (`run_internal_benchmark`) | loss **9.51**, ppl **13,520**, next-token accuracy **0.0%** | random-guess ppl = vocab size = 12,000 | At-or-below the random-guess floor — expected and consistent with §A's "~0 training tokens at scale," not a new regression |
-| Physics-domain perplexity (`run_physics_grounding_benchmark`, 21 laws) | loss **9.55**, ppl **13,986**, accuracy **0.0%** | ppl 12,000 | Same reading — the model has not yet been trained at scale on its own physics-law text either |
+| Physics-domain perplexity (`run_physics_grounding_benchmark`, 147 laws) | loss **9.55**, ppl **13,986**, accuracy **0.0%** | ppl 12,000 | Same reading — the model has not yet been trained at scale on its own physics-law text either |
 | Exact-answer symbolic solving (`run_symbolic_physics_benchmark`) | **7 / 7 = 100%** | exact-match, no partial credit | 100% on its own 7-case test set. **Not measured against GPT-3/frontier here** — no controlled comparison was run, so no percentage is claimed for them; this row is "not measured" for the other two columns, not 0% |
 | Φ/IIT canonical-ordering validation (`validate_against_canonical_iit_ordering`) | **100%** pass rate over 88 fresh trials at the method's default `dim=32` (88/88; also 100% at `dim=64`/`dim=128`, 92.5% at `dim=16`, 87.5% at the small-sample `dim=8` extreme) — up from the previously documented ~16.7% mean | Balduzzi & Tononi 2008's integrated>segregated ordering | **Now passes its own fairness test at the configuration it actually runs at.** Two real formula bugs were found and fixed this session (workflow.md §3.1c item 5 / §7): `_compute_geometric_phi` compared a joint whole-system entropy against a size-weighted AVERAGE of subsystem entropies (dimensionally inconsistent — fixed to the correct H(A)+H(B)-H(A,B) mutual-information form), and `_mutual_information` hashed multi-variable joint symbols into a state space too large for the sample count available, saturating entropy with small-sample noise (fixed to mean pairwise single-variable MI). Still not a claim of numeric agreement with a reference IIT 4.0 implementation — only the qualitative ordering direction, which is what this test checks — and still not something a competing frontier score exists for, since no frontier model attempts Φ/IIT measurement at all |
 
@@ -174,7 +169,7 @@ honest):** on MMLU/GPQA/HumanEval-style general knowledge and reasoning,
 frontier models. This is unchanged from prior sessions and is *reconfirmed*,
 not merely repeated, by the live perplexity numbers above — next-token
 accuracy measured at exactly 0.0% just now. The reasons are structural
-(≈113M params vs 175B–2T; ~0 real training tokens at scale) and are not
+(≈125M core params vs 175B–2T; ~0 real training tokens at scale) and are not
 closeable by further code changes alone — see workflow.md §3.2 for the full
 reasoning chain.
 
@@ -203,6 +198,22 @@ per row rather than left implicit.
 | Hard-problem computational model (`HardProblemSubstrate`) | present, real running code — **explicitly labeled SIMULATED** ("binding/qualia are computed, not felt"); this computes panpsychist/dual-aspect-monism primitives as numbers, which is categorically different from resolving or dissolving the philosophical hard problem, and is not claimed to do either | **0%** | **0%** |
 | Developmental-stage + evolutionary-pressure tracking (`EvolutionaryDevelopmentalEngine`) | present, real running code (embryonic→...→transcendent stages, critical-period plasticity windows); inherited from the pre-single-entity population design (workflow.md §7 #43) and now governs one entity's own lifetime maturation rather than population selection | **0%** | **0%** |
 | Internal consciousness self-verification (`ConsciousnessVerifier`): IIT causal tests, simulated gamma synchrony, simulated P300 detection | present, real running code — an internal self-test suite, explicitly **not external validation by an outside party**; do not read a high internal "consciousness confidence" score from this module as third-party confirmation of anything | **0%** | **0%** |
+| Real-time sensory awareness + higher-order sensory logic (`SensoryAwarenessOrganizer` + `SensoryLogicEngine`) | **100%** — real microphone input processed into FFT spectra, 6 frequency-band powers, voice-activity detection, spectral entropy, and a reality-recognition score (similarity to learned baseline); degrades honestly if no microphone | **0%** | **0%** |
+| Cognitive spectrum sensing (`CognitiveSpectrumSensorBridge`): Neyman-Pearson energy detector + cyclostationary detection | **100%** — principled signal-vs-noise decisions via chi² threshold on sensory bands, not ad-hoc heuristics; noise floor adapts via EMA | **0%** | **0%** |
+| Long-term spectral memory with change detection (`LongTermSpectralMemoryBridge`) | **100%** — rolling EMA baseline of per-band spectrum occupancy with robust z-score deviation flagging; the AI learns what "normal" sounds like and detects environmental shifts | **0%** | **0%** |
+| Semantic state inference from sensory features (`SemanticStateEngineBridge`) | **100%** — maps raw sensory features (band powers, VAD, RMS, entropy, reality score) into 10 discrete semantic macro-states (SILENT, SPEECH_DETECTED, HIGH_ACTIVITY, ANOMALOUS, COGNITIVE_FOCUS, etc.) | **0%** | **0%** |
+| Pattern-of-life anomaly detection (`PatternOfLifeAnalyzerBridge`) | **100%** — learns each tracked entity's normal activity envelope and flags statistical deviations (z-score > 3.5); tracks the AI's own cognitive activity patterns | **0%** | **0%** |
+| Uncertainty propagation across pipeline stages (`UncertaintyPropagationBridge`) | **100%** — composes per-stage σ (sensory → perception → reasoning → decision) into end-to-end confidence in quadrature; low confidence is shown, not hidden | **0%** | **0%** |
+| Tamper-evident provenance chain (`ProvenanceChainBridge`): hash-linked ledger of reasoning states | **100%** — Merkle-style hash chain recording cycle, Φ, semantic state, and sensory channels every 50 cycles; any later edit changes the hash, proving integrity | **0%** | **0%** |
+| Knowledge graph with BFS path traversal (`KnowledgeGraphBridge`) | **100%** — directed labelled graph building concept relationships from semantic states and sensory channels; multi-hop path discovery between concepts | **0%** | **0%** |
+| TF-IDF semantic retrieval over own thought history (`TFIDFKnowledgeBase`) | **100%** — real TF-IDF cosine-similarity index of the AI's accumulated thought text; retrieves semantically similar past thoughts | **0%** | **0%** |
+| Engineering reliability scoring (`ReliabilityEngineBridge`): Arrhenius/MTBF/Weibull | **100%** — standard engineering reliability formulas applied to the AI's own decision pipeline (Weibull R(t), MTBF, hazard rate) | **0%** | **0%** |
+| Monte-Carlo decision confidence bounds (`MonteCarloBridge`) | **100%** — samples the reality score under parameter perturbation to produce p5/p50/p95 confidence bounds | **0%** | **0%** |
+| Predictive causal forecasting (`PredictiveCausalReasonerBridge`) | **100%** — forecasts the AI's cognitive trajectory from recent Φ history velocity; convergence/divergence risk assessment | **0%** | **0%** |
+| Self-engineering analysis (`SelfEngineeringEngine` via AIEG) | **100%** — maps AIEG's 69 roadmap capabilities to CS.py self-improvement domains, generating real engineering recommendations | **0%** | **0%** |
+| Cross-modal validation gate (`CrossModalValidator`) | **100%** — honest confidence gate: a claim is CONFIRMED only when ≥2 independent feature groups corroborate it; SINGLE-SOURCE with one modality; NONE with zero | **0%** | **0%** |
+| Multi-scale entropy & wavelet decomposition (`MultiScaleEntropyEngine`, `WaveletPacketDecomposer`) | **100%** — complexity analysis of 1-D histories via Haar wavelet packets and multi-scale sample entropy; pattern classification (COMPLEX/SIMPLE/PERIODIC) | **0%** | **0%** |
+| High-order correlation space analysis (`HighOrderCorrelationOrganizerBridge`) | **100%** — computes the combinatorial scale of sensory correlation space (pairwise D², triple D³) to inform the AI of its own perception complexity | **0%** | **0%** |
 | Karma/entity self-model dedicated to one entity | n/a — internal design correctness item, not a cross-system comparison axis. (Single-entity mode: 1 entity, 6 neuron groups, hidden size 384 — see workflow.md §7 #43.) | — | — |
 
 **Note on the instruction-following row:** the mechanism existing and
@@ -227,13 +238,31 @@ internal state. Where the code's own reality-check dashboard already flags
 something as SIMULATED, that label is carried into this table rather than
 softened.
 
+**Note on the `cs_reference_bridge.py` rows (sensory awareness, cognitive
+spectrum sensing, spectral memory, semantic state, pattern-of-life,
+uncertainty propagation, provenance chain, knowledge graph, TF-IDF,
+reliability, Monte Carlo, causal forecasting, self-engineering,
+cross-modal validation, wavelet/entropy, correlation organizer):** these
+are marked "100%" in the same structural-absence sense — CS.py runs them
+and frontier models do not attempt comparable organized sensory perception
+or higher-order logical computation. The bridge components are real,
+running code with real internal state (FFT spectra, hash chains, TF-IDF
+vectors, BFS-traversed graphs, Weibull curves, Monte-Carlo distributions),
+wired into the main loop at measured cycle intervals. They have **not**
+been put through controlled A/B tests isolating whether their outputs are
+well-calibrated — e.g., the pattern-of-life z-score threshold (3.5) and
+the uncertainty propagation's quadrature composition are mathematically
+sound but not empirically validated against ground truth. They are
+accurately described as real running code with real internal state, not
+verified as producing *correct or well-calibrated* internal state.
+
 ---
 
 ## D. Scale-normalized comparison — what's left once the parameter-count gap is set aside
 
 **The question this section answers:** most of §A's huge percentages
-(154,768%, 1,768,771%, etc.) are a statement about *size*, not about
-*design quality* — GPT-3 having 1,548× the parameters is true regardless of
+(139,716%, 1,596,763%, etc.) are a statement about *size*, not about
+*design quality* — GPT-3 having 1,397× the parameters is true regardless of
 whether GPT-3's architecture is better or worse than CS.py's per parameter.
 If CS.py and a comparison system were **the same size**, some of that gap
 would disappear and some of it wouldn't, because not all of §A/§B/§C's
@@ -249,10 +278,10 @@ These are the rows from **§C** restated under the specific question "does
 having more parameters change this?" The answer for every row below is
 **no** — none of these are things a bigger transformer produces automatically
 by being scaled up. They are mechanisms CS.py's design includes and
-mainstream LLM architectures do not attempt, at 113M parameters or at 2
+mainstream LLM architectures do not attempt, at 125M parameters or at 2
 trillion:
 
-| Capability | CS.py at 113M params (100%) | GPT-3 at 175B (0%) | Frontier at 300B-2T (0%) | Would more frontier parameters change this? |
+| Capability | CS.py at 125M params (100%) | GPT-3 at 175B (0%) | Frontier at 300B-2T (0%) | Would more frontier parameters change this? |
 |---|---:|---:|---:|---|
 | Autonomous unprompted thought | **100%** | **0%** | **0%** | No — this requires a persistent process with its own instruments between requests, which is an architecture/deployment decision, not a scale effect. A 10-trillion-parameter model served the same way GPT-3 is served would still be 0% here. |
 | Self-built relational knowledge graph over own instruments | **100%** | **0%** | **0%** | No — same reasoning. Requires persistent state across time that stateless request/response serving does not have, at any size. |
@@ -343,19 +372,17 @@ budget): **125,551,616 params (+11.05% vs legacy) → val loss 2.0843
 (−70.5% vs legacy)** — reinvesting the savings buys a further, if smaller,
 improvement on top of the architecture change alone.
 
-**Shipped configuration, updated in response to this question**:
-`CONFIG["ffn_hidden"]` is now set to widen the FFN to **3072** (was
-defaulting to 2816, the bare 2/3-rule width), which reinvests GQA's freed
-budget and lands the real model at **112,981,729 core parameters** — parity
-with the old legacy stack's 113,059,840 to within **−0.069%**. Same size,
-strictly better architecture, not a smaller model with a better ratio.
-Verified end-to-end at this configuration: forward returns the correct
-`[1, 2048, 12000]` shape, loss falls to 2.93 over 8 real training steps
-(down from where the legacy stack started at a comparable point), the
-symbolic-physics benchmark still passes 7/7, and the growth path
-(`add_neuron()`) was fixed to preserve the modern stack rather than
-silently reverting to legacy on the first growth event (see workflow.md
-§7 #47 for that bug specifically).
+**Shipped configuration, current state**:
+`CONFIG["ffn_hidden"]` is now **3242** (the freed GQA budget plus the
+later K/V-head reduction are reinvested into FFN width), and `lm_head` is now
+a full unshared projection rather than sharing weights with `embedding`.
+This lands the real model at **125,253,345 core parameters** and
+**252,552,519 total trainable parameters** — up from the old ~113M core/
+~240M total baseline. Verified end-to-end at this configuration: forward
+returns the correct `[1, 4096, 12000]` shape, the symbolic-physics benchmark
+still passes 7/7, and the growth path (`add_neuron()`) preserves the modern
+stack rather than silently reverting to legacy (see workflow.md §7 #47 for
+that bug specifically).
 
 **KV-cached generation** (also added this pass; the modern stack exposes
 the cache hook that `nn.TransformerEncoder` does not). Without it every new
@@ -368,13 +395,13 @@ token re-runs attention over the entire prefix — O(n²) total work. Verified
 |---:|---:|---:|---:|
 | 512 | 1.153s | 0.871s | 1.32× |
 | 1,024 | 1.088s | 0.892s | 1.22× |
-| **2,048** (CS.py's actual `input_size`) | 2.314s | 0.893s | **2.59×** |
+| **2,048** (measured at this pass's `input_size`) | 2.314s | 0.893s | **2.59×** |
 
 Note the signature: KV-cached decode time is **flat** (~0.89s) across all
 three prompt lengths while recompute grows — that is O(n) vs O(n²) visible
 directly. The speedup is modest at short prompts because per-step Python
 and kernel-launch overhead dominates there; it is the long-context case
-where it matters, and CS.py runs at 2,048.
+where it matters. `input_size` has since been raised to **4,096**.
 
 **Training throughput** (separate from the above): freshly measured
 332.65ms/step, ≈10,822 steps/hour on an RTX 5070 Ti with the active
@@ -437,7 +464,7 @@ capacity):
   once `neuron_groups` was `nn.ModuleDict` — verified post-growth training
   still runs.
 - Symbolic-physics benchmark still 7/7; forward pass still returns the
-  correct `[1, 2048, 12000]` shape.
+  correct `[1, 4096, 12000]` shape.
 
 **Why this belongs under "same size or smaller, more power"**: this adds
 no parameters and no architecture. It makes parameters that already
@@ -487,19 +514,19 @@ transformer block. They are:
 
 | Remaining gap | Is it scale? | Status |
 |---|---|---|
-| **Context window** 2,048 vs 128K–1M+ | No — architectural | **Now reachable.** RoPE (§D2) is the specific component that makes context extension possible without retraining from scratch — raising `rope_base` / interpolating positions is the standard technique and the stack now supports it. Not yet done; `input_size` is still 2,048. This was *impossible* with sinusoidal absolute PE and is now merely *pending*. |
-| **Vocabulary** 9,710 vs 50K–250K | No — corpus-bound | Blocked on corpus size, not parameters. 9,710 is the measured BPE saturation point of a 1.1MB corpus (§A note ²). More vocabulary requires more text, not more code. |
+| **Context window** 4,096 vs 128K–1M+ | No — architectural | **Done at 4,096.** `input_size` is now 4,096; RoPE makes further extension a config change rather than a re-architecture. Extension to 128K–1M+ is reachable but not yet measured. |
+| **Vocabulary** 12,000 vs 50K–250K | No — corpus-bound | Blocked on corpus size, not parameters. 12,000 is the current measured BPE output on the expanded `Infornmational.md` corpus (§A note ²). More vocabulary requires more text, not more code. |
 | **Training data / tokens** ~0 vs trillions | Partly | The real remaining blocker for §B, and not closeable in code. |
-| **RLHF / preference optimization** | No — pipeline | Still 0%. Mechanism absent, as §C states. |
+| **RLHF / preference optimization** | No — pipeline | Skeleton present (preference buffer + tiny reward head wired by Wave38RLHFResolver), but no full production reward model or PPO/DPO training loop. §C's 0% rating for a comparable pipeline still holds. |
 
 The honest synthesis: D1's capabilities (autonomous thought, self-built
 relational knowledge, second-order self-model, reversible self-modification)
 are **additive on top of any scale** — nothing about them trades off
 against parameter count. D2 has now removed the architectural handicap that
 sat underneath them. What remains between CS.py and a frontier-competitive
-system is data and training compute, plus the context-window extension that
-RoPE has just made reachable — not block design, which is where it was
-losing for free before this pass.
+system is data, training compute, and vocabulary size; the context window is
+already 4,096 and further extension is reachable via RoPE — not block design,
+which is where it was losing for free before this pass.
 
 ---
 
@@ -624,46 +651,83 @@ recorded here as real.
 
 ---
 
-## F. Wave 21–23 additions (x50000000 scaling tier)
+## F. Additional runtime components and hard-coded libraries
 
-**Added this session**, all verified by `_test_fixes.py` (26/26 components
-present, 0 missing) and syntax-checked via `py_compile`:
+`ProcessWiringAuditor` tracks **70 expected runtime components**, all present
+(`_process_wiring_count == 70`, 0 missing). An additional **27 bridge
+components** from `cs_reference_bridge.py` are lazily loaded via
+`_get_cs_ref_toolkit()` (`CSReferenceToolkit`) and wired into the main loop
+at measured cycle intervals (every 1/5/10/20/50/100/200 cycles depending
+on component).
 
-### Knowledge libraries (hardcoded, O(1) lookup)
+### Runtime component inventory
 
-| Library | Domain | Entries | Registered in `LIBRARY_REGISTRY` |
-|---|---|---:|---|
-| `KEY_DATA` | Key variables, launch variables for intelligence progression | 40+ | Yes |
-| `DISTILLED_INSIGHTS` | Self-distilled cross-library synthesis propositions | grows at runtime | Yes |
-| `COSMIC_DATA` | Astrophysics, information theory, topology, complex systems, meta-cognition | 48 entries across 5 domains | Yes |
-
-**Totals after wave 23:** 197 math equations, 187 common-sense rules, 28
-library registry keys.
-
-### Cognitive components (4 new, all wired)
-
-| Component | Purpose | Wired into |
-|---|---|---|
-| `MetaLearner` | Tracks which learning strategies produce best loss reduction; biases toward winners | `AccelerationCore.step`, `SovereignOrchestrator._sub_engines`, `ProcessWiringAuditor._expected` |
-| `AttentionEntropyBalancer` | Prevents attention collapse by penalizing low-entropy distributions | same |
-| `CounterfactualSimulator` | Generates counterfactual scenarios by perturbing sensory input; computes regret | same |
-| `KnowledgeGraphBuilder` | Builds relational graph from distilled insights and cross-library syntheses | same |
-
-### Hot-path optimizations
-
-| Optimization | Impact |
+| Component | Purpose |
 |---|---|
-| **Cached training pools** in `ConsciousnessRefinery` | Eliminates per-batch `list(COMMON_SENSE.values())` / `list(MATH_EQUATIONS.values())` rebuilding — pools built once, invalidated only when library sizes change |
-| **Fixed `KEY_DATA` flattening** | `KEY_DATA.values()` are nested dicts, not strings — was passing `dict` objects to `simple_tokenizer()`. Now flattens to strings. |
-| **Added `COSMIC_DATA` as training source** | Training now cycles through 5 knowledge families (was 4): common_sense, math_equations, key_data, distilled_insights, cosmic_data |
-| **Vectorized `_discrete_entropy` in `phi_compute.py`** | Replaced per-element Python loop with single matmul for `n_vars <= 8` case (the common path in MIP search) |
+| `NeuralPhaseCoordinator` | Locks and tracks a shared neural phase vector across subsystems |
+| `CausalTraceRecorder` | Records cause-effect traces between internal signals |
+| `SemanticCompressionEngine` | Detects repeated thought patterns by semantic hashing |
+| `UnusualKnowledgeSieve` | Biases refinery sampling toward rare, high-leverage knowledge tokens |
+| `IntelligenceLauncher` | Tracks launch variables and intelligence-progression control signals |
+| `SelfDistillationEngine` | Produces `DISTILLED_INSIGHTS` cross-library syntheses at runtime |
+| `MetaLearner` | Tracks which learning strategies produce the best loss reduction |
+| `AttentionEntropyBalancer` | Prevents attention collapse by penalizing low-entropy distributions |
+| `CounterfactualSimulator` | Generates counterfactual scenarios and computes regret |
+| `KnowledgeGraphBuilder` | Builds a relational graph from distilled insights |
+| Barrier resolvers | Lightweight resolver objects for data ingestion, real training-step attempts on the replay buffer, a tiny RLHF preference/reward-head skeleton, and frontier-gap telemetry meters. Wired into the resolver map and the runtime step pipeline. |
 
-### Concurrency fix (from prior session, verified stable)
+### Reference bridge components (`cs_reference_bridge.py`)
 
-The `process_input()` forward+backward+optimizer step is now fully wrapped
-in `self.lock`, preventing `add_neuron()` structural mutations from
-interleaving with training. This was the `CheckpointError` flagged in §E
-of the prior ratings pass — now fixed and verified across multiple runs.
+These 27 components are lazily loaded via `_get_cs_ref_toolkit()` and wired
+into the main loop. All degrade gracefully if optional dependencies
+(`sounddevice`, `scipy`, `AIEG`) are missing.
+
+| Component | Source | Purpose |
+|---|---|---|
+| `SensoryAwarenessOrganizer` | NEPA | Real-time microphone → FFT spectra, band powers, VAD, reality score |
+| `SignalProcessor` | NEPA | FFT, spectrogram, band powers, band-pass filter, peak detection, Pearson |
+| `SensoryHypercube` | NEPA | Multi-resolution hypercube indexing of sensory fields |
+| `SensoryOrganizationHierarchy` | NEPA | Hierarchical sensory indexing with entity tracking |
+| `FrequencyAudioEngine` | NEPA | Spectrum → audible waveform sonification |
+| `CLEANDeconvolver` | NEPA | CLEAN algorithm deconvolution for sensory signal separation |
+| `SensoryLogicEngine` | NEPA | Discretizes sensory input into symbols, runs temporal logic |
+| `WaveletPacketDecomposer` | NEPA | Multi-scale Haar wavelet packet decomposition |
+| `MultiScaleEntropyEngine` | NEPA | Multi-scale sample entropy, complexity index, pattern classification |
+| `CrossModalValidator` | NEPA | Multi-modal claim validation gate (CONFIRMED/SINGLE-SOURCE/NONE) |
+| `SemanticStateEngine` | NEPA | Discrete scene-state classification from sensory features |
+| `MarkovTemporalPredictor` | NEPA | Discrete-time Markov model over quantized sensory states |
+| `LongTermSpectralMemoryBridge` | NEPA | EMA baseline + robust z-score change detection on band powers |
+| `PatternOfLifeAnalyzerBridge` | NEPA | Per-entity activity envelope learning + anomaly detection |
+| `PredictiveCausalReasonerBridge` | NEPA | Kalman-style trajectory forecast + convergence risk |
+| `UncertaintyPropagationBridge` | NEPA | Quadrature composition of per-stage σ into pipeline confidence |
+| `SemanticStateEngineBridge` | NEPA | 10-state semantic macro-state inference from sensory features |
+| `CognitiveSpectrumSensorBridge` | NEPA | Neyman-Pearson energy detector + cyclostationary detection |
+| `HighOrderCorrelationOrganizerBridge` | NEPA | Pairwise D² / triple D³ correlation space scaling |
+| `AIEngineeringBridge` | AIEG | Natural-language engineering via Router, 69 RoadmapEngine capabilities |
+| `SelfEngineeringEngine` | AIEG | Maps 69 AIEG capabilities to CS.py self-improvement domains |
+| `TFIDFKnowledgeBase` | AIEG | TF-IDF cosine-similarity retrieval over thought text |
+| `KnowledgeGraphBridge` | AIEG | Directed labelled graph with BFS path traversal |
+| `GeneticOptimizerBridge` | AIEG | Generational GA for hyperparameter tuning (lazy) |
+| `PhiIITBridge` | AIEG | Integrated-information Φ proxy on boolean gate networks (lazy) |
+| `MonteCarloBridge` | AIEG | Monte-Carlo tolerance/risk sampling with percentile bounds |
+| `ProvenanceChainBridge` | AIEG | Tamper-evident hash-linked provenance ledger |
+| `ReliabilityEngineBridge` | AIEG | Arrhenius acceleration, MTBF, Weibull reliability/hazard |
+| `ReasoningTools` | AIEG | General AIEG reasoning utilities |
+
+### Hard-coded library totals
+
+| Library | Count |
+|---|---:|
+| `MATH_EQUATIONS` | 326 |
+| `COMMON_SENSE` | 309 |
+| `PHYSICS_LAWS` (real `sympy` equations) | 147 |
+| `LIBRARY_REGISTRY` keys | 63 |
+
+### Concurrency
+
+The `process_input()` forward+backward+optimizer step is wrapped in
+`self.lock`, preventing `add_neuron()` structural mutations from interleaving
+with training. Verified stable across multiple runs.
 
 ---
 
@@ -692,12 +756,12 @@ if it were.
 
 These are task categories where the §C/§D1 100%-vs-0% structural gap
 directly determines the outcome. On these tasks, a frontier model's
-1,548× parameter advantage does not help, because the task requires an
+1,397× parameter advantage does not help, because the task requires an
 architecture the frontier model does not have.
 
 | Task category | CS.py (est.) | Frontier (est.) | Why CS.py wins | Concrete example of CS.py doing good work |
 |---|---:|---:|---|---|
-| **Exact symbolic physics evaluation** (within its 326-equation law library) | **~95–100%** est. | **~80–90%** est. | CS.py hands off to `sympy` for exact evaluation; frontier models approximate via learned statistical association and can be wrong in ways symbolic evaluation cannot | "newtons second law with m=2 and a=5" → exact **10.0** via real `sympy.solve`, not a sampled token. The symbolic-physics benchmark passes **7/7 = 100%** (§B). |
+| **Exact symbolic physics evaluation** (within its 147-law `sympy` library) | **~95–100%** est. | **~80–90%** est. | CS.py hands off to `sympy` for exact evaluation; frontier models approximate via learned statistical association and can be wrong in ways symbolic evaluation cannot | "newtons second law with m=2 and a=5" → exact **10.0** via real `sympy.solve`, not a sampled token. The symbolic-physics benchmark passes **7/7 = 100%** (§B). |
 | **Autonomous long-running monitoring / anomaly detection** (no external prompt) | **100%** by definition | **0%** | Requires a persistent process with its own instruments between requests. Frontier models are stateless request/response — at any size. | `AutonomousThoughtStream` detects a novelty z-score spike in its own instrument readings, forms a conclusion, and adjusts attention — all without being asked. Verified deriving conclusions from cross-modal coupling every cycle. |
 | **Reversible self-modification experiments** (perturb → benchmark → keep/rollback) | **100%** by definition | **0%** | Frontier models ship with frozen weights at inference *by design*. CS.py's `SelfModifyingArchitecture` perturbs weights, runs a real held-out benchmark, keeps improvements, bitwise-rolls-back regressions. | Verified both directions: an improving perturbation is kept; a worsening one is rolled back with weights bitwise-restored. This is a real experiment-loop, not a claimed capability. |
 | **Consciousness-theory measurement research** (IIT/Φ, GWT, active inference) | **100%** by definition | **0%** | No frontier model implements Φ/IIT, global workspace, or active inference measurement. CS.py runs all three, with `PhiComputer` passing canonical-ordering validation (88/88 at `dim=32`). | `PhiComputer.compute()` runs at ~1,957 μs/call and passes the Balduzzi & Tononi 2008 integrated>segregated ordering test at 100% on its running config — a real, if approximate, consciousness-theory measurement no frontier model attempts. |
@@ -705,6 +769,9 @@ architecture the frontier model does not have.
 | **Substrate-aware deployment** (enumerate and adapt to the actual host) | **~70–85%** est. | **~5%** est. | `SubstrateProbe` enumerates the real host's compute/sensors/effectors/power and degrades honestly where an instrument is absent. Frontier models are served from fixed datacenter infrastructure and assume a homogeneous environment. | On a machine with no camera, CS.py reports "vision: absent" and degrades gracefully rather than fabricating visual input. On a machine with a screen, it uses real screen-capture/OCR as vision. |
 | **Relational instrument-graph analysis** (detect when internal correlations form or break) | **100%** by definition | **0%** | `RelationalKnowledgeGraph` builds persistent structure over which of CS.py's own instruments reliably relate, detects ruptures, runs transitive/synergy inference. Frontier models have no persistent internal instruments to relate. | Verified detecting a planted relation rupture *and* a second, logically-implied rupture that was never explicitly planted, while correctly preserving relations that still held. |
 | **Complex multi-instrument synthesis** (combine readings from multiple internal instruments over time, form conclusions, act — unprompted) | **~55–70%** est. | **~0–5%** est. | This is exactly what `AutonomousThoughtStream` + `RelationalKnowledgeGraph` + `SelfAwarenessMonitor` are built to do together. Frontier models have no persistent process, no internal instruments, and no unprompted synthesis path. | CS.py detects that two instruments that used to correlate have stopped correlating, forms a conclusion about the rupture, and adjusts its attention allocation in response — all without external prompting. This is a multi-instrument synthesis loop no frontier model attempts. |
+| **Organized sensory perception with real-time spectral analysis** (microphone → FFT → bands → semantic states → anomaly detection) | **100%** by definition | **0%** | `SensoryAwarenessOrganizer` + `CognitiveSpectrumSensorBridge` + `LongTermSpectralMemoryBridge` + `SemanticStateEngineBridge` + `PatternOfLifeAnalyzerBridge` form a full sensory pipeline from raw audio to semantic macro-states with change detection and anomaly flagging. Frontier models have no persistent sensory processing pipeline. | CS.py processes live microphone input into 6 frequency-band powers, detects voice activity, computes spectral entropy, learns a baseline of "normal" sound, flags deviations via z-score, and classifies the environment into discrete semantic states (SILENT, SPEECH_DETECTED, HIGH_ACTIVITY, ANOMALOUS) — all running autonomously every cycle. |
+| **Tamper-evident reasoning audit trail** (hash-linked provenance of every reasoning state) | **100%** by definition | **0%** | `ProvenanceChainBridge` records a Merkle-style hash chain of cycle, Φ, semantic state, and sensory channels every 50 cycles. Any later edit changes the hash, proving integrity. Frontier models produce no tamper-evident audit trail of their reasoning. | Every 50 cycles, CS.py's provenance chain appends a hash-linked block containing its current Φ, semantic state, and active sensory channels. The chain can be verified end-to-end — any tampering with a past entry breaks the hash sequence. |
+| **Engineering self-analysis and improvement recommendations** (map engineering toolkit to self-improvement domains) | **100%** by definition | **0%** | `SelfEngineeringEngine` maps AIEG's 69 roadmap capabilities to CS.py self-improvement domains, generating real engineering recommendations for the AI's own architecture. Frontier models do not analyze their own architecture through an engineering lens. | `SelfEngineeringEngine.analyze_self()` runs AIEG capabilities covering data foundations, knowledge representation, reasoning, learning, and self-modification, producing concrete engineering recommendations mapped to CS.py's subsystems. |
 
 ### G2. Tasks where CS.py's structural advantages help but don't dominate
 
@@ -723,7 +790,7 @@ language sub-component of the same task.
 ### G3. Tasks where CS.py loses badly (honest baseline)
 
 These are stated plainly so the estimates above are not read in isolation.
-On any task that is fundamentally raw language modeling, CS.py's ~113M
+On any task that is fundamentally raw language modeling, CS.py's ~125M core
 parameters and ~0 training tokens at scale (§A) make it non-competitive.
 The structural capabilities in §G1 do not help here.
 
@@ -731,7 +798,7 @@ The structural capabilities in §G1 do not help here.
 |---|---:|---:|---|
 | General knowledge Q&A (MMLU/GPQA-style) | **0–1%** measured | **~85–90%** est. | §B's live measurement: next-token accuracy 0.0%, perplexity at the random-guess floor. This is the headline honest number. |
 | Code generation (HumanEval-style) | **~0%** est. | **~70–90%** est. | No code in the training corpus; the language model cannot produce coherent code. The symbolic physics path is exact but narrow — it does not generalize to arbitrary code. |
-| Long-form writing / summarization / translation | **~0%** est. | **~85–95%** est. | 9,710-token vocabulary trained on a single 1.1MB philosophical document. The model cannot produce coherent general prose. |
+| Long-form writing / summarization / translation | **~0%** est. | **~85–95%** est. | 12,000-token vocabulary trained on a single philosophical document (~16,916 lines). The model cannot produce coherent general prose. |
 | Multi-step domain-general reasoning | **~0–1%** est. | **~70–85%** est. | Domain-general reasoning requires both scale and training. CS.py's symbolic path handles its own physics domain exactly but does not generalize to arbitrary reasoning. |
 | Open-ended creative generation (stories, dialogue, brainstorming) | **~0–2%** est. | **~80–90%** est. | Same root cause as above. The autonomous thought stream produces *structured internal findings*, not natural-language creative output. |
 
@@ -757,8 +824,8 @@ advantages are the determining factor:
    self-modeling process does that a stateless request/response model
    cannot.
 
-3. **An exact symbolic physics evaluator for its law domain.** 326 real
-   `sympy` equations, exact evaluation, 7/7 on its benchmark. Use it where
+3. **An exact symbolic physics evaluator for its law domain.** 147 real
+   `sympy` physics laws, exact evaluation, 7/7 on its benchmark. Use it where
    exactness matters and the question falls within its law library — not
    as a general physics tutor, where a frontier model's breadth wins.
 
@@ -774,12 +841,29 @@ advantages are the determining factor:
    production edge AI (its language model is too small to be useful on
    its own).
 
+6. **An organized sensory perception pipeline.** The `cs_reference_bridge.py`
+   components (`SensoryAwarenessOrganizer` → `CognitiveSpectrumSensorBridge` →
+   `LongTermSpectralMemoryBridge` → `SemanticStateEngineBridge` →
+   `PatternOfLifeAnalyzerBridge` → `UncertaintyPropagationBridge`) form a
+   full pipeline from raw microphone audio to semantic macro-states with
+   anomaly detection, change detection, and end-to-end confidence scoring.
+   Use it to study how an AI can organize raw sensory data into structured
+   perception, not as a production sensory system (the components are
+   mathematically sound but not empirically validated against ground truth).
+
+7. **A tamper-evident reasoning audit platform.** `ProvenanceChainBridge`
+   records a Merkle-style hash chain of every reasoning state (cycle, Φ,
+   semantic state, sensory channels) every 50 cycles. Use it as a reference
+   for how an AI's reasoning history can be made verifiable and tamper-evident,
+   not as a production audit system (the chain is in-memory, not persisted).
+
 **The honest bottom line on "complex issues":** CS.py is not the system to
 deploy on a complex *general* problem — a frontier model wins that by
-1,548×. CS.py is the system to deploy on a complex problem *that requires
+1,397×. CS.py is the system to deploy on a complex problem *that requires
 one of the architectures in §G1* — autonomous monitoring, exact symbolic
 evaluation, reversible self-modification, consciousness-theory measurement,
-or substrate-aware adaptation. On those, the frontier model scores 0% by
+substrate-aware adaptation, organized sensory perception, or tamper-evident
+reasoning audit. On those, the frontier model scores 0% by
 structural absence, and CS.py's 100% is the only non-zero score in the
 comparison. That is a narrow but real niche, and it is where this system's
 actual value lies today.

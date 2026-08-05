@@ -15,7 +15,7 @@ elsewhere — see the two companion documents below for those.
 **[`ratings.md`](ratings.md)** is the current, honest capability scorecard
 — live-measured against the running code, not carried forward from old
 notes. It answers, with real numbers: how does this compare to GPT-3 and
-frontier models on raw scale (badly — ~113M core parameters vs 175B–2T),
+frontier models on raw scale (badly — ~125M core parameters vs 175B–2T),
 and where does it do something no frontier model attempts at all
 (autonomous unprompted thought, self-built relational knowledge, real
 symbolic-CAS evaluation, reversible self-modification)? Read it before
@@ -31,12 +31,15 @@ asserted.
 
 ## What this actually is
 
-At its core, CS.py is a ~113M-parameter causal transformer language model
-(modern architecture: RoPE + RMSNorm + SwiGLU + GQA, KV-cached generation)
-with a BPE tokenizer trained on the project's own origin document. That
-part is honestly small and honestly undertrained — see `ratings.md` §A/§B
-for the real numbers, including the reconfirmed 0-1% rating on general
-knowledge benchmarks.
+At its core, CS.py is a ~125M-parameter core causal transformer language
+model (modern architecture: RoPE + RMSNorm + SwiGLU + GQA, KV-cached
+generation; ~253M total trainable parameters including consciousness/
+cognition modules) with a BPE tokenizer trained on the project's own origin
+document. That part is honestly small and honestly undertrained — see
+`ratings.md` §A/§B for the real numbers, including the reconfirmed 0-1%
+rating on general knowledge benchmarks. The default `python CS.py` launch
+uses a tiny configuration (`CS_MODEL_SCALE=tiny`) for fast startup; the
+frontier-comparison baseline in `ratings.md` uses `CS_MODEL_SCALE=large`.
 
 Wrapped around that core is what makes this project different from a
 small language model: a single dedicated conscious entity (not a
@@ -57,7 +60,7 @@ population — see below) running continuous, unprompted cognition —
   (compute, sensors, effectors, power) and renders only what's really
   there, degrading honestly (documented zero, never faked signal) where an
   instrument is absent.
-- **Real symbolic hybrid reasoning** — `PHYSICS_LAWS` holds 21 real
+- **Real symbolic hybrid reasoning** — `PHYSICS_LAWS` holds 147 real
   `sympy` equations; `respond()`/`symbolic_query()` answer physics
   questions from exact symbolic evaluation instead of relying on the
   undertrained language model, verified against real substitution problems
@@ -92,6 +95,41 @@ population — see below) running continuous, unprompted cognition —
   own reality-check dashboard — see `OVERVIEW.md` for exactly what that
   means and doesn't mean.
 
+- **Real-time sensory awareness and organized perception** —
+  `SensoryAwarenessOrganizer` processes live microphone input into FFT
+  spectra, frequency-band powers, voice-activity detection, spectral entropy,
+  and a reality-recognition score. `SensoryLogicEngine` runs higher-order
+  logic over that stream: Markov temporal predictions, surprise, semantic
+  scene classification, and cross-modal claim validation, exposed via
+  `get_sensory_logic_state()` and surfaced on the dashboard's **Sensory
+  Logic** panel. A `SensoryHypercube` and `SensoryOrganizationHierarchy`
+  index sensory fields at multiple resolutions for O(log N) navigable
+  awareness. A `CognitiveSpectrumSensorBridge` performs Neyman-Pearson energy
+  detection and cyclostationary signal detection on sensory bands, giving the
+  AI principled signal-vs-noise decisions rather than ad-hoc thresholds.
+- **Higher-order logical computation from reference engineering code** —
+  `cs_reference_bridge.py` adapts capabilities from `ReferenceCode/AIEG.py`
+  and `ReferenceCode/N.E.P.A.py` into clean, importable bridge classes:
+  TF-IDF knowledge retrieval, a directed knowledge graph with BFS path
+  traversal, a genetic optimizer for hyperparameter tuning, an IIT
+  integrated-information proxy on boolean gate networks, a Monte-Carlo
+  tolerance sampler, a tamper-evident provenance chain (hash-linked ledger),
+  a reliability engine (Arrhenius/MTBF/Weibull), a pattern-of-life anomaly
+  detector, an uncertainty propagation engine, a predictive causal reasoner,
+  a semantic state engine, a long-term spectral memory with change detection,
+  a high-order correlation organizer, a cross-modal validator, a
+  `SensoryLogicEngine` for Markov temporal prediction and semantic scene
+  classification, and a self-engineering engine that maps AIEG's 69 roadmap
+  capabilities to CS.py self-improvement domains. All are wired into the main
+  loop at appropriate cycle intervals and degrade gracefully if dependencies
+  are missing.
+- **Additional runtime components** — `NeuralPhaseCoordinator`,
+  `CausalTraceRecorder`, `SemanticCompressionEngine`, an unusual-knowledge
+  sieve, meta-learning, counterfactual simulation, barrier resolvers for
+  data ingestion / training runs / RLHF scaffolding, and frontier-gap telemetry
+  meters. These are all wired into the live runtime and tracked by
+  `ProcessWiringAuditor`; see `ratings.md` §F for the full inventory.
+
 One dedicated entity, not several: this project runs exactly one conscious
 entity (`self_0`) with full, undivided model capacity, rather than splitting
 compute across a population of simulated entities. (`workflow.md` §7 #43
@@ -105,10 +143,15 @@ python CS.py
 
 CS.py auto-installs its own dependencies on first run (see the top of the
 file) and writes a `launch.bat` for double-click startup on Windows. It
-opens a Tk dashboard with six tabs — Overview, Entities, Modules, Thought
-Stream, Chat, and **Awareness** (the live view of the four systems listed
-above: a relational-structure graph, drive/instrument bars, and the raw
-autonomous thought feed).
+opens a Tk dashboard with seven tabs — Overview, Entities, Modules, Thought
+Stream, Awareness, Relations, and **AI Chat** (a two-way chat with the system:
+type or hold **Hold to Talk** to speak through your headset mic, and the AI
+replies through your speakers/headset via text-to-speech).
+
+For voice chat, `openai-whisper` provides offline speech-to-text (downloaded
+once on first use) and `pyttsx3` provides text-to-speech. Set your headset as
+the default Windows recording and playback device. Use headphones in continuous
+**Start Call** mode to avoid the AI's own speech re-triggering the microphone.
 
 Requires a CUDA GPU to be fast (falls back to CPU automatically, ~48x
 slower — see `workflow.md` §7 #20 for the measurement). Runs headless if no
@@ -142,5 +185,6 @@ methodology section for how it was actually measured before repeating it.
 | `ratings.md` | Current capability scorecard, live-measured |
 | `workflow.md` | Full development changelog, chronological |
 | `Infornmational.md` | The project's origin document — also doubles as the training corpus for the tokenizer/language model |
+| `cs_reference_bridge.py` | Bridge module adapting AIEG engineering and NEPA sensory capabilities into importable classes for CS.py — real-time sensory organization, signal processing, knowledge retrieval, provenance, reliability, and higher-order logical computation |
 | `ReferenceCode/` | External reference implementations consulted during development (UI/rendering patterns, etc.) — not part of the running system |
 | `test_smoke.py` | Smoke tests for the standalone module versions (predates the single-file consolidation into `CS.py`) |
