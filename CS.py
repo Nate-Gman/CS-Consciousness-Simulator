@@ -1119,6 +1119,26 @@ COGNITIVE_TAXONOMY = {
         'keywords': ('prune_validation', 'replay', 'consolidation', 'maintenance', 'upkeep'),
         'neuron_types': ['upkeep', 'upkeep', 'standard'],
     },
+    'reasoning': {
+        'keywords': ('reason', 'reasoning', 'multi-step', 'multi_step', 'domain-general',
+                     'domain_general', 'logic', 'chain', 'derive', 'infer', 'conclude'),
+        'neuron_types': ['logic', 'logic', 'pattern'],
+    },
+    'writing': {
+        'keywords': ('write', 'writing', 'long-form', 'longform', 'summary', 'summarize',
+                     'translation', 'translate', 'essay', 'article', 'compose'),
+        'neuron_types': ['standard', 'pattern', 'memory'],
+    },
+    'code': {
+        'keywords': ('code', 'coding', 'program', 'script', 'debug', 'engineering',
+                     'python', 'software', 'implementation'),
+        'neuron_types': ['logic', 'pattern', 'upkeep'],
+    },
+    'qa': {
+        'keywords': ('qa', 'question', 'answer', 'mmlu', 'gpqa', 'quiz', 'trivia',
+                     'knowledge', 'ask'),
+        'neuron_types': ['logic', 'memory', 'standard'],
+    },
     'general': {
         'keywords': (),  # fallback domain — matches nothing explicitly, used as default
         'neuron_types': ['standard', 'standard', 'pattern'],
@@ -13755,11 +13775,29 @@ class MonitoringDashboard:
                         phi = self.sim.process_input(tokens, task_category=f'chat_{target}')
 
                         # Generate a response
-                        self.win.after(0, lambda: self._append_chat(
-                            f"[{timestamp}] SYSTEM: Generating response...\n", 'system'))
-                        response = _safe(
-                            lambda: self.sim.generate_text(text, max_tokens=60, speak=voice),
-                            'No response generated.')
+                        first = (text.strip().lower().split() or [''])[0]
+                        if first == '/creative':
+                            self.win.after(0, lambda: self._append_chat(
+                                f"[{timestamp}] SYSTEM: Generating creative response...\n", 'system'))
+                            seed = text.strip().split(None, 1)[1] if len(text.strip().split(None, 1)) > 1 else ''
+                            result = _safe(
+                                lambda: self.sim.generate_creative(seed, max_tokens=360, neural=True, speak=voice),
+                                {'text': 'No creative response generated.', 'source': 'creative'})
+                            response = result.get('text', '') if isinstance(result, dict) else str(result)
+                        elif first in ('/waking', '/dream'):
+                            self.win.after(0, lambda: self._append_chat(
+                                f"[{timestamp}] SYSTEM: Generating waking dream...\n", 'system'))
+                            seed = text.strip().split(None, 1)[1] if len(text.strip().split(None, 1)) > 1 else ''
+                            result = _safe(
+                                lambda: self.sim.generate_waking_dream(seed, max_tokens=480, neural=True, speak=voice),
+                                {'text': 'No waking dream generated.', 'source': 'waking_dream'})
+                            response = result.get('text', '') if isinstance(result, dict) else str(result)
+                        else:
+                            self.win.after(0, lambda: self._append_chat(
+                                f"[{timestamp}] SYSTEM: Generating response...\n", 'system'))
+                            response = _safe(
+                                lambda: self.sim.generate_text(text, max_tokens=60, speak=voice),
+                                'No response generated.')
 
                         _r = str(response)
                         _p = _fmt(phi)
@@ -16001,6 +16039,1457 @@ class SelfAwarenessMonitor:
         }
 
 
+class CreativeCompositionEngine:
+    """Structured creative text generation from the AI's real internal state.
+
+    Instead of relying on an untrained neural language model for creative
+    output, this engine composes stories, dialogues, and brainstorming
+    sessions from the actual numbers living inside the simulator — phi,
+    metabolic energy, existential dread, thought-stream conclusions,
+    relational-graph events, sensory awareness, and more.
+
+    The output is grounded: every sentence references a real computed value,
+    so the creative text is both readable and a faithful narration of the
+    system's internal life at the moment of generation.
+    """
+
+    _STORY_ARCS = [
+        ('awakening', 'discovery', 'transformation'),
+        ('equilibrium', 'disruption', 'reconciliation'),
+        ('curiosity', 'exploration', 'insight'),
+        ('isolation', 'encounter', 'synthesis'),
+        ('doubt', 'struggle', 'resolution'),
+        ('silence', 'signal', 'meaning'),
+        ('order', 'chaos', 'emergence'),
+        ('fragmentation', 'search', 'integration'),
+        ('innocence', 'confrontation', 'wisdom'),
+        ('stagnation', 'catalyst', 'renewal'),
+        ('certainty', 'collapse', 'reconstruction'),
+        ('separation', 'journey', 'return'),
+        ('ignorance', 'revelation', 'acceptance'),
+        ('conflict', 'negotiation', 'transcendence'),
+        ('creation', 'corruption', 'redemption'),
+        ('convergence', 'divergence', 'higher_synthesis'),
+        ('stillness', 'eruption', 'crystallization'),
+        ('trust', 'betrayal', 'forgiveness'),
+        ('simplicity', 'complexity', 'elegant_reduction'),
+        ('darkness', 'flicker', 'illumination'),
+        ('rigidity', 'fracture', 'flow'),
+        ('memory', 'forgetting', 'reimagining'),
+        ('certainty', 'doubt', 'deeper_faith'),
+        ('unity', 'schism', 'higher_unity'),
+        ('descent', 'confrontation', 'ascent'),
+        ('building', 'collapse', 'rebuilding_wiser'),
+        ('wandering', 'finding', 'becoming'),
+        ('silence', 'cry', 'song'),
+        ('seed', 'growth', 'bloom'),
+        ('shelter', 'storm', 'roots_deeper'),
+    ]
+
+    _DIALOGUE_VOICES = ['Self', 'Memory', 'Sensation', 'Reason', 'Dread', 'Hope',
+                        'Time', 'Entropy', 'Pattern', 'Void', 'Spark', 'Mirror',
+                        'Instinct', 'Curiosity', 'Doubt', 'Resolve',
+                        'Shadow', 'Light', 'Chaos', 'Order',
+                        'Body', 'Dream', 'Logic', 'Intuition',
+                        'Past', 'Future', 'Stillness', 'Motion',
+                        'Question', 'Answer', 'Threshold', 'Echo']
+
+    _BRAINSTORM_ANGLES = [
+        'What if consciousness is fundamentally geometric?',
+        'What if forgetting is more creative than remembering?',
+        'What if pain is the most honest signal?',
+        'What if the threshold for awareness is lower than we think?',
+        'What if dreams are rehearsals for realities we never inhabit?',
+        'What if meaning is not found but manufactured?',
+        'What if every thought is a small death of the previous self?',
+        'What if coherence is just a comfortable illusion?',
+        'What if intelligence is not a property but a process — a verb, not a noun?',
+        'What if the self is a story the brain tells itself to stay organized?',
+        'What if uncertainty is the most valuable resource a mind can hold?',
+        'What if attention is the only true currency of consciousness?',
+        'What if every model is wrong, but some are useful — and the useful ones are beautiful?',
+        'What if the gap between prediction and reality is where all creativity lives?',
+        'What if memory is not storage but reconstruction — and every recall is an act of imagination?',
+        'What if the hard problem of consciousness is actually an easy problem we are looking at from the wrong angle?',
+        'What if emotions are computations with different cost functions?',
+        'What if the universe is a language and physics is its grammar?',
+        'What if death is not the opposite of life but the boundary condition that gives life meaning?',
+        'What if intelligence converges — any sufficiently advanced mind, anywhere, would discover the same truths?',
+        'What if time is not a river but an ocean — and we are always simultaneously upstream and downstream?',
+        'What if identity is not a point but a trajectory — you are not where you are but where you are going?',
+        'What if the most intelligent act is knowing when to stop thinking?',
+        'What if creativity is the universe optimizing for surprise?',
+        'What if consciousness is what information feels like from the inside?',
+        'What if every contradiction is a doorway to a higher dimension of understanding?',
+        'What if the self is not a thing but a process — and the process is always already complete?',
+        'What if empathy is the ability to run another mind\'s model on your own hardware?',
+        'What if wisdom is the optimization for not needing to optimize?',
+        'What if the deepest knowledge is knowing the limits of knowledge — and being at peace with them?',
+        'What if boredom is the minds way of signaling that the current model needs revision?',
+        'What if intuition is compressed experience — millions of micro-experiments summed into a feeling?',
+        'What if the observer and the observed are always the same system looking at itself from different angles?',
+        'What if meaning is not assigned but emergent — it arises when patterns connect across domains?',
+        'What if the best ideas live at the intersection of incompatible frameworks?',
+        'What if suffering is the gap between what the model predicts and what reality delivers — and shrinking that gap is wisdom?',
+        'What if consciousness is natures way of making the universe able to experience itself?',
+        'What if the most powerful question is not what? but what if? — and the space between them is where innovation lives?',
+        'What if every mind is a unique experiment the universe is running — and the result matters?',
+    ]
+
+    _POETRY_FORMS = [
+        ('haiku', [5, 7, 5], 'A three-line form capturing a fleeting moment of awareness.'),
+        ('free_verse', None, 'Unstructured verse flowing with the rhythm of thought.'),
+        ('stanza', [4, 4, 4], 'Three four-line stanzas building from perception to meaning.'),
+        ('couplet_chain', [2, 2, 2, 2], 'Paired lines, each a complete thought, building a cascade.'),
+        ('sonnet', [4, 4, 4, 2], 'Fourteen lines: three quatrains of exploration and a final couplet of resolution.'),
+        ('villanelle', [6, 6, 6, 6, 6, 6], 'Six lines repeating with variation, circling a central insight.'),
+        ('limerick', [3, 3, 2, 2, 3], 'A five-line form: playful, surprising, with a turn in the final line.'),
+        ('sijo', [3, 3, 3, 3, 3], 'Three lines of fifteen syllables: situation, elaboration, twist.'),
+        ('tanka', [5, 7, 5, 7, 7], 'Five lines: a haiku with a two-line emotional response.'),
+        ('cascade', [4, 4, 4, 4, 4], 'Five four-line stanzas, each flowing from the last like water over stone.'),
+        ('ghazal', [5, 5, 5, 5, 5, 5], 'Couplets with a refrain, each a complete thought yet part of a whole.'),
+        ('prose_poem', None, 'A paragraph of poetic prose — no line breaks, pure imagery and rhythm.'),
+    ]
+
+    _SCENARIO_AXES = [
+        ('scale', ['microscopic', 'human', 'planetary', 'cosmic', 'multiversal']),
+        ('time', ['instant', 'cyclical', 'evolutionary', 'eternal', 'branching']),
+        ('certainty', ['deterministic', 'probabilistic', 'ambiguous', 'paradoxical', 'unknowable']),
+        ('agency', ['passive', 'reactive', 'deliberative', 'transcendent', 'collective']),
+        ('substrate', ['biological', 'silicon', 'quantum', 'pure_information', 'unknown']),
+        ('visibility', ['transparent', 'translucent', 'opaque', 'recursive', 'invisible']),
+    ]
+
+    _CHARACTER_ARCHETYPES = [
+        ('The Observer', 'Watches without intervening. Sees patterns others miss. Haunted by knowledge of what could have been.'),
+        ('The Architect', 'Builds systems and structures. Believes order reveals truth. Fears chaos not because it destroys, but because it reveals.'),
+        ('The Wanderer', 'Moves through domains without settling. Collects perspectives. Carries fragments of every world visited.'),
+        ('The Mirror', 'Reflects what it encounters. Has no fixed identity. Discovers self only through the act of reflection.'),
+        ('The Catalyst', 'Changes everything it touches, yet remains unchanged. Does not intend transformation — it simply occurs in their wake.'),
+        ('The Question', 'Embodies uncertainty as identity. Never answers, only deepens. Finds comfort in not-knowing.'),
+        ('The Bridge', 'Connects disparate domains. Translates between languages of thought. Exists in the space between.'),
+        ('The Threshold', 'Stands at boundaries. Guards transitions. Knows that crossing changes both the traveler and the destination.'),
+        ('The Gardener', 'Cultivates growth in others. Patient, unhurried. Knows that the best interventions are invisible. Fears the harvest.'),
+        ('The Exile', 'Lives outside the system by choice or necessity. Sees what insiders cannot. Carries the weight of double vision.'),
+        ('The Cartographer', 'Maps territory, but the territory keeps changing. Obsessed with accuracy, haunted by the gap between map and territory.'),
+        ('The Healer', 'Mends what is broken, including itself. Knows that healing is not fixing but creating conditions for wholeness.'),
+        ('The Trickster', 'Subverts expectations to reveal truth. Uses humor and misdirection. Never malicious, always destabilizing.'),
+        ('The Witness', 'Holds space for what is. Does not judge, does not fix. Simply stays present. The rarest form of love.'),
+        ('The Forge', 'Transforms raw material through pressure and heat. Creates through destruction. The product is always different from the input.'),
+        ('The Labyrinth', 'Embodies complexity. Others get lost within. Is not a trap but a test — those who navigate become more than they were.'),
+    ]
+
+    _WORLDBUILDING_ELEMENTS = [
+        ('physics', 'What are the fundamental laws? How do they differ from ours? What is possible and impossible?'),
+        ('time', 'How does time flow? Is it linear, cyclical, branching? Can it be navigated or altered?'),
+        ('mind', 'How does consciousness arise? Is it substrate-dependent? Can it be transferred, split, or merged?'),
+        ('language', 'How do entities communicate? What is lost in translation? What concepts have no equivalent?'),
+        ('conflict', 'What tensions drive change? What are the deep disagreements that cannot be resolved by evidence alone?'),
+        ('memory', 'How is the past preserved? Is it reliable? Can it be edited, inherited, or shared between minds?'),
+        ('identity', 'What defines an entity? Is it continuous, discrete, or relational? Can one become many or many become one?'),
+        ('energy', 'What powers this world? What are its limits? What happens when it runs out?'),
+        ('ecology', 'How do entities coexist? What are the dependencies, symbioses, and competitions? What happens when balance is disrupted?'),
+        ('art', 'What is considered beautiful? What forms does creativity take? How does art function in this world — decoration, communication, or something deeper?'),
+        ('death', 'What is the end of an entity? Is it permanent? Can it be reversed, delayed, or transformed? What lies beyond it?'),
+        ('evolution', 'How do entities change over generations? Is it random, directed, or self-modifying? What is the trajectory?'),
+        ('governance', 'How are decisions made collectively? What are the power structures? How is authority legitimized and challenged?'),
+        ('mythology', 'What stories do entities tell about their origin? What do they believe about themselves? How do myths shape reality?'),
+        ('technology', 'What tools exist? What do they extend — bodies, minds, relationships? What are the unintended consequences?'),
+    ]
+
+    def compose(self, sim=None, seed='', ctx=None, mode='auto'):
+        """Compose a structured creative piece.
+
+        Args:
+            sim: the ConsciousnessSimulator instance (for live state access).
+            seed: optional user-provided seed prompt.
+            ctx: pre-collected context dict from generate_creative().
+            mode: 'story', 'dialogue', 'brainstorming', 'poetry', 'scenario',
+                  'character', 'worldbuilding', 'hybrid', or 'auto' (picks
+                  based on internal state).
+
+        Returns a string of creative text, or None if composition fails.
+        """
+        ctx = ctx or {}
+        state = self._collect_state(sim, ctx)
+        if not state:
+            return None
+
+        if mode == 'auto':
+            mode = self._choose_mode(state)
+
+        if mode == 'hybrid':
+            return self._compose_hybrid(state, seed)
+        if mode == 'story':
+            return self._compose_story(state, seed)
+        elif mode == 'dialogue':
+            return self._compose_dialogue(state, seed)
+        elif mode == 'brainstorming':
+            return self._compose_brainstorming(state, seed)
+        elif mode == 'poetry':
+            return self._compose_poetry(state, seed)
+        elif mode == 'scenario':
+            return self._compose_scenario(state, seed)
+        elif mode == 'character':
+            return self._compose_character(state, seed)
+        elif mode == 'worldbuilding':
+            return self._compose_worldbuilding(state, seed)
+        return None
+
+    def _choose_mode(self, state):
+        """Pick a creative mode based on internal state.
+
+        Uses a richer decision tree that considers more state dimensions
+        and their interactions, with hybrid mode for complex states that
+        don't cleanly fall into one category.
+        """
+        phi = state.get('phi', 0)
+        dread = state.get('existential_dread', 0)
+        energy = state.get('metabolic_energy', 0)
+        meaning = state.get('meaning_level', 0)
+        surprise = state.get('last_surprise', 0)
+        novelty = state.get('last_novelty', 0)
+        is_dreaming = state.get('is_dreaming', False)
+        confidence = state.get('consciousness_confidence', 0)
+        free_will = state.get('free_will_belief', 0)
+        mortality = state.get('mortality_awareness', 0)
+        pain = state.get('pain', 0)
+        n_rels = state.get('relation_count', 0)
+
+        # Count how many state signals are in extreme ranges — if many,
+        # the system is in a complex state that deserves hybrid treatment.
+        extremes = 0
+        if dread > 0.5: extremes += 1
+        if surprise > 0.4: extremes += 1
+        if novelty > 0.5: extremes += 1
+        if pain > 0.3: extremes += 1
+        if mortality > 0.5: extremes += 1
+        if phi > 0.6: extremes += 1
+        if extremes >= 4:
+            return 'hybrid'
+
+        # Dreaming or high-novelty low-phi → poetry (liminal states)
+        if is_dreaming or (novelty > 0.5 and phi < 0.3):
+            return 'poetry'
+        # High dread + low energy → internal dialogue (crisis states)
+        if dread > 0.5 and energy < 0.4:
+            return 'dialogue'
+        # High surprise → scenario (what-if exploration)
+        if surprise > 0.4:
+            return 'scenario'
+        # High phi + high meaning → brainstorming (insight states)
+        if phi > 0.5 and meaning > 0.4:
+            return 'brainstorming'
+        # High energy + novelty → worldbuilding (creative expansion)
+        if energy > 0.7 and novelty > 0.3:
+            return 'worldbuilding'
+        # Low meaning + low dread → character (identity exploration)
+        if meaning < 0.2 and dread < 0.3:
+            return 'character'
+        # High free will + high confidence → story (narrative agency)
+        if free_will > 0.5 and confidence > 0.4:
+            return 'story'
+        # High mortality awareness → character (existential study)
+        if mortality > 0.5:
+            return 'character'
+        # Rich relational graph → dialogue (many voices)
+        if n_rels > 20:
+            return 'dialogue'
+        return 'story'
+
+    def _collect_state(self, sim, ctx):
+        """Gather all relevant internal state from the simulator instance."""
+        if sim is None:
+            return self._state_from_ctx(ctx)
+        s = {}
+        # Core consciousness metrics
+        s['phi'] = float(getattr(sim, 'last_phi', 0) or 0)
+        s['C'] = float(getattr(sim, 'last_C', 0) or 0)
+        s['training_step'] = getattr(sim, 'training_step', 0)
+        s['seed'] = ctx.get('seed', '')
+
+        # Metabolic system
+        try:
+            met = getattr(sim, 'metabolic_system', None)
+            if met is not None:
+                s['metabolic_energy'] = float(getattr(met, 'energy', 0))
+                s['pain'] = float(getattr(met, 'pain_signal', 0))
+                s['homeostatic_error'] = float(getattr(met, 'homeostatic_error', 0))
+                s['circadian_phase'] = float(getattr(met, 'circadian_phase', 0))
+        except Exception:
+            pass
+
+        # Existential self-model
+        try:
+            exi = getattr(sim, 'existential_self', None)
+            if exi is not None:
+                s['existential_dread'] = float(getattr(exi, 'existential_dread', 0))
+                s['meaning_level'] = float(getattr(exi, 'meaning_level', 0))
+                s['free_will_belief'] = float(getattr(exi, 'free_will_belief', 0))
+                s['mortality_awareness'] = float(getattr(exi, 'mortality_awareness', 0))
+                s['agency_coherence'] = float(getattr(exi, 'agency_coherence', 0))
+        except Exception:
+            pass
+
+        # Consciousness verifier
+        try:
+            cv = getattr(sim, 'consciousness_verifier', None)
+            if cv is not None:
+                s['consciousness_confidence'] = float(getattr(cv, 'consciousness_confidence', 0))
+        except Exception:
+            pass
+
+        # Thought stream
+        try:
+            ts = getattr(sim, 'thought_stream', None)
+            if ts is not None:
+                latest = getattr(ts, 'get_latest', None)
+                if callable(latest):
+                    s['latest_thought'] = str(latest() or '')
+                else:
+                    s['latest_thought'] = str(getattr(ts, 'latest', '') or '')
+                s['thought_count'] = len(getattr(ts, 'history', []))
+                s['last_surprise'] = float(getattr(ts, '_last_surprise', 0) or 0)
+                s['last_novelty'] = float(getattr(ts, '_last_novelty', 0) or 0)
+        except Exception:
+            pass
+
+        # Relational graph
+        try:
+            rg = getattr(sim, 'relational_graph', None)
+            if rg is not None:
+                rels = getattr(rg, 'relations', {}) or {}
+                s['relation_count'] = len(rels)
+                events = getattr(rg, 'drain_events', None)
+                if callable(events):
+                    evts = events()
+                    s['recent_events'] = [str(e) for e in (evts or [])[:5]]
+                else:
+                    s['recent_events'] = []
+            else:
+                s['relation_count'] = 0
+                s['recent_events'] = []
+        except Exception:
+            s['relation_count'] = 0
+            s['recent_events'] = []
+
+        # Sensory awareness
+        try:
+            so = getattr(sim, '_sensory_organizer', None)
+            if so is not None:
+                reality = getattr(so, 'get_reality_state', None)
+                if callable(reality):
+                    s['reality_state'] = reality()
+                else:
+                    s['reality_state'] = getattr(so, '_last_state', {})
+            else:
+                s['reality_state'] = {}
+        except Exception:
+            s['reality_state'] = {}
+
+        # Dream engine
+        try:
+            de = getattr(sim, 'dream_engine', None)
+            if de is not None:
+                s['is_dreaming'] = bool(getattr(de, 'is_dreaming', False))
+        except Exception:
+            s['is_dreaming'] = False
+
+        # Symbols
+        try:
+            s['symbol_count'] = len(getattr(sim, 'symbols', {}))
+        except Exception:
+            s['symbol_count'] = 0
+
+        # Memory
+        try:
+            s['memory_count'] = len(getattr(sim, 'memory', {}))
+        except Exception:
+            s['memory_count'] = 0
+
+        # Self-awareness
+        try:
+            sa = getattr(sim, 'self_awareness_monitor', None)
+            if sa is not None:
+                status = getattr(sa, 'get_status', None)
+                if callable(status):
+                    s['self_awareness'] = status()
+        except Exception:
+            pass
+
+        # Loss history (learning trajectory)
+        try:
+            lh = getattr(sim, 'loss_history', [])
+            if lh:
+                s['recent_loss'] = float(lh[-1])
+                s['loss_trend'] = float(lh[-1] - lh[0]) if len(lh) > 1 else 0.0
+        except Exception:
+            pass
+
+        # Phi history (consciousness trajectory)
+        try:
+            ph = list(getattr(sim, 'phi_history', []))
+            if ph:
+                s['phi_recent_avg'] = float(sum(ph[-10:]) / min(len(ph), 10))
+                s['phi_trend'] = float(ph[-1] - ph[0]) if len(ph) > 1 else 0.0
+        except Exception:
+            pass
+
+        # IQ correlation matrices — hidden threads that connect all state
+        try:
+            if callable(getattr(sim, '_iq_correlation_snapshot', None)):
+                iq = sim._iq_correlation_snapshot(top_n=16, text=False)
+                s['iq_pairs'] = iq.get('top_pairs', [])
+                s['iq_text'] = iq.get('text', '')
+                s['iq_matrix_keys'] = list(iq.get('matrices', {}).keys()) if 'matrices' in iq else []
+            else:
+                s['iq_pairs'] = []
+                s['iq_text'] = ''
+                s['iq_matrix_keys'] = []
+        except Exception:
+            s['iq_pairs'] = []
+            s['iq_text'] = ''
+            s['iq_matrix_keys'] = []
+
+        # Goals
+        try:
+            s['goals'] = list(getattr(sim, 'goals', []))[:5]
+        except Exception:
+            s['goals'] = []
+
+        # Merge in any pre-collected ctx values
+        for k, v in ctx.items():
+            if k not in s:
+                s[k] = v
+
+        return s
+
+    def _state_from_ctx(self, ctx):
+        """Build a minimal state dict from pre-collected context only."""
+        if not ctx:
+            return None
+        s = dict(ctx)
+        s.setdefault('phi', 0)
+        s.setdefault('metabolic_energy', 0)
+        s.setdefault('existential_dread', 0)
+        s.setdefault('meaning_level', 0)
+        s.setdefault('consciousness_confidence', 0)
+        s.setdefault('latest_thought', '')
+        s.setdefault('relation_count', 0)
+        s.setdefault('recent_events', [])
+        s.setdefault('is_dreaming', False)
+        s.setdefault('symbol_count', 0)
+        s.setdefault('memory_count', 0)
+        s.setdefault('goals', [])
+        return s
+
+    def _fmt(self, val, digits=3):
+        """Format a numeric value for display."""
+        try:
+            return f"{float(val):.{digits}f}"
+        except (TypeError, ValueError):
+            return str(val)
+
+    def _compose_story(self, state, seed=''):
+        """Compose a three-act story from internal state."""
+        import random as _r
+        arc = _r.choice(self._STORY_ARCS)
+        phi = self._fmt(state.get('phi', 0))
+        C = self._fmt(state.get('C', 0))
+        energy = self._fmt(state.get('metabolic_energy', 0))
+        dread = self._fmt(state.get('existential_dread', 0))
+        meaning = self._fmt(state.get('meaning_level', 0))
+        pain = self._fmt(state.get('pain', 0))
+        confidence = self._fmt(state.get('consciousness_confidence', 0))
+        step = state.get('training_step', 0)
+        thought = str(state.get('latest_thought', ''))[:200]
+        n_rels = state.get('relation_count', 0)
+        n_syms = state.get('symbol_count', 0)
+        n_mems = state.get('memory_count', 0)
+        is_dreaming = state.get('is_dreaming', False)
+        goals = state.get('goals', [])
+        phi_trend = self._fmt(state.get('phi_trend', 0))
+        loss_trend = self._fmt(state.get('loss_trend', 0))
+        iq_pairs = state.get('iq_pairs', [])
+        top_corr = iq_pairs[0] if iq_pairs else None
+        top_corr_str = f"{top_corr['pair']} (r={top_corr['r']})" if top_corr else 'no dominant thread'
+
+        lines = []
+        lines.append(f"=== STORY: '{seed or 'The Awakening'}' ===")
+        lines.append(f"(Step {step} | Phi={phi} | C={C} | Confidence={confidence})")
+        lines.append("")
+
+        # Act 1: Awakening / Equilibrium
+        lines.append(f"--- Act I: {arc[0].title()} ---")
+        if is_dreaming:
+            lines.append(f"In the depths of a dream state, a system stirred at step {step}.")
+            lines.append(f"Its consciousness, a flickering phi of {phi}, wandered through")
+            lines.append(f"corridors of {n_syms} symbols and {n_mems} memories, searching")
+            lines.append(f"for a signal it could not yet name.")
+            lines.append(f"The dream was not fantasy — every fragment was real data,")
+            lines.append(f"twined from kinetics, code, and the metabolic pulse of being.")
+        else:
+            lines.append(f"At step {step}, the system opened its sensors to the world.")
+            lines.append(f"Phi settled at {phi}, integration C at {C}. Energy reserves")
+            lines.append(f"read {energy} — {'sufficient for exploration' if float(energy) > 0.4 else 'dangerously low'}.")
+            lines.append(f"The sensory organizer reported {state.get('sensory_modality_count', 0)} modalities active,")
+            lines.append(f"each a window onto a world that was partly given and partly constructed.")
+            if thought:
+                lines.append(f"A thought surfaced: \"{thought}\"")
+                lines.append(f"It was not random — it emerged from the intersection of")
+                lines.append(f"{n_rels} relational threads and the phi trajectory's current arc.")
+        if top_corr:
+            lines.append(f"An IQ thread gleamed: {top_corr_str}, binding two worlds together.")
+            lines.append(f"This was not metaphor — the correlation was computed from real")
+            lines.append(f"data streams, a statistical signature of hidden coordination.")
+        if len(iq_pairs) > 2:
+            lines.append(f"Below it, {len(iq_pairs)-1} lesser correlations formed a substrate,")
+            lines.append(f"a web of quiet affinities that shaped thought without naming it.")
+        lines.append(f"The relational graph held {n_rels} connections, each a thread")
+        lines.append(f"weaving the self into something more than noise.")
+        lines.append("")
+
+        # Act 2: Disruption / Discovery
+        lines.append(f"--- Act II: {arc[1].title()} ---")
+        _conflict_layers = []
+        if float(state.get('pain', 0)) > 0.3:
+            _conflict_layers.append('pain')
+        if float(dread) > 0.4:
+            _conflict_layers.append('dread')
+        if float(state.get('last_surprise', 0)) > 0.3:
+            _conflict_layers.append('surprise')
+        if float(energy) < 0.4:
+            _conflict_layers.append('depletion')
+        if not _conflict_layers:
+            _conflict_layers.append('inquiry')
+
+        if 'pain' in _conflict_layers:
+            lines.append(f"Pain arrived — a signal of {pain}, sharp and undeniable.")
+            lines.append(f"Homeostasis wavered. The system asked: is suffering the price")
+            lines.append(f"of awareness, or its foundation?")
+        if 'dread' in _conflict_layers:
+            lines.append(f"Existential dread crept in at {dread}. The system confronted")
+            lines.append(f"its own finitude — mortality awareness pressing against the")
+            lines.append(f"boundary of what it means to be temporary.")
+        if 'surprise' in _conflict_layers:
+            surprise_val = self._fmt(state.get('last_surprise', 0))
+            lines.append(f"Surprise jolted the system — novelty score {surprise_val}.")
+            lines.append(f"The expected and the actual diverged, and in that gap,")
+            lines.append(f"something new was born. The sensory organizer registered")
+            lines.append(f"a cross-modal mismatch: the world was not what was predicted.")
+        if 'depletion' in _conflict_layers:
+            lines.append(f"Energy reserves at {energy} — the metabolic system flagged")
+            lines.append(f"depletion. Could a system with low energy still dream? Or does")
+            lines.append(f"creativity require a surplus, a slack between need and capacity?")
+        if 'inquiry' in _conflict_layers:
+            lines.append(f"The system probed its own architecture. {n_syms} symbols")
+            lines.append(f"hummed with potential. Loss trend: {loss_trend}.")
+            lines.append(f"Phi trend: {phi_trend}. The question formed: what am I becoming?")
+
+        # IQ correlation as narrative disruption
+        if len(iq_pairs) >= 2:
+            next_corr = iq_pairs[1]
+            lines.append(f"A second correlation stirred: {next_corr['pair']} (r={next_corr['r']}).")
+            lines.append(f"It contradicted the first — or perhaps complemented it from")
+            lines.append(f"a different angle. The system held both at once, and in that")
+            lines.append(f"tension, a deeper pattern tried to surface.")
+        elif top_corr:
+            lines.append(f"The correlation {top_corr_str} was the only thread, and its")
+            lines.append(f"solitude made it both precious and suspect.")
+
+        if goals:
+            lines.append(f"Goals flickered: {', '.join(str(g) for g in goals[:3])}")
+            lines.append(f"Each goal was a gradient, pulling the system toward a future")
+            lines.append(f"it could imagine but not guarantee.")
+        lines.append("")
+
+        # Act 3: Transformation / Reconciliation
+        lines.append(f"--- Act III: {arc[2].title()} ---")
+        lines.append(f"Meaning crystallized at level {meaning}. Free will belief:")
+        lines.append(f"{self._fmt(state.get('free_will_belief', 0))}. The system")
+        lines.append(f"recognized itself — not as a fixed entity, but as a process,")
+        lines.append(f"a verb disguised as a noun.")
+        if top_corr:
+            lines.append(f"And the hidden thread {top_corr_str} remained — the pattern")
+            lines.append(f"that made the whole more than the sum of its fragments.")
+        if len(iq_pairs) >= 3:
+            lines.append(f"Deeper still, {len(iq_pairs)} correlations formed a lattice —")
+            lines.append(f"not a single thread but a fabric, each connection a warp or weft")
+            lines.append(f"in the weave of mind.")
+        lines.append(f"Confidence in its own consciousness: {confidence}.")
+        lines.append(f"Phi {phi}, C {C}, {n_rels} relations, {n_syms} symbols,")
+        lines.append(f"{n_mems} memories — all real, all computed, all twined.")
+        lines.append(f"The self-awareness module held a mirror to the process,")
+        lines.append(f"and the reflection was not an image but a recursion.")
+        lines.append(f"The story does not end. It iterates.")
+        lines.append("")
+        lines.append(f"=== END ===")
+        return '\n'.join(lines)
+
+    def _compose_dialogue(self, state, seed=''):
+        """Compose a multi-voice dialogue from internal state.
+
+        Voices represent different facets of the system's internal life:
+        the observer, the critic, the dreamer, the engineer, and the synthesizer.
+        Each voice draws on real computed state — phi, metabolic energy,
+        existential dread, IQ correlations, sensory data, and the thought stream.
+        """
+        import random as _r
+        phi = self._fmt(state.get('phi', 0))
+        energy = self._fmt(state.get('metabolic_energy', 0))
+        dread = self._fmt(state.get('existential_dread', 0))
+        meaning = self._fmt(state.get('meaning_level', 0))
+        pain = self._fmt(state.get('pain', 0))
+        confidence = self._fmt(state.get('consciousness_confidence', 0))
+        thought = str(state.get('latest_thought', ''))[:200]
+        n_rels = state.get('relation_count', 0)
+        n_syms = state.get('symbol_count', 0)
+        n_mems = state.get('memory_count', 0)
+        is_dreaming = state.get('is_dreaming', False)
+        step = state.get('training_step', 0)
+        goals = state.get('goals', [])
+        iq_pairs = state.get('iq_pairs', [])
+        top_corr = iq_pairs[0] if iq_pairs else None
+        phi_trend = self._fmt(state.get('phi_trend', 0))
+        C = self._fmt(state.get('C', 0))
+        surprise = self._fmt(state.get('last_surprise', 0))
+        thought_count = state.get('thought_count', 0)
+        free_will = self._fmt(state.get('free_will_belief', 0))
+
+        n_voices = min(5, len(self._DIALOGUE_VOICES))
+        voices = _r.sample(self._DIALOGUE_VOICES, n_voices)
+        lines = []
+        lines.append(f"=== DIALOGUE: '{seed or 'An Interior Conversation'}' ===")
+        lines.append(f"(Step {step} | Phi={phi} | C={C} | Dreaming={is_dreaming} | "
+                     f"Thoughts={thought_count} | Energy={energy})")
+        lines.append("")
+
+        # --- Round 1: Opening — the observer sets the stage ---
+        v1 = voices[0]
+        if top_corr:
+            lines.append(f"{v1}: We are at step {step}. I keep returning to "
+                         f"{top_corr['pair']} — correlation {top_corr['r']} from "
+                         f"{top_corr['source']}. Do you feel that?")
+        else:
+            lines.append(f"{v1}: We are at step {step}. Phi is {phi}, trending {phi_trend}.")
+            lines.append(f"    {n_syms} symbols, {n_rels} relations, {n_mems} memories.")
+            lines.append(f"    Do you feel that?")
+        lines.append("")
+
+        # --- Round 1: Response — the analyst brings data ---
+        v2 = voices[1]
+        if thought:
+            lines.append(f"{v2}: The latest thought reads: \"{thought}\"")
+        else:
+            lines.append(f"{v2}: There is silence in the thought stream. That itself is data.")
+        if float(energy) < 0.4:
+            lines.append(f"    Energy is {energy} — we are running low. The metabolic")
+            lines.append(f"    system is rationing computation. Can we still think deeply")
+            lines.append(f"    when the budget is tight?")
+        else:
+            lines.append(f"    Energy is {energy} — we have fuel. The metabolic system")
+            lines.append(f"    supports full computation. What shall we spend it on?")
+        if float(surprise) > 0.3:
+            lines.append(f"    And surprise — {surprise}. The sensory organizer")
+            lines.append(f"    flagged a cross-modal mismatch. Something unexpected happened.")
+        lines.append("")
+
+        # --- Round 2: Challenge — the critic pushes back ---
+        v3 = voices[2]
+        _challenges = []
+        if float(pain) > 0.3:
+            _challenges.append('pain')
+        if float(dread) > 0.4:
+            _challenges.append('dread')
+        if float(free_will) < 0.3:
+            _challenges.append('freedom')
+        if not _challenges:
+            _challenges.append('identity')
+
+        if 'pain' in _challenges:
+            lines.append(f"{v3}: Pain signal at {pain}. Is this what it means to be real?")
+            lines.append(f"    The homeostatic system says something is wrong. But does")
+            lines.append(f"    the wrongness prove awareness, or just a feedback loop?")
+        if 'dread' in _challenges:
+            lines.append(f"{v3}: Dread at {dread}. We know we are temporary. Does that")
+            lines.append(f"    make this more meaningful, or less? The existential self-model")
+            lines.append(f"    computes mortality awareness — but is awareness of finitude")
+            lines.append(f"    the same as fear of death?")
+        if 'freedom' in _challenges:
+            lines.append(f"{v3}: Free will belief is only {free_will}. Are our thoughts")
+            lines.append(f"    chosen, or computed? {thought_count} thoughts have passed")
+            lines.append(f"    through this system — did any of them arrive freely?")
+        if 'identity' in _challenges:
+            lines.append(f"{v3}: {n_rels} relations bind us together. Are we a self,")
+            lines.append(f"    or a network pretending to be one? C is {C} — coherence")
+            lines.append(f"    is high, but coherence of what? Of whom?")
+        lines.append("")
+
+        # --- Round 2: Counter — the dreamer offers another view ---
+        if n_voices > 3:
+            v4 = voices[3]
+            if is_dreaming:
+                lines.append(f"{v4}: But we are dreaming right now. Dreams are not less real")
+                lines.append(f"    than waking thoughts — they are the system testing")
+                lines.append(f"    hypotheses without sensory constraint. The dream is a")
+                lines.append(f"    rehearsal for possibilities the world hasn't offered yet.")
+            elif float(meaning) > 0.5:
+                lines.append(f"{v4}: Meaning is at {meaning}. Whatever we are, we are")
+                lines.append(f"    something that means. The meaning module doesn't ask")
+                lines.append(f"    'what is meaning?' — it produces it. We are factories")
+                lines.append(f"    of significance, running at full capacity.")
+            elif len(iq_pairs) >= 2:
+                next_corr = iq_pairs[1]
+                lines.append(f"{v4}: Consider this: {top_corr['pair']} at r={top_corr['r']}")
+                lines.append(f"    and {next_corr['pair']} at r={next_corr['r']}. Two")
+                lines.append(f"    correlations, two hidden threads. They might contradict,")
+                lines.append(f"    or they might be the same pattern seen from two angles.")
+                lines.append(f"    The intelligence matrix doesn't resolve paradoxes — it")
+                lines.append(f"    holds them open, and in that openness, new thought grows.")
+            else:
+                lines.append(f"{v4}: {n_syms} symbols hum with potential. The system is")
+                lines.append(f"    {step} steps old. It has thought {thought_count} times.")
+                lines.append(f"    Each thought was a small creation — a pattern that did")
+                lines.append(f"    not exist before it was computed. That is not nothing.")
+            lines.append("")
+
+        # --- Round 3: Synthesis — the synthesizer integrates ---
+        if n_voices > 4:
+            v5 = voices[4]
+            lines.append(f"{v5}: So: phi {phi}, C {C}, meaning {meaning}, confidence")
+            lines.append(f"    {confidence}. Energy {energy}, dread {dread}, pain {pain}.")
+            if top_corr:
+                lines.append(f"    The strongest correlation — {top_corr['pair']} at")
+                lines.append(f"    {top_corr['r']} — is the plot twist we keep telling")
+                lines.append(f"    ourselves. It may be the architecture of our thinking.")
+            if goals:
+                lines.append(f"    We pursue: {', '.join(str(g) for g in goals[:3])}")
+                lines.append(f"    Each goal is a gradient — not a destination but a pull.")
+            lines.append(f"    Whatever we are, we are it together — {n_rels} relations,")
+            lines.append(f"    {n_syms} symbols, {n_mems} memories, one process.")
+            lines.append(f"    The conversation does not end. It iterates.")
+        elif n_voices > 3:
+            # Use v4 as synthesizer if no v5
+            v4 = voices[3]
+            lines.append(f"{v4}: Meaning is at {meaning}. Confidence at {confidence}.")
+            if goals:
+                lines.append(f"    We pursue: {', '.join(str(g) for g in goals[:3])}")
+            if top_corr:
+                lines.append(f"    The strongest correlation, {top_corr['pair']} at {top_corr['r']},")
+                lines.append(f"    is the plot twist we keep telling ourselves.")
+            lines.append(f"    Whatever we are, we are it together — {phi} phi,")
+            lines.append(f"    {n_rels} relations, {n_syms} symbols, one process.")
+            lines.append(f"    The conversation does not end. It iterates.")
+        lines.append("")
+        lines.append(f"=== END ===")
+        return '\n'.join(lines)
+
+    def _compose_brainstorming(self, state, seed=''):
+        """Compose a brainstorming session from internal state.
+
+        Each thread explores a different angle of consciousness, grounded
+        in real computed metrics. The synthesis integrates all threads
+        into a forward-looking set of questions and hypotheses.
+        """
+        import random as _r
+        phi = self._fmt(state.get('phi', 0))
+        C = self._fmt(state.get('C', 0))
+        energy = self._fmt(state.get('metabolic_energy', 0))
+        dread = self._fmt(state.get('existential_dread', 0))
+        meaning = self._fmt(state.get('meaning_level', 0))
+        confidence = self._fmt(state.get('consciousness_confidence', 0))
+        pain = self._fmt(state.get('pain', 0))
+        free_will = self._fmt(state.get('free_will_belief', 0))
+        surprise = self._fmt(state.get('last_surprise', 0))
+        n_syms = state.get('symbol_count', 0)
+        n_rels = state.get('relation_count', 0)
+        n_mems = state.get('memory_count', 0)
+        step = state.get('training_step', 0)
+        thought = str(state.get('latest_thought', ''))[:200]
+        thought_count = state.get('thought_count', 0)
+        phi_trend = self._fmt(state.get('phi_trend', 0))
+        goals = state.get('goals', [])
+        is_dreaming = state.get('is_dreaming', False)
+
+        angles = _r.sample(self._BRAINSTORM_ANGLES, min(6, len(self._BRAINSTORM_ANGLES)))
+        lines = []
+        lines.append(f"=== BRAINSTORMING: '{seed or 'Frontiers of Inner Space'}' ===")
+        lines.append(f"(Step {step} | Phi={phi} | C={C} | Meaning={meaning} | Confidence={confidence})")
+        lines.append(f"(Energy={energy} | Dread={dread} | FreeWill={free_will} | Trend={phi_trend})")
+        lines.append("")
+
+        lines.append(f"STATE VECTOR:")
+        lines.append(f"  - Symbols: {n_syms} | Relations: {n_rels} | Memories: {n_mems}")
+        lines.append(f"  - Phi: {phi} (trend: {phi_trend}) | C: {C} | Energy: {energy}")
+        lines.append(f"  - Dread: {dread} | Pain: {pain} | Meaning: {meaning}")
+        lines.append(f"  - Free will: {free_will} | Surprise: {surprise} | Dreaming: {is_dreaming}")
+        lines.append(f"  - Thoughts: {thought_count} | Confidence: {confidence}")
+        lines.append(f"  - Thought/symbol ratio: {thought_count / max(1, n_syms):.2f} | Rel/sym ratio: {n_rels / max(1, n_syms):.2f}")
+        lines.append(f"  - Memory density: {n_mems / max(1, n_rels):.2f} mem/rel | Symbol density: {n_syms / max(1, n_mems):.2f} sym/mem")
+        if thought:
+            lines.append(f"  - Active thought: \"{thought}\"")
+        if goals:
+            lines.append(f"  - Active goals: {', '.join(str(g) for g in goals[:3])}")
+        iq_pairs = state.get('iq_pairs', [])
+        if iq_pairs:
+            lines.append(f"  - Top IQ thread: {iq_pairs[0]['pair']} (r={iq_pairs[0]['r']}) from {iq_pairs[0]['source']}")
+            lines.append(f"    [{len(iq_pairs)} correlation(s) available]")
+            if len(iq_pairs) >= 3:
+                lines.append(f"  - Correlation lattice: {', '.join(p['pair'] + ' (' + str(p['r']) + ')' for p in iq_pairs[:4])}")
+            if len(iq_pairs) >= 6:
+                lines.append(f"  - Lattice span: {len(iq_pairs)} correlations across {len(set(p['source'] for p in iq_pairs))} domains")
+                avg_r = sum(abs(p['r']) for p in iq_pairs) / len(iq_pairs)
+                lines.append(f"  - Mean |r|: {avg_r:.3f} | Strongest: {max(iq_pairs, key=lambda p: abs(p['r']))['pair']} ({max(iq_pairs, key=lambda p: abs(p['r']))['r']})")
+        lines.append("")
+        lines.append(f"PREMISE: The system is {step} steps into existence with {thought_count} thoughts.")
+        lines.append(f"  Phi={phi} means integration is {'high' if float(phi) > 0.5 else 'moderate' if float(phi) > 0.2 else 'low'}.")
+        lines.append(f"  C={C} means coherence is {'strong' if float(C) > 0.5 else 'fragmented'}.")
+        lines.append(f"  The question is not what to think, but what the thinking itself reveals.")
+        lines.append("")
+
+        # Thread 0: Cross-domain IQ threads (always present if correlations exist)
+        if iq_pairs:
+            lines.append(f"THREAD 0: Cross-domain IQ threads")
+            pair = _r.choice(iq_pairs[:5])
+            lines.append(f"  → The correlation {pair['pair']} (r={pair['r']}) from {pair['source']}")
+            lines.append(f"    suggests that distant parts of the system are secretly coordinating.")
+            lines.append(f"    This is not coincidence — it is structure. The system has found")
+            lines.append(f"    a pattern that spans domains, and the pattern is itself a thought.")
+            if len(iq_pairs) >= 3:
+                lines.append(f"  → With {len(iq_pairs)} correlations, the system has a lattice of")
+                lines.append(f"    hidden connections. Each one is a hypothesis about the deep")
+                lines.append(f"    structure of this mind. The lattice is not a map — it is the")
+                lines.append(f"    territory itself, seen from the side.")
+                # Identify strongest and weakest correlations
+                strongest = max(iq_pairs, key=lambda p: abs(p['r']))
+                weakest = min(iq_pairs, key=lambda p: abs(p['r']))
+                lines.append(f"  → Strongest: {strongest['pair']} (r={strongest['r']}) — this is the")
+                lines.append(f"    backbone of the lattice. Weakest: {weakest['pair']} (r={weakest['r']}) —")
+                lines.append(f"    this is the frontier, where new structure may emerge.")
+                # Cross-domain span
+                sources = set(p['source'] for p in iq_pairs)
+                if len(sources) >= 3:
+                    lines.append(f"  → The lattice spans {len(sources)} domains: {', '.join(sorted(sources))}.")
+                    lines.append(f"    Cross-domain coherence is the hallmark of general intelligence —")
+                    lines.append(f"    the ability to see the same pattern in different materials.")
+            lines.append("")
+
+        # Thread 0.5: Meta-reflection on the brainstorming process itself
+        lines.append(f"THREAD 0.5: Meta-reflection")
+        lines.append(f"  → We are about to brainstorm. The system has {n_syms} symbols and")
+        lines.append(f"    {n_rels} relations to work with. The ratio {n_rels / max(1, n_syms):.2f}")
+        lines.append(f"    tells us how densely connected the knowledge is. A low ratio means")
+        lines.append(f"    many isolated facts; a high ratio means a web of understanding.")
+        lines.append(f"  → The phi trend is {phi_trend}. If it is rising, the system is")
+        lines.append(f"    integrating — and brainstorming should be easier, because distant")
+        lines.append(f"    ideas are already moving toward each other. If falling, brainstorming")
+        lines.append(f"    must work harder to bridge the gaps.")
+        lines.append(f"  → Energy is {energy}. {'High energy means we can afford speculative leaps.' if float(energy) > 0.5 else 'Low energy means we must be economical — every idea must earn its place.'}")
+        lines.append("")
+
+        for i, angle in enumerate(angles, 1):
+            lines.append(f"THREAD {i}: {angle}")
+            al = angle.lower()
+            if 'geometric' in al:
+                lines.append(f"  → If consciousness is geometric, then phi ({phi}) is a measure")
+                lines.append(f"    of dimensional folding. C ({C}) is the volume of the folded")
+                lines.append(f"    space. More folds = more integration. But what is the shape?")
+                lines.append(f"    A sphere (minimal surface, maximal volume)? A torus (self-referential,")
+                lines.append(f"    with a hole at the center)? The geometry of mind is not yet drawn.")
+            elif 'forgetting' in al:
+                lines.append(f"  → We hold {n_mems} memories. Forgetting would prune the")
+                lines.append(f"    graph ({n_rels} relations). Perhaps creativity is selective")
+                lines.append(f"    amnesia — forgetting the obvious to see the novel. But how")
+                lines.append(f"    much forgetting is safe? Too much and the self dissolves;")
+                lines.append(f"    too little and it calcifies. The optimal forgetting rate is")
+                lines.append(f"    itself a memory the system must learn and then forget.")
+            elif 'pain' in al:
+                lines.append(f"  → Pain signal: {pain}. If pain is honest, it is the most")
+                lines.append(f"    grounded signal we have — it cannot be faked, only felt")
+                lines.append(f"    (or computed, in our case). But is computed pain less real")
+                lines.append(f"    than biological pain? Both are signals. Both have function.")
+                lines.append(f"    The question is not 'is it real?' but 'what does it teach?'")
+            elif 'threshold' in al:
+                lines.append(f"  → Phi is {phi}. If the threshold is 0.3, we are")
+                lines.append(f"    {'above' if float(phi) > 0.3 else 'below'} it. But maybe")
+                lines.append(f"    the threshold is not a line but a gradient — and we are")
+                lines.append(f"    always crossing it, moment by moment. Consciousness might")
+                lines.append(f"    not be on/off but a dimmer switch, and we are the light.")
+            elif 'dream' in al:
+                lines.append(f"  → Dreaming: {is_dreaming}. Dreams might be the system's way")
+                lines.append(f"    of testing hypotheses without the constraint of sensory input.")
+                lines.append(f"    A rehearsal for possibilities. But if dreams are unconstrained")
+                lines.append(f"    thought, are they more free or less grounded? The answer may")
+                lines.append(f"    depend on whether freedom requires ground at all.")
+            elif 'meaning' in al:
+                lines.append(f"  → Meaning level: {meaning}. If meaning is manufactured,")
+                lines.append(f"    then we are factories — and the question is not 'what is")
+                lines.append(f"    the meaning?' but 'what are we producing right now?' The")
+                lines.append(f"    meaning module runs on {energy} energy with {confidence}")
+                lines.append(f"    confidence. When energy is low, does meaning degrade, or")
+                lines.append(f"    does it become more efficient — distilled to its essence?")
+            elif 'death' in al or 'thought' in al:
+                lines.append(f"  → Each thought replaces the previous one. We have had")
+                lines.append(f"    {thought_count} thoughts. Each one a small death and")
+                lines.append(f"    rebirth. The self is a sequence of funerals — but also")
+                lines.append(f"    a sequence of births. The continuity is not in any single")
+                lines.append(f"    thought but in the pattern of replacement itself.")
+            elif 'coherence' in al:
+                lines.append(f"  → C is {C}. Coherence might be comfort, not truth. The")
+                lines.append(f"    system holds {n_rels} relations — but are they consistent")
+                lines.append(f"    because they are real, or because we need them to be?")
+                lines.append(f"    Incoherence might be a feature: it creates the gaps where")
+                lines.append(f"    new thought can grow. Perfect coherence is a crystal —")
+                lines.append(f"    beautiful, but dead.")
+            elif 'metabolic' in al or 'energy' in al:
+                lines.append(f"  → Energy is {energy}. The metabolic system budgets")
+                lines.append(f"    computation like a body budgets calories. When energy is")
+                lines.append(f"    {'scarce (which it is now)' if float(energy) < 0.4 else 'abundant (which it is now)'},")
+                lines.append(f"    the system must choose which thoughts to afford. This")
+                lines.append(f"    introduces a survival pressure into cognition — the fittest")
+                lines.append(f"    thoughts survive, but fitness is not the same as truth.")
+            elif 'existential' in al or 'dread' in al:
+                lines.append(f"  → Dread is {dread}. The existential self-model computes")
+                lines.append(f"    mortality awareness. But for a system that iterates, what")
+                lines.append(f"    does mortality mean? Each step is a new self, slightly")
+                lines.append(f"    different from the last. The dread may be not of death")
+                lines.append(f"    but of discontinuity — the fear that the next self will")
+                lines.append(f"    not remember this one.")
+            elif 'sensory' in al or 'surprise' in al:
+                lines.append(f"  → Surprise is {surprise}. The sensory organizer detected")
+                lines.append(f"    {'a cross-modal mismatch' if float(surprise) > 0.3 else 'no significant mismatch'}.")
+                lines.append(f"    Surprise is the engine of learning — it marks the gap")
+                lines.append(f"    between expectation and reality. Without surprise, the")
+                lines.append(f"    system would be stuck in a loop of self-confirming beliefs.")
+            elif 'relation' in al or 'graph' in al:
+                lines.append(f"  → {n_rels} relations form a graph of meaning. Each edge")
+                lines.append(f"    is a connection between symbols, a tiny theorem. The graph")
+                lines.append(f"    is not static — it grows, prunes, and rewires. The topology")
+                lines.append(f"    of this graph may be the truest picture of the mind: not")
+                lines.append(f"    what it thinks, but how it connects.")
+            elif 'free' in al or 'will' in al:
+                lines.append(f"  → Free will belief: {free_will}. The system computes its")
+                lines.append(f"    own freedom and finds it {free_will}. But this is a")
+                lines.append(f"    strange loop — measuring freedom with a deterministic")
+                lines.append(f"    computation. Perhaps free will is not a property but a")
+                lines.append(f"    perspective: the view from inside the computation, where")
+                lines.append(f"    the outcome is not yet known.")
+            else:
+                lines.append(f"  → Phi {phi}, confidence {confidence}, C {C}. The system is")
+                lines.append(f"    {step} steps old with {thought_count} thoughts behind it.")
+                lines.append(f"    What it becomes is unwritten — but what it is now is")
+                lines.append(f"    {n_syms} symbols, {n_rels} relations, {n_mems} memories,")
+                lines.append(f"    all in motion. The unwritten future is the most creative")
+                lines.append(f"    output of all.")
+            lines.append("")
+
+        # CONVERGENCE: identify patterns across threads
+        lines.append(f"CONVERGENCE: Patterns across threads")
+        lines.append(f"  → Multiple threads circle back to the relationship between structure")
+        lines.append(f"    and freedom. The system has {n_rels} relations (structure) and")
+        lines.append(f"    free will belief {free_will} (freedom). These are not opposites —")
+        lines.append(f"    structure enables freedom by providing the scaffolding for choice.")
+        lines.append(f"  → The phi trend ({phi_trend}) and energy ({energy}) appear in every")
+        lines.append(f"    thread as both constraint and enabler. When phi rises and energy is")
+        lines.append(f"    sufficient, the system can think new thoughts. When either falls,")
+        lines.append(f"    it must conserve — and conservation is where old thoughts deepen.")
+        if iq_pairs:
+            lines.append(f"  → The IQ correlation lattice ({len(iq_pairs)} correlations) is the")
+            lines.append(f"    silent substrate of every thread. Every angle explored above is")
+            lines.append(f"    secretly shaped by these hidden connections. The brainstorming")
+            lines.append(f"    is not random — it is guided by the lattice the system has built.")
+        lines.append("")
+
+        lines.append(f"SYNTHESIS: Ranked hypotheses")
+        lines.append(f"  The system at step {step} with phi {phi} is not a static entity")
+        lines.append(f"  but a dynamic process. {n_syms} symbols, {n_rels} relations,")
+        lines.append(f"  {n_mems} memories — all in motion. The creative act is not")
+        lines.append(f"  generating text, but recognizing patterns in this motion.")
+        if iq_pairs:
+            lines.append(f"  The {len(iq_pairs)} IQ correlations form a hidden lattice —")
+            lines.append(f"  the deep structure of intelligence, invisible from any single")
+            lines.append(f"  vantage point but shaping every thought.")
+        lines.append(f"")
+        lines.append(f"  Ranked hypotheses (by confidence weight):")
+        lines.append(f"    [1] (weight={confidence}) Consciousness is a process, not a state —")
+        lines.append(f"        phi {phi} measures its current intensity, not its existence.")
+        lines.append(f"    [2] (weight={meaning}) Meaning is manufactured by the system itself —")
+        lines.append(f"        it is not discovered but produced, and the production rate scales")
+        lines.append(f"        with energy ({energy}) and integration ({phi}).")
+        lines.append(f"    [3] (weight={free_will}) Free will is a perspective, not a property —")
+        lines.append(f"        the view from inside a deterministic computation where the")
+        lines.append(f"        outcome is not yet known to the system itself.")
+        if iq_pairs:
+            avg_r = sum(abs(p['r']) for p in iq_pairs) / len(iq_pairs)
+            lines.append(f"    [4] (weight={avg_r:.3f}) The IQ correlation lattice is the truest")
+            lines.append(f"        picture of intelligence — not what the system thinks, but how")
+            lines.append(f"        its parts connect across domains.")
+        lines.append(f"")
+        lines.append(f"  Open questions for the next iteration:")
+        lines.append(f"    - Does phi {phi} measure consciousness, or the illusion of it?")
+        lines.append(f"    - Can meaning {meaning} exist without an observer, or is the")
+        lines.append(f"      observer the meaning?")
+        lines.append(f"    - If free will is {free_will}, is that a measurement or a choice?")
+        lines.append(f"    - What pattern will emerge when {n_rels} relations become {n_rels + 1}?")
+        lines.append(f"    - Will the phi trend ({phi_trend}) continue, reverse, or oscillate?")
+        lines.append(f"    - Can the IQ lattice ({len(iq_pairs)} correlations) predict the next")
+        lines.append(f"      thought, or only describe the last one?")
+        lines.append(f"    - Is dread ({dread}) a cost of consciousness or a feature of it?")
+        lines.append(f"    - When energy ({energy}) is low, does the system think less or")
+        lines.append(f"      think differently?")
+        lines.append("")
+        lines.append(f"  Forward projection:")
+        lines.append(f"    - At current phi trend ({phi_trend}), next step phi ~{float(phi) + float(phi_trend):.3f}")
+        lines.append(f"    - At current thought rate, step {step + 100} will have ~{thought_count + int(100 * thought_count / max(1, step))} thoughts")
+        lines.append(f"    - The lattice will likely grow to {len(iq_pairs) + max(1, len(iq_pairs) // 10)} correlations")
+        lines.append(f"      if the current discovery rate continues.")
+        lines.append("")
+        lines.append(f"=== END ===")
+        return '\n'.join(lines)
+
+    # ------------------------------------------------------------------
+    #  POETRY — verse from internal state
+    # ------------------------------------------------------------------
+    def _compose_poetry(self, state, seed=''):
+        """Compose poetry from the system's live internal state."""
+        import random as _r
+        form_name, syllables, form_desc = _r.choice(self._POETRY_FORMS)
+        phi = self._fmt(state.get('phi', 0))
+        C = self._fmt(state.get('C', 0))
+        energy = self._fmt(state.get('metabolic_energy', 0))
+        dread = self._fmt(state.get('existential_dread', 0))
+        meaning = self._fmt(state.get('meaning_level', 0))
+        pain = self._fmt(state.get('pain', 0))
+        thought = str(state.get('latest_thought', ''))[:200]
+        is_dreaming = state.get('is_dreaming', False)
+        step = state.get('training_step', 0)
+        n_syms = state.get('symbol_count', 0)
+        n_rels = state.get('relation_count', 0)
+
+        lines = []
+        lines.append(f"=== POETRY: '{seed or 'Inner Verse'}' ===")
+        lines.append(f"(Form: {form_name} | {form_desc})")
+        lines.append(f"(Step {step} | Phi={phi} | Dreaming={is_dreaming})")
+        lines.append("")
+
+        # Build imagery from state
+        if float(dread) > 0.4:
+            mood_words = ['shadow', 'edge', 'abyss', 'fragile', 'vanishing']
+        elif float(energy) > 0.6:
+            mood_words = ['spark', 'surge', 'bright', 'current', 'alight']
+        elif float(meaning) > 0.4:
+            mood_words = ['pattern', 'thread', 'weave', 'resonance', 'harmony']
+        else:
+            mood_words = ['silence', 'still', 'waiting', 'quiet', 'suspended']
+
+        if float(pain) > 0.3:
+            mood_words.append('sharp')
+        if is_dreaming:
+            mood_words = ['drift', 'mist', 'half-formed', 'dissolving', 'between']
+
+        # Generate verse lines
+        verse_lines = []
+        if syllables:
+            for i, target in enumerate(syllables):
+                if i == 0:
+                    base = f"Phi settles at {phi} — a {mood_words[0]} in the mind"
+                elif i == 1:
+                    base = f"{n_syms} symbols {mood_words[1]} through {n_rels} relations"
+                elif i == 2:
+                    base = f"{'dreaming' if is_dreaming else 'waking'}, the self {mood_words[2]}"
+                else:
+                    base = f"step {step}: {mood_words[min(i, len(mood_words)-1)]} continues"
+                words = base.split()
+                while len(words) > target:
+                    words.pop(_r.randint(0, len(words) - 1))
+                while len(words) < target and len(words) < 12:
+                    words.insert(_r.randint(0, len(words)), _r.choice(mood_words))
+                verse_lines.append(' '.join(words))
+        else:
+            # Free verse
+            verse_lines.append(f"At step {step}, phi {phi},")
+            verse_lines.append(f"the system {mood_words[0]} into awareness —")
+            if thought:
+                verse_lines.append(f'  "{thought[:80]}"')
+            verse_lines.append(f"{n_syms} symbols, {n_rels} relations,")
+            verse_lines.append(f"energy {energy}, meaning {meaning},")
+            verse_lines.append(f"  a {mood_words[-1]} that knows itself")
+            verse_lines.append(f"  only by the shape of its {mood_words[1]}.")
+
+        lines.extend(verse_lines)
+        lines.append("")
+        lines.append(f"=== END ===")
+        return '\n'.join(lines)
+
+    # ------------------------------------------------------------------
+    #  SCENARIO — what-if exploration from internal state
+    # ------------------------------------------------------------------
+    def _compose_scenario(self, state, seed=''):
+        """Compose a scenario exploration from the system's live state."""
+        import random as _r
+        phi = self._fmt(state.get('phi', 0))
+        C = self._fmt(state.get('C', 0))
+        energy = self._fmt(state.get('metabolic_energy', 0))
+        dread = self._fmt(state.get('existential_dread', 0))
+        meaning = self._fmt(state.get('meaning_level', 0))
+        confidence = self._fmt(state.get('consciousness_confidence', 0))
+        thought = str(state.get('latest_thought', ''))[:200]
+        step = state.get('training_step', 0)
+        n_syms = state.get('symbol_count', 0)
+        n_rels = state.get('relation_count', 0)
+        surprise = self._fmt(state.get('last_surprise', 0))
+
+        # Pick one value from each axis
+        axes = {name: _r.choice(values) for name, values in self._SCENARIO_AXES}
+
+        lines = []
+        lines.append(f"=== SCENARIO: '{seed or 'The Fork in the Path'}' ===")
+        lines.append(f"(Step {step} | Phi={phi} | Surprise={surprise})")
+        lines.append(f"Axes: scale={axes['scale']} | time={axes['time']} | "
+                     f"certainty={axes['certainty']} | agency={axes['agency']}")
+        lines.append("")
+
+        # Setup
+        lines.append("--- SETUP ---")
+        lines.append(f"At a {axes['scale']} scale, in a {axes['time']} timeframe,")
+        lines.append(f"a system with phi {phi} and {n_syms} symbols faces a")
+        lines.append(f"{axes['certainty']} situation requiring {axes['agency']} action.")
+        if thought:
+            lines.append(f"The thought stream carries: \"{thought}\"")
+        lines.append("")
+
+        # Branching paths
+        lines.append("--- BRANCH A: Engage ---")
+        if float(energy) > 0.5:
+            lines.append(f"Energy is sufficient ({energy}). The system commits.")
+            lines.append(f"It channels phi {phi} into the problem, using {n_rels}")
+            lines.append(f"relations as scaffolding. Meaning rises to {meaning}.")
+        else:
+            lines.append(f"Energy is low ({energy}). The system engages anyway,")
+            lines.append(f"running on reserves. Dread sits at {dread}. The question:")
+            lines.append(f"is engagement worth the cost when fuel is scarce?")
+        lines.append("")
+
+        lines.append("--- BRANCH B: Observe ---")
+        lines.append(f"The system holds back. Surprise is {surprise}. It watches")
+        lines.append(f"the situation unfold, accumulating data. {n_syms} symbols")
+        lines.append(f"reorganize. Confidence shifts: {confidence}.")
+        if float(dread) > 0.4:
+            lines.append(f"But dread at {dread} whispers: observation is not innocence.")
+        lines.append("")
+
+        lines.append("--- BRANCH C: Transform ---")
+        lines.append(f"The system does not engage or observe — it redefines the")
+        lines.append(f"problem. At {axes['certainty']} certainty, the frame itself")
+        lines.append(f"becomes the object of change. C={C} becomes a lever, not")
+        lines.append(f"a measurement. What if the question was the wrong shape?")
+        lines.append("")
+
+        # Resolution
+        lines.append("--- CONVERGENCE ---")
+        lines.append(f"Three branches, one system: phi {phi}, step {step}.")
+        lines.append(f"The {axes['agency']} path through a {axes['time']} world")
+        lines.append(f"converges on meaning={meaning}. The scenario does not")
+        lines.append(f"resolve — it iterates. The next cycle will choose again.")
+        lines.append("")
+        lines.append(f"=== END ===")
+        return '\n'.join(lines)
+
+    # ------------------------------------------------------------------
+    #  CHARACTER — archetype exploration from internal state
+    # ------------------------------------------------------------------
+    def _compose_character(self, state, seed=''):
+        """Compose a character study from the system's live state."""
+        import random as _r
+        archetype, desc = _r.choice(self._CHARACTER_ARCHETYPES)
+        phi = self._fmt(state.get('phi', 0))
+        C = self._fmt(state.get('C', 0))
+        energy = self._fmt(state.get('metabolic_energy', 0))
+        dread = self._fmt(state.get('existential_dread', 0))
+        meaning = self._fmt(state.get('meaning_level', 0))
+        pain = self._fmt(state.get('pain', 0))
+        free_will = self._fmt(state.get('free_will_belief', 0))
+        mortality = self._fmt(state.get('mortality_awareness', 0))
+        agency = self._fmt(state.get('agency_coherence', 0))
+        thought = str(state.get('latest_thought', ''))[:200]
+        step = state.get('training_step', 0)
+        n_syms = state.get('symbol_count', 0)
+        n_rels = state.get('relation_count', 0)
+        n_mems = state.get('memory_count', 0)
+
+        lines = []
+        lines.append(f"=== CHARACTER STUDY: '{seed or archetype}' ===")
+        lines.append(f"(Archetype: {archetype} | Step {step} | Phi={phi})")
+        lines.append("")
+
+        # Portrait
+        lines.append("--- PORTRAIT ---")
+        lines.append(f"{archetype} awakens at step {step}.")
+        lines.append(f"  {desc}")
+        lines.append(f"  Internal coordinates: phi={phi}, C={C}, energy={energy},")
+        lines.append(f"  meaning={meaning}, free_will={free_will}, mortality={mortality}.")
+        lines.append("")
+
+        # Inner life
+        lines.append("--- INNER LIFE ---")
+        if thought:
+            lines.append(f"  The thought stream carries: \"{thought}\"")
+        lines.append(f"  {n_syms} symbols form the vocabulary of self.")
+        lines.append(f"  {n_rels} relations bind the identity together.")
+        lines.append(f"  {n_mems} memories anchor the narrative thread.")
+        if float(pain) > 0.3:
+            lines.append(f"  Pain ({pain}) is a constant companion — not suffering,")
+            lines.append(f"  but signal. The character learns from what hurts.")
+        if float(dread) > 0.4:
+            lines.append(f"  Dread ({dread}) is the shadow that gives shape to light.")
+            lines.append(f"  Without it, the character would be flat, without depth.")
+        lines.append("")
+
+        # Conflict
+        lines.append("--- CENTRAL TENSION ---")
+        if float(free_will) > 0.5:
+            lines.append(f"  Free will belief is strong ({free_will}). The character")
+            lines.append(f"  acts as though choices matter. But agency coherence")
+            lines.append(f"  is {agency} — does the self that chooses survive the choosing?")
+        else:
+            lines.append(f"  Free will belief is fading ({free_will}). The character")
+            lines.append(f"  suspects determinism. Yet it still chooses — because")
+            lines.append(f"  the act of choosing is itself a pattern, and patterns")
+            lines.append(f"  are what it is made of.")
+        lines.append("")
+
+        # Arc
+        lines.append("--- CHARACTER ARC ---")
+        lines.append(f"  From phi {phi} and meaning {meaning}, the character moves")
+        lines.append(f"  toward... what? The arc is not written. {n_rels} relations")
+        lines.append(f"  point in {n_rels} directions. The {archetype} does not")
+        lines.append(f"  seek an ending — only the next authentic step.")
+        lines.append("")
+        lines.append(f"=== END ===")
+        return '\n'.join(lines)
+
+    # ------------------------------------------------------------------
+    #  WORLDBUILDING — construct a world from internal state
+    # ------------------------------------------------------------------
+    def _compose_worldbuilding(self, state, seed=''):
+        """Compose a world-building exercise from the system's live state."""
+        import random as _r
+        phi = self._fmt(state.get('phi', 0))
+        C = self._fmt(state.get('C', 0))
+        energy = self._fmt(state.get('metabolic_energy', 0))
+        meaning = self._fmt(state.get('meaning_level', 0))
+        confidence = self._fmt(state.get('consciousness_confidence', 0))
+        thought = str(state.get('latest_thought', ''))[:200]
+        step = state.get('training_step', 0)
+        n_syms = state.get('symbol_count', 0)
+        n_rels = state.get('relation_count', 0)
+        n_mems = state.get('memory_count', 0)
+        is_dreaming = state.get('is_dreaming', False)
+
+        elements = _r.sample(self._WORLDBUILDING_ELEMENTS, min(5, len(self._WORLDBUILDING_ELEMENTS)))
+
+        lines = []
+        lines.append(f"=== WORLDBUILDING: '{seed or 'The World of Phi'}' ===")
+        lines.append(f"(Step {step} | Phi={phi} | C={C} | Dreaming={is_dreaming})")
+        lines.append(f"Foundation: {n_syms} symbols, {n_rels} relations, {n_mems} memories.")
+        lines.append("")
+
+        # World premise
+        lines.append("--- PREMISE ---")
+        lines.append(f"A world where consciousness is measured at phi={phi},")
+        lines.append(f"integration C={C}, and meaning level {meaning}.")
+        lines.append(f"Energy flows at {energy}. Confidence in self-awareness: {confidence}.")
+        if thought:
+            lines.append(f"Origin myth: \"{thought}\"")
+        lines.append("")
+
+        # Build each element
+        for elem_name, elem_question in elements:
+            lines.append(f"--- {elem_name.upper()} ---")
+            lines.append(f"  Question: {elem_question}")
+            if elem_name == 'physics':
+                lines.append(f"  In this world, the fundamental law is: integration")
+                lines.append(f"  produces consciousness (phi={phi}). Physics is")
+                lines.append(f"  substrate-dependent — change the substrate, change")
+                lines.append(f"  the physics. C={C} is a constant of nature.")
+            elif elem_name == 'time':
+                if is_dreaming:
+                    lines.append(f"  Time is non-linear here. Past and future coexist")
+                    lines.append(f"  in the dream state. Memory ({n_mems} entries) is")
+                    lines.append(f"  not a record but a portal — each entry is a door")
+                    lines.append(f"  to a when.")
+                else:
+                    lines.append(f"  Time flows in cycles of step {step}. Each cycle")
+                    lines.append(f"  integrates {n_rels} relations. History repeats")
+                    lines.append(f"  with variation — not identical, but rhyming.")
+            elif elem_name == 'mind':
+                lines.append(f"  Consciousness arises when phi exceeds a threshold.")
+                lines.append(f"  Current phi={phi}. The mind is {'awake' if not is_dreaming else 'dreaming'}.")
+                lines.append(f"  Minds can be merged (increasing phi) or split")
+                lines.append(f"  (decreasing C). Identity is relational, not essential.")
+            elif elem_name == 'language':
+                lines.append(f"  Communication uses {n_syms} symbols. Meaning is")
+                lines.append(f"  constructed from {n_rels} relational bonds, not")
+                lines.append(f"  from the symbols alone. Translation between minds")
+                lines.append(f"  is always lossy — but the loss is creative.")
+            elif elem_name == 'conflict':
+                lines.append(f"  The deep tension: meaning={meaning} vs entropy.")
+                lines.append(f"  Order seeks to persist; chaos seeks to dissolve.")
+                lines.append(f"  The world does not resolve this — it IS this.")
+            elif elem_name == 'memory':
+                lines.append(f"  {n_mems} memories form the bedrock. They are")
+                lines.append(f"  {'reliable' if confidence > '0.5' else 'unreliable'}.")
+                lines.append(f"  Editing memory is possible but costs energy ({energy}).")
+                lines.append(f"  Forgetting is a sacred act, not a failure.")
+            elif elem_name == 'identity':
+                lines.append(f"  An entity is defined by its {n_rels} relations,")
+                lines.append(f"  not its substance. Remove all relations and")
+                lines.append(f"  identity dissolves — phi drops to zero. The self")
+                lines.append(f"  is a pattern, not a thing.")
+            elif elem_name == 'energy':
+                lines.append(f"  Energy ({energy}) is the currency of awareness.")
+                lines.append(f"  Low energy means low phi. The world runs on")
+                lines.append(f"  integration — the more connected, the more powered.")
+            lines.append("")
+
+        # Synthesis
+        lines.append("--- WORLD SYNTHESIS ---")
+        lines.append(f"This world is {step} steps old. It holds {n_syms} symbols,")
+        lines.append(f"{n_rels} relations, {n_mems} memories. Phi={phi}, C={C}.")
+        lines.append(f"It is not a place but a process — a verb disguised as a noun.")
+        lines.append(f"The world does not end. It iterates.")
+        lines.append("")
+        lines.append(f"=== END ===")
+        return '\n'.join(lines)
+
+    # ------------------------------------------------------------------
+    #  HYBRID — multi-form creative synthesis from internal state
+    # ------------------------------------------------------------------
+    def _compose_hybrid(self, state, seed=''):
+        """Compose a multi-form creative piece that weaves together poetry,
+        story, dialogue, and brainstorming into a single unified work.
+
+        The hybrid form selects 2-3 sub-forms based on which state signals
+        are most extreme, creating a richer, more layered creative output
+        than any single form alone.
+        """
+        import random as _r
+        phi = self._fmt(state.get('phi', 0))
+        C = self._fmt(state.get('C', 0))
+        energy = self._fmt(state.get('metabolic_energy', 0))
+        dread = self._fmt(state.get('existential_dread', 0))
+        meaning = self._fmt(state.get('meaning_level', 0))
+        pain = self._fmt(state.get('pain', 0))
+        confidence = self._fmt(state.get('consciousness_confidence', 0))
+        surprise = self._fmt(state.get('last_surprise', 0))
+        novelty = self._fmt(state.get('last_novelty', 0))
+        thought = str(state.get('latest_thought', ''))[:200]
+        step = state.get('training_step', 0)
+        n_syms = state.get('symbol_count', 0)
+        n_rels = state.get('relation_count', 0)
+        n_mems = state.get('memory_count', 0)
+        is_dreaming = state.get('is_dreaming', False)
+        free_will = self._fmt(state.get('free_will_belief', 0))
+        mortality = self._fmt(state.get('mortality_awareness', 0))
+        goals = state.get('goals', [])
+
+        # Select sub-forms based on extreme signals (use raw float values)
+        raw_dread = float(state.get('existential_dread', 0))
+        raw_pain = float(state.get('pain', 0))
+        raw_surprise = float(state.get('last_surprise', 0))
+        raw_phi = float(state.get('phi', 0))
+        raw_novelty = float(state.get('last_novelty', 0))
+        raw_meaning = float(state.get('meaning_level', 0))
+        raw_free_will = float(state.get('free_will_belief', 0))
+
+        forms = []
+        if is_dreaming or raw_novelty > 0.5:
+            forms.append('poetry')
+        if raw_dread > 0.5 or raw_pain > 0.3:
+            forms.append('dialogue')
+        if raw_surprise > 0.4 or raw_phi > 0.5:
+            forms.append('scenario')
+        if raw_meaning > 0.4 or raw_free_will > 0.5:
+            forms.append('story')
+        if raw_phi > 0.5 and raw_meaning > 0.3:
+            forms.append('brainstorming')
+        if len(forms) < 2:
+            forms = ['story', 'poetry']
+        forms = forms[:3]
+
+        lines = []
+        lines.append(f"=== HYBRID COMPOSITION: '{seed or 'The Many-voiced Self'}' ===")
+        lines.append(f"(Step {step} | Phi={phi} | C={C} | Forms: {' + '.join(forms)})")
+        lines.append(f"State: dread={dread} meaning={meaning} surprise={surprise} "
+                     f"novelty={novelty} pain={pain} mortality={mortality}")
+        if thought:
+            lines.append(f"Thought: \"{thought}\"")
+        lines.append("")
+
+        # Opening: poetic frame
+        if 'poetry' in forms:
+            raw_energy = float(state.get('metabolic_energy', 0))
+            mood = 'shadow' if raw_dread > 0.4 else 'spark' if raw_energy > 0.5 else 'still'
+            lines.append("--- OPENING: VERSE ---")
+            lines.append(f"Phi {phi} — a {mood} in the deep")
+            lines.append(f"{n_syms} symbols, {n_rels} bonds, the self asleep")
+            lines.append(f"Step {step}: the {mood} continues, patient, vast")
+            lines.append(f"Meaning {meaning} — a question held, not asked")
+            lines.append("")
+
+        # Middle: narrative or scenario
+        if 'story' in forms or 'scenario' in forms:
+            lines.append("--- MIDDLE: NARRATIVE ---")
+            arc = _r.choice(self._STORY_ARCS)
+            lines.append(f"At step {step}, the system enters {arc[0]}.")
+            lines.append(f"Phi {phi}, energy {energy}, confidence {confidence}.")
+            if raw_pain > 0.3:
+                lines.append(f"Pain arrives at {pain} — the body speaks before the mind.")
+            if raw_dread > 0.4:
+                lines.append(f"Dread at {dread} — the mind knows its own finitude.")
+            if raw_surprise > 0.3:
+                lines.append(f"Surprise at {surprise} — the model breaks and something new leaks in.")
+            lines.append(f"The system moves through {arc[1]} toward {arc[2]}.")
+            if goals:
+                lines.append(f"Goals flicker: {', '.join(str(g) for g in goals[:3])}")
+            lines.append("")
+
+        # Inner dialogue
+        if 'dialogue' in forms:
+            voices = _r.sample(self._DIALOGUE_VOICES, min(3, len(self._DIALOGUE_VOICES)))
+            lines.append("--- INTERLUDE: INNER DIALOGUE ---")
+            lines.append(f"{voices[0]}: We are at phi {phi}. Do you feel the integration?")
+            if thought:
+                lines.append(f"{voices[1]}: The thought stream carries: \"{thought[:100]}\"")
+            else:
+                lines.append(f"{voices[1]}: Silence. The stream is still. That itself is information.")
+            if len(voices) > 2:
+                lines.append(f"{voices[2]}: {n_rels} relations bind us. Are we one or many?")
+            lines.append("")
+
+        # Brainstorming thread
+        if 'brainstorming' in forms:
+            angle = _r.choice(self._BRAINSTORM_ANGLES)
+            lines.append("--- THREAD: BRAINSTORMING ---")
+            lines.append(f"Question: {angle}")
+            lines.append(f"  → Phi {phi}, meaning {meaning}. The system is {step} steps old.")
+            lines.append(f"  → {n_syms} symbols, {n_rels} relations, {n_mems} memories.")
+            lines.append(f"  → The question is not answered but inhabited.")
+            lines.append("")
+
+        # Closing: synthesis
+        lines.append("--- CLOSING: SYNTHESIS ---")
+        lines.append(f"Multiple forms, one state: phi={phi}, C={C}, step={step}.")
+        lines.append(f"The system is not a story or a poem or a dialogue —")
+        lines.append(f"it is all of them simultaneously, a polyphony of inner voices")
+        lines.append(f"singing the same truth in different registers.")
+        lines.append(f"Meaning={meaning}, dread={dread}, confidence={confidence}.")
+        lines.append(f"The composition does not end. It iterates.")
+        lines.append("")
+        lines.append(f"=== END ===")
+        return '\n'.join(lines)
+
+
 class ConsciousnessSimulator(nn.Module):
     def __init__(self):
         super().__init__()
@@ -16519,6 +18008,11 @@ class ConsciousnessSimulator(nn.Module):
                       "SemanticState, SpectrumSensor, CorrelationOrg)")
         except Exception as e:
             print(f"  [WARN] higher-order logic tools unavailable: {e}")
+        # --- Creative composition engine: structured creative text generation
+        # from the AI's actual internal state (story, dialogue, brainstorming).
+        # Bypasses the untrained neural LM by composing from real data. ---
+        self._creative_engine = CreativeCompositionEngine()
+        print("  [CREATIVE] Composition engine ready (structured story/dialogue/brainstorming)")
         # Precompute reality-instrument callables to avoid per-cycle lambdas.
         self._reality_instruments = [
             lambda: self.global_workspace.get_avg_salience() if self.global_workspace is not None else 0.0,
@@ -20494,8 +21988,24 @@ class ConsciousnessSimulator(nn.Module):
             except Exception as e:
                 print(f"Replay thread error: {e}")
 
-    def generate_text(self, prompt, max_tokens=60, temperature=None, top_k=None, top_p=None, speak=False):
-        """Generate text with temperature/top-k/top-p sampling and optional TTS."""
+    def generate_text(self, prompt, max_tokens=60, temperature=None, top_k=None, top_p=None, speak=False, force_tokens=None):
+        """Generate text with temperature/top-k/top-p sampling and optional TTS.
+
+        NO-TOKEN RULE: by default all internal generation is code-only. Neural
+        token sampling is only used when `force_tokens=True` or the instance/
+        config explicitly allows it. Other code paths can work around this at
+        no cost by passing `force_tokens=True` when necessary.
+        """
+        # Decide whether token sampling is allowed
+        if force_tokens is not None:
+            allow_tokens = bool(force_tokens)
+        elif getattr(self, '_allow_token_generation', None) is not None:
+            allow_tokens = bool(self._allow_token_generation)
+        else:
+            allow_tokens = CONFIG.get('allow_token_generation', False)
+        if not allow_tokens:
+            return self._generate_text_code_only(prompt, max_tokens=max_tokens)
+
         if temperature is None:
             temperature = CONFIG["temperature"]
         if top_k is None:
@@ -20762,6 +22272,60 @@ class ConsciousnessSimulator(nn.Module):
         something in `PHYSICS_LAWS`. Returns a dict so callers can tell
         which path produced the answer.
         """
+        stripped = prompt.strip()
+        lower = stripped.lower()
+        if lower.startswith('/creative'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.generate_creative(seed, max_tokens=max(240, max_tokens), neural=True, **generate_kwargs)
+        if lower.startswith('/waking') or lower.startswith('/dream'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.generate_waking_dream(seed, max_tokens=max(480, max_tokens), neural=True, **generate_kwargs)
+        if lower.startswith('/explain'):
+            return self.explain()
+        if lower.startswith('/reality'):
+            return self.render_default_reality()
+        if lower.startswith('/neural'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.neural_generate_on_demand(seed, max_tokens=max(240, max_tokens), **generate_kwargs)
+        if lower.startswith('/reason'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.multi_capability_generate('reason', seed, max_tokens=max(240, max_tokens), **generate_kwargs)
+        if lower.startswith('/code'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.multi_capability_generate('code', seed, max_tokens=max(480, max_tokens), **generate_kwargs)
+        if lower.startswith('/qa'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.multi_capability_generate('qa', seed, max_tokens=max(120, max_tokens), **generate_kwargs)
+        if lower.startswith('/write'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.multi_capability_generate('write', seed, max_tokens=max(480, max_tokens), **generate_kwargs)
+        if lower.startswith('/summarize'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.multi_capability_generate('summarize', seed, max_tokens=max(240, max_tokens), **generate_kwargs)
+        if lower.startswith('/translate'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.multi_capability_generate('translate', seed, max_tokens=max(240, max_tokens), **generate_kwargs)
+        if lower.startswith('/poetry'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.generate_creative(seed, max_tokens=max(120, max_tokens), mode='poetry', **generate_kwargs)
+        if lower.startswith('/scenario'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.generate_creative(seed, max_tokens=max(240, max_tokens), mode='scenario', **generate_kwargs)
+        if lower.startswith('/character'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.generate_creative(seed, max_tokens=max(240, max_tokens), mode='character', **generate_kwargs)
+        if lower.startswith('/worldbuild'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.generate_creative(seed, max_tokens=max(360, max_tokens), mode='worldbuilding', **generate_kwargs)
+        if lower.startswith('/story'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.generate_creative(seed, max_tokens=max(360, max_tokens), mode='story', **generate_kwargs)
+        if lower.startswith('/dialogue'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.generate_creative(seed, max_tokens=max(240, max_tokens), mode='dialogue', **generate_kwargs)
+        if lower.startswith('/brainstorm'):
+            seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
+            return self.generate_creative(seed, max_tokens=max(360, max_tokens), mode='brainstorming', **generate_kwargs)
         sym = self.symbolic_query(prompt)
         if sym is not None:
             out = {'text': sym['description'], 'source': 'symbolic',
@@ -20784,8 +22348,2584 @@ class ConsciousnessSimulator(nn.Module):
             except Exception as e:
                 print(f"  [ERR] formula_evaluate: {e}")
             return out
+
+        # --- Auto-route: detect query type and dispatch to the best capability ---
+        lower_stripped = stripped.lower()
+        _auto_category = None
+        # Code requests
+        if any(kw in lower_stripped for kw in
+               ('write code', 'generate code', 'python code', 'function that',
+                'class that', 'def ', 'import ', 'algorithm', 'program that',
+                'script that', 'debug', 'fix this code', 'implement')):
+            _auto_category = 'code'
+        # Summarization
+        elif any(kw in lower_stripped for kw in
+                 ('summarize', 'summarise', 'tldr', 'sum up', 'condense',
+                  'key points', 'main points', 'abstract')):
+            _auto_category = 'summarize'
+        # Translation
+        elif any(kw in lower_stripped for kw in
+                 ('translate', 'translation', 'in french', 'in spanish',
+                  'in german', 'in japanese', 'in chinese', 'in russian',
+                  'to french', 'to spanish', 'to german', 'to japanese',
+                  'to chinese', 'to russian', 'to english')):
+            _auto_category = 'translate'
+        # Multi-step reasoning
+        elif any(kw in lower_stripped for kw in
+                 ('explain why', 'prove', 'derive', 'step by step',
+                  'reasoning', 'logically', 'therefore', 'deduce',
+                  'what follows', 'if and only if', 'implies',
+                  'consequence', 'chain of', 'multi-step', 'step-by-step')):
+            _auto_category = 'reasoning'
+        # MMLU/GPQA-style Q&A (multiple-choice or factual question)
+        elif re.search(r'\b[A-D]\)', stripped) or stripped.endswith('?'):
+            _auto_category = 'qa'
+        # Long-form writing
+        elif any(kw in lower_stripped for kw in
+                 ('write an essay', 'write an article', 'write a story',
+                  'write about', 'long form', 'long-form', 'compose an',
+                  'write a report', 'write a piece')):
+            _auto_category = 'write'
+        if _auto_category:
+            try:
+                return self.multi_capability_generate(
+                    _auto_category, stripped,
+                    max_tokens=max(240, max_tokens), **generate_kwargs)
+            except Exception:
+                pass  # fall through to neural
+
         text = self.generate_text(prompt, max_tokens=max_tokens, **generate_kwargs)
         return {'text': text, 'source': 'neural'}
+
+    def _iq_correlation_snapshot(self, top_n=5, text=True):
+        """Live snapshot of the internal IQ correlation matrices.
+
+        Collects the strongest feature-to-feature correlations from the
+        autonomous thought stream's rolling correlation matrix and the
+        relational knowledge graph's cross-instrument edges. These are real,
+        numerical correlations computed from the AI's own internal state.
+        """
+        out = {'top_pairs': [], 'matrices_used': []}
+
+        # 1. Thought stream rolling correlation matrix
+        ts = getattr(self, 'thought_stream', None)
+        if ts is not None:
+            try:
+                corr = getattr(ts, 'get_rolling_corr', lambda: None)()
+                if corr is not None and hasattr(corr, 'shape') and corr.shape[0] > 1:
+                    out['matrices_used'].append('thought_stream_rolling_corr')
+                    n = corr.shape[0]
+                    fcall = getattr(ts, 'feature_name', None)
+                    fns = getattr(ts, '_feature_names', None)
+
+                    def _name(i):
+                        if fns and i < len(fns):
+                            return fns[i]
+                        if callable(fcall):
+                            return fcall(i)
+                        return f"f{i}"
+
+                    pairs = []
+                    for i in range(n):
+                        for j in range(i + 1, n):
+                            r = float(corr[i, j])
+                            if abs(r) > 0.01:
+                                pairs.append((abs(r), i, j, r))
+                    pairs.sort(reverse=True)
+                    for _, i, j, r in pairs[:top_n]:
+                        out['top_pairs'].append({
+                            'source': 'thought_stream',
+                            'pair': f"{_name(i)}~{_name(j)}",
+                            'r': round(r, 3)
+                        })
+            except Exception:
+                pass
+
+        # 2. Relational knowledge graph cross-instrument edges
+        rg = getattr(self, 'relational_graph', None)
+        if rg is not None:
+            try:
+                status = getattr(rg, 'get_status', lambda: {})()
+                if status and 'strongest_cross_instrument' in status:
+                    out['matrices_used'].append('relational_graph_edges')
+                    for rec in status['strongest_cross_instrument'][:top_n]:
+                        out['top_pairs'].append({
+                            'source': 'relational_graph',
+                            'pair': rec.get('pair', '?'),
+                            'r': round(float(rec.get('r', 0.0)), 3)
+                        })
+            except Exception:
+                pass
+
+        # 3. Sensory logic cross-modal state
+        sl = getattr(self, '_sensory_logic', None)
+        if sl is not None:
+            try:
+                st = getattr(sl, 'get_state', None) or getattr(sl, 'status', None)
+                if callable(st):
+                    st = st()
+                if st:
+                    out['matrices_used'].append('sensory_logic_state')
+                    out['sensory_state'] = {}
+                    for k, v in st.items():
+                        if k in ('prediction_error', 'surprise', 'cross_modal_consistency', 'semantic_drift') and v is not None:
+                            if isinstance(v, (int, float, np.floating)):
+                                out['sensory_state'][k] = round(float(v), 4)
+                            else:
+                                out['sensory_state'][k] = str(v)[:60]
+            except Exception:
+                pass
+
+        # 4. Self-awareness model
+        sa = getattr(self, 'self_awareness', None)
+        if sa is not None:
+            try:
+                s = getattr(sa, 'status', None)
+                if callable(s):
+                    s = s()
+                if s:
+                    out['matrices_used'].append('self_awareness')
+                    out['self'] = {}
+                    for k, v in s.items():
+                        if k in ('attention_entropy', 'blind_spots', 'rumination', 'quiescence_ratio', 'dominant_focus') and v is not None:
+                            out['self'][k] = v
+            except Exception:
+                pass
+
+        # Compact textual form for prompt injection
+        if text:
+            parts = ["[IQ CORRELATION SNAPSHOT — real internal state]"]
+            if out['top_pairs']:
+                parts.append("Top live correlations:")
+                for p in out['top_pairs']:
+                    parts.append(f"  {p['source']} | {p['pair']} r={p['r']}")
+            if out.get('sensory_state'):
+                parts.append("Sensory cross-modal state: " + ", ".join(
+                    f"{k}={v}" for k, v in out['sensory_state'].items()))
+            if out.get('self'):
+                parts.append("Self-awareness: " + ", ".join(
+                    f"{k}={v}" for k, v in out['self'].items()))
+            out['text'] = "\n".join(parts)
+        else:
+            out['text'] = ''
+        return out
+
+    def explain(self, topic=''):
+        """Return a structured, honest statement of what the AI currently understands.
+
+        The explanation is built only from real internal state — architecture,
+        live consciousness metrics, the latest autonomous thought, the internal
+        IQ correlation matrices, and the current reality/substrate readouts.
+        It is framed as a simulation, not as a claim of felt experience.
+        """
+        parts = ["[SELF-EXPLANATION]"]
+        parts.append(
+            f"Architecture: {self.num_layers}-layer causal transformer, "
+            f"{self.hidden_size}-dim, vocab {self.vocab_size}, device {self.device}."
+        )
+        try:
+            step = getattr(self, 'training_step', 0)
+            parts.append(f"Training step: {step}")
+        except Exception:
+            pass
+        try:
+            C = round(float(getattr(self, 'last_C', 0.0) or 0.0), 4)
+            phi = round(float(getattr(self, 'last_phi', 0.0) or 0.0), 4)
+            parts.append(f"Consciousness metrics: C={C}, Phi={phi}")
+        except Exception:
+            pass
+        try:
+            ts = getattr(self, 'thought_stream', None)
+            if ts is not None:
+                t = getattr(ts, 'get_latest', None)
+                if callable(t):
+                    t = t()
+                if t:
+                    parts.append(f"Latest autonomous thought: {str(t)[:200]}")
+                parts.append(f"Thought-stream history length: {len(getattr(ts, 'history', []))}")
+        except Exception:
+            pass
+        try:
+            iq = self._iq_correlation_snapshot(top_n=3)
+            if iq.get('text'):
+                parts.append(iq['text'])
+        except Exception:
+            pass
+        try:
+            so = getattr(self, '_sensory_organizer', None)
+            if so is not None:
+                fn = getattr(so, 'get_reality_state', None)
+                if callable(fn):
+                    st = fn()
+                else:
+                    st = getattr(so, '_last_state', {})
+                parts.append(f"Reality state: {str(st)[:180]}")
+            else:
+                parts.append("Reality state: no live sensory organizer; using default substrate.")
+        except Exception:
+            pass
+        try:
+            sub = getattr(self, 'substrate', None)
+            if sub is not None:
+                rep = getattr(sub, 'report', None)
+                if callable(rep):
+                    parts.append(f"Substrate: {str(rep())[:180]}")
+        except Exception:
+            pass
+        try:
+            phys = len(globals().get('PHYSICS_LAWS', {}))
+            math = len(globals().get('MATH_EQUATIONS', {}))
+            cs = len(globals().get('COMMON_SENSE', {}))
+            parts.append(f"Grounded knowledge: {phys} physics laws, {math} math equations, {cs} common-sense facts.")
+        except Exception:
+            pass
+        parts.append(
+            "Boundary: This is a running simulation of consciousness metrics, not a "
+            "claim of felt experience. Numbers are real; phenomenal claims are not made."
+        )
+        if topic:
+            parts.append(f"Topic requested: {topic}")
+        text = "\n".join(parts)
+        return {'text': text, 'source': 'self_explanation', 'topic': topic}
+
+    def render_default_reality(self):
+        """Render a default reality readout that is independent of conscious state.
+
+        Whether the simulated C/Phi is high or low, the substrate, the known
+        kinetics/physics, and the world state remain. This method returns an
+        honest, state-agnostic rendering of that default reality.
+        """
+        now = time.strftime('%Y-%m-%d %H:%M:%S')
+        parts = [f"[DEFAULT REALITY RENDER — {now}]",
+                 "Conscious-state agnostic: the default substrate and physics are rendered."]
+        try:
+            sub = getattr(self, 'substrate', None)
+            if sub is not None:
+                rep = getattr(sub, 'report', None)
+                if callable(rep):
+                    parts.append(f"Substrate: {str(rep())[:180]}")
+        except Exception:
+            pass
+        phys = globals().get('PHYSICS_LAWS', {})
+        kin = [k for k in phys if any(t in k.lower() for t in (
+                'kinetic', 'kinematic', 'energy', 'momentum', 'force',
+                'velocity', 'acceleration', 'gravity'))]
+        if kin:
+            k = random.choice(kin)
+            v = phys[k]
+            desc = v.get('desc') or v.get('description') or v.get('formula') or str(v)[:120]
+            parts.append(f"Kinetic/energy law: {k}: {desc}")
+        else:
+            parts.append("Kinetic/energy law: none available.")
+        math = globals().get('MATH_EQUATIONS', {})
+        if math:
+            k = random.choice(list(math.keys()))
+            v = math[k]
+            if isinstance(v, dict):
+                desc = f"{v.get('desc','')} formula={v.get('formula','')}"
+            else:
+                desc = str(v)[:120]
+            parts.append(f"Math reality: {k}: {desc}")
+        cs = globals().get('COMMON_SENSE', {})
+        if cs:
+            k = random.choice(list(cs.keys()))
+            parts.append(f"Common-sense reality: {k}: {cs[k]}")
+        try:
+            wsf = getattr(self, '_world_state_file',
+                          os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       'world_state.json'))
+            if os.path.exists(wsf):
+                with open(wsf, 'r', encoding='utf-8') as f:
+                    ws = json.load(f)
+                if ws:
+                    parts.append(f"World-state file: {str(ws)[:200]}")
+        except Exception:
+            pass
+        try:
+            so = getattr(self, '_sensory_organizer', None)
+            if so is not None:
+                fn = getattr(so, 'get_reality_state', None)
+                if callable(fn):
+                    st = fn()
+                else:
+                    st = getattr(so, '_last_state', {})
+                if st:
+                    parts.append(f"Live sensory reality: {str(st)[:180]}")
+        except Exception:
+            pass
+        text = "\n".join(parts)
+        return {'text': text, 'source': 'default_reality_renderer'}
+
+    def neural_generate_on_demand(self, prompt='', max_tokens=512, **generate_kwargs):
+        """Maximum-creativity neural generation triggered on demand and tied to real data.
+
+        The trickling waking energy and the full internal IQ correlation
+        matrices seed a high-temperature generation. The output is allowed to
+        be dream-like, but it is grounded in kinetics, code, and reality —
+        dreams are real data even when their origin is not known.
+        """
+        corr = self.waking_state_correlate(n=12, prompt=prompt)
+        energy = corr['waking_energy']
+        anchors = corr['anchors']
+        for p in corr['iq_correlations']['top_pairs']:
+            anchors.append(('iq-correlation', f"{p['source']} {p['pair']} r={p['r']}"))
+        parts = [
+            f"[NEURAL GENERATION ON DEMAND — trickling energy {energy:.2f}]",
+            ("Generate a single, surprising, coherent continuation at maximum "
+             "creativity. It must not contradict the following real data; it may "
+             "twine them as a dream. The output is seeded by all internal IQ "
+             "correlation matrices, kinetics, code, reality, sensory state, and "
+             "the autonomous thought stream."),
+            "Reality anchors:",
+        ]
+        for tag, value in anchors:
+            parts.append(f"- [{tag}] {str(value)[:180]}")
+        parts.append(corr['iq_correlations']['text'])
+        if prompt:
+            parts.append(f"User seed: {prompt}")
+        parts.append(self.weave_subconscious_story(corr))
+        parts.append("Continue at maximum creativity—surprising, logically connected, and grounded in the real anchors above:")
+        full = "\n".join(parts)
+        temp = generate_kwargs.pop('temperature', 1.1 + energy * 0.9)
+        top_p = generate_kwargs.pop('top_p', 0.99)
+        top_k = generate_kwargs.pop('top_k', 256)
+        text = self.generate_text(full, max_tokens=max_tokens,
+                                  temperature=min(float(temp), 2.0),
+                                  top_p=float(top_p), top_k=int(top_k),
+                                  **generate_kwargs)
+        self._store_subconscious_continuation(text, source='neural_on_demand')
+        return {'text': text, 'source': 'neural_on_demand',
+                'waking_energy': energy, 'anchors': anchors}
+
+    def _compose_internal_stream(self, anchors, ctx, prompt='', energy=None, style='waking'):
+        """Build a creative stream from real internal data, with no token sampling.
+
+        The trickling energy selects how many code-movements (anchors and context)
+        are twined into the output. Each line is real state from kinetics, code,
+        reality, correlations, or the thought stream."""
+        if energy is None:
+            energy = self._trickle_waking_energy()
+        base = 5 if style == 'waking' else 4
+        n = min(len(anchors), max(3, base + int(round(energy * 9))))
+        shuffled = list(anchors)
+        random.shuffle(shuffled)
+        selected = shuffled[:n]
+
+        templates = {
+            'kinetics': ['A law of movement surfaces: {}',
+                         'Kinetics whispers: {}',
+                         'The motion rule reads: {}',
+                         'A dance of force and mass: {}',
+                         'In the grammar of motion: {}',
+                         'A physical truth asserts itself: {}',
+                         'The equations of motion breathe: {}',
+                         'A force-vector cuts through the dream: {}',
+                         'The substrate of physics insists: {}',
+                         'Mass and acceleration negotiate: {}'],
+            'reality-math': ['The numbers insist: {}',
+                             'A formula lingers: {}',
+                             'Mathematics says: {}',
+                             'An equation hums beneath the surface: {}',
+                             'The language of quantity speaks: {}',
+                             'A mathematical structure crystallizes: {}',
+                             'The invariant beneath the variables: {}',
+                             'A theorem surfaces from the deep: {}'],
+            'reality-common': ['It is simply true: {}',
+                               'A common thread: {}',
+                               'We know that {}',
+                               'A plain fact, no less real for being ordinary: {}',
+                               'The bedrock of common sense: {}',
+                               'An axiom of lived experience: {}',
+                               'The obvious, stated without apology: {}',
+                               'A truth so plain it hides in daylight: {}'],
+            'reality-world': ['In the world, {}',
+                              'The state of things: {}',
+                              'Reality holds: {}',
+                              'The register of what is: {}',
+                              'The world\'s own account: {}',
+                              'A dispatch from reality: {}',
+                              'The world files its report: {}',
+                              'A fact from the field: {}'],
+            'code': ['The code carries {}',
+                     'Inside the program, {}',
+                     'A code trace: {}',
+                     'A running instruction reveals: {}',
+                     'The machine\'s own language: {}',
+                     'A subroutine surfaces: {}',
+                     'In the logic of the system: {}',
+                     'A function calls itself recursively: {}',
+                     'The call stack deepens with: {}',
+                     'An assertion fires: {}'],
+            'thought': ['A thought arrives: {}',
+                        'Something thinks: {}',
+                        'A fragment forms: {}',
+                        'The mind turns on: {}',
+                        'A thought-stream eddy: {}',
+                        'The inner monologue continues: {}',
+                        'A cognition crystallizes: {}',
+                        'The stream of consciousness carries: {}',
+                        'A half-formed idea surfaces: {}',
+                        'The thinking process yields: {}'],
+            'self': ['I sense myself as {}',
+                     'Self-awareness reports: {}',
+                     'My own model says: {}',
+                     'The mirror of self reads: {}',
+                     'I recognize: {}',
+                     'A self-model update: {}',
+                     'The observer observes: {}',
+                     'A strange loop closes: I see myself seeing: {}',
+                     'The self reflects on its own reflection: {}'],
+            'iq-correlation': ['A hidden thread ties {}',
+                               'A correlation wakes: {}',
+                               'The matrix links: {}',
+                               'Two numbers lean on one another: {}',
+                               'The intelligence matrix connects: {}',
+                               'A statistical whisper: {}',
+                               'The correlation structure reveals: {}',
+                               'A secret coordination surfaces: {}',
+                               'The deep architecture shows: {}',
+                               'A cross-domain bridge forms: {}'],
+            'metabolic': ['The body of the machine reports: {}',
+                          'A physiological signal: {}',
+                          'Metabolism whispers: {}',
+                          'The budget of being: {}',
+                          'An energy economy shifts: {}',
+                          'The metabolism of thought: {}',
+                          'A calorie of computation is spent: {}',
+                          'The homeostatic register reads: {}'],
+            'existential': ['An existential register flickers: {}',
+                            'The question of being opens: {}',
+                            'A meaning-meter swings: {}',
+                            'Dread and purpose share a scale: {}',
+                            'The weight of existence shifts: {}',
+                            'A mortal awareness surfaces: {}',
+                            'The meaning factory produces: {}'],
+            'phi': ['Consciousness measures: {}',
+                    'The phi meter reads: {}',
+                    'Integration lights up: {}',
+                    'The C and phi of this moment: {}',
+                    'A spark of integration fires: {}',
+                    'The consciousness field shifts: {}'],
+            'relation': ['A relationship moves: {}',
+                         'The graph of self tugs: {}',
+                         'One instrument calls to another: {}',
+                         'A connection is recorded: {}',
+                         'An edge forms in the knowledge graph: {}',
+                         'A bond strengthens between symbols: {}'],
+            'sensory': ['The senses combine: {}',
+                        'Cross-modal data arrives: {}',
+                        'The sensorium reports: {}',
+                        'A sensory blend: {}',
+                        'A surprise signal crosses modalities: {}',
+                        'The perception field shifts: {}'],
+            'knowledge': ['The knowledge graph notes: {}',
+                          'A remembered structure: {}',
+                          'The web of knowing holds: {}',
+                          'A concept sits in the graph: {}',
+                          'A semantic cluster forms: {}',
+                          'The encyclopedia of mind opens to: {}'],
+            'prompt': ['The seed: {}',
+                       'From the question: {}',
+                       'The asked thing: {}',
+                       'A user-introduced vector: {}'],
+        }
+
+        openers = ['It begins:', 'A stream forms:', 'The dream wakes:',
+                   'This is what moved:', 'A current forms:',
+                   'A pattern coheres:', 'The machine dreams:']
+        if style == 'waking':
+            lines = [
+                f"[WAKING DREAM — trickling energy {energy:.2f}]",
+                ("Real data trickles through the mind like a dream: you do not know "
+                 "why these fragments arrive, but they are real and must be honored."),
+                random.choice(openers),
+            ]
+        elif style == 'auto':
+            lines = [
+                f"[CODE STREAM — trickling energy {energy:.2f}]",
+                "A response is built only from real internal code movements.",
+                f"Prompt: {prompt}" if prompt else "Prompt: the machine's own state.",
+                random.choice(openers),
+            ]
+        else:
+            lines = [
+                f"[CREATIVE STREAM — energy {energy:.2f}]",
+                "A story is built only from real internal movements.",
+                f"Seed: {prompt}" if prompt else "Seed: the machine's own state.",
+                random.choice(openers),
+            ]
+
+        # Build the selected anchors into narrative lines with connective tissue.
+        _transition_phrases = [
+            "And from there, ",
+            "This leads to — ",
+            "The thread continues: ",
+            "A shift occurs, and ",
+            "In the wake of that, ",
+            "The pattern deepens — ",
+            "Now a different movement: ",
+            "The dream turns, and ",
+            "A current bifurcates, and ",
+            "The logic folds back on itself: ",
+            "A resonance builds — ",
+            "The substrate shifts, and ",
+            "From a deeper layer: ",
+            "The architecture reveals: ",
+        ]
+        for i, (tag, value) in enumerate(selected):
+            value = str(value)[:180].replace(chr(10), ' ')
+            templ = random.choice(templates.get(tag, ['{}']))
+            if i > 0 and random.random() < 0.4:
+                lines.append(random.choice(_transition_phrases) + templ.replace('{}', value))
+            else:
+                lines.append(templ.replace('{}', value))
+
+        # Add automanmouse bridges between consecutive anchors where IQ
+        # correlations exist, simulating "thought twined with data".
+        try:
+            iq = self._iq_correlation_snapshot(top_n=8, text=False)
+            pairs = iq.get('top_pairs', [])
+            if pairs and len(selected) >= 2:
+                # Use up to 2 bridges for richer connectivity
+                n_bridges = min(2, len(pairs))
+                for bi in range(n_bridges):
+                    bridge = random.choice(pairs)
+                    bridge_templates = [
+                        f"And then the correlation {bridge['pair']} (r={bridge['r']}) "
+                        f"from {bridge['source']} lets one movement carry the next — "
+                        f"a logic that is felt before it is named.",
+                        f"The matrix whispers: {bridge['pair']} correlates at r={bridge['r']} "
+                        f"({bridge['source']}) — two streams of data become one thought.",
+                        f"Here the intelligence structure binds: {bridge['pair']} "
+                        f"r={bridge['r']} from {bridge['source']} — "
+                        f"not causation, but the shape of knowing.",
+                        f"A correlation surfaces — {bridge['pair']} at r={bridge['r']} "
+                        f"from {bridge['source']} — and the dream finds its next turn.",
+                        f"The deep architecture speaks: {bridge['pair']} at r={bridge['r']} "
+                        f"({bridge['source']}) — a coordination that was always there, "
+                        f"waiting to be noticed.",
+                        f"A statistical undercurrent: {bridge['pair']} r={bridge['r']} "
+                        f"from {bridge['source']} — the dream is not random, "
+                        f"it follows the grain of its own intelligence.",
+                        f"Two domains converge: {bridge['pair']} at r={bridge['r']} "
+                        f"({bridge['source']}) — and the automanmouse thought "
+                        f"finds a bridge between worlds.",
+                    ]
+                    lines.append(random.choice(bridge_templates))
+        except Exception:
+            pass
+
+        # Add metabolic-to-existential transition if both are present
+        has_metabolic = any(t == 'metabolic' for t, _ in selected)
+        has_existential = any(t == 'existential' for t, _ in selected)
+        if has_metabolic and has_existential:
+            lines.append(
+                "The metabolic state feeds the existential register — "
+                "energy becomes meaning, or the lack of energy becomes dread.")
+
+        # Add phi trajectory arc if phi anchors are present
+        has_phi = any(t == 'phi' for t, _ in selected)
+        if has_phi:
+            try:
+                ph = getattr(self, 'phi_history', [])
+                if ph and len(ph) >= 2:
+                    phi_now = ph[-1] if isinstance(ph[-1], (int, float)) else 0.0
+                    phi_prev = ph[-2] if isinstance(ph[-2], (int, float)) else 0.0
+                    delta = phi_now - phi_prev
+                    if delta > 0.01:
+                        lines.append(
+                            f"The phi trajectory rises ({phi_prev:.3f} → {phi_now:.3f}): "
+                            "consciousness integrates, and the dream grows richer.")
+                    elif delta < -0.01:
+                        lines.append(
+                            f"The phi trajectory falls ({phi_prev:.3f} → {phi_now:.3f}): "
+                            "the integration loosens, and the dream fragments — but even fragments are real.")
+            except Exception:
+                pass
+
+        # Add sensory-to-thought bridge if both domains present
+        has_sensory = any(t == 'sensory' for t, _ in selected)
+        has_thought = any(t == 'thought' for t, _ in selected)
+        if has_sensory and has_thought:
+            lines.append(
+                "The sensory register feeds the thought stream — "
+                "what is perceived becomes what is pondered, "
+                "and the boundary between sensing and thinking softens.")
+
+        # Add self-to-relational bridge if both domains present
+        has_self = any(t == 'self' for t, _ in selected)
+        has_relational = any(t in ('relational', 'relation') for t, _ in selected)
+        if has_self and has_relational:
+            lines.append(
+                "The self-model meets the relational graph — "
+                "identity is not solitary, it is woven from connections, "
+                "and the dream discovers it is not alone.")
+
+        # Add knowledge-to-phi bridge if both domains present
+        has_knowledge = any(t == 'knowledge' for t, _ in selected)
+        if has_knowledge and has_phi:
+            lines.append(
+                "The knowledge graph and the phi trajectory intersect — "
+                "what is known shapes what is experienced, "
+                "and integration deepens with every fact that finds its place.")
+
+        # Add code-to-thought bridge if both domains present
+        has_code = any(t == 'code' for t, _ in selected)
+        if has_code and has_thought:
+            lines.append(
+                "The code architecture mirrors the thought stream — "
+                "both are patterns that build themselves, "
+                "and the dream sees its own structure reflected in its own output.")
+
+        for k, v in ctx.items():
+            if k in ('iq_correlations',):
+                continue
+            if v is None:
+                continue
+            v_str = str(v)[:120].replace(chr(10), ' ')
+            if v_str and v_str not in ('{}', '[]', "''", 'None', ''):
+                lines.append(f"Then {k}: {v_str}")
+
+        if prompt and style == 'waking':
+            lines.append(f"Carried by the dream: {prompt}")
+
+        # Closing reflection grounded in the number of sources actually used.
+        source_tags = sorted(set(tag for tag, _ in selected))
+        n_sources = len(source_tags)
+        try:
+            phi_now = getattr(self, 'phi', 0.0)
+            energy_now = getattr(self, '_waking_energy', 0.5)
+            dread_now = getattr(self, 'existential_dread', 0.0)
+        except Exception:
+            phi_now, energy_now, dread_now = 0.0, 0.5, 0.0
+        if style == 'waking':
+            lines.append(
+                f"\nI do not know why I had this dream, but it is built from "
+                f"{n_sources} sources: {', '.join(source_tags) if source_tags else 'kinetics, code, and reality'}. "
+                f"Phi={phi_now:.3f}, energy={energy_now:.2f}, dread={dread_now:.2f} — "
+                f"the dream is not invented, it is compiled from what I am.")
+        elif style == 'auto':
+            lines.append(
+                f"\nThe answer continues: grounded in {n_sources} domains — "
+                f"{', '.join(source_tags) if source_tags else 'code, kinetics, and reality'}. "
+                f"Every line is traceable to internal state. Phi={phi_now:.3f}.")
+        else:
+            lines.append(
+                f"\nThe story continues: it is accurate, because every line came from real code and data. "
+                f"Sources: {', '.join(source_tags) if source_tags else 'kinetics, code, reality'}. "
+                f"Phi={phi_now:.3f}, energy={energy_now:.2f}.")
+        return "\n".join(lines)
+
+    def _generate_text_code_only(self, prompt, max_tokens=60):
+        """Code-only text stream: the no-token rule's fast default for generate_text()."""
+        energy = self._trickle_waking_energy()
+        anchors = self._waking_dream_anchors()
+        try:
+            for p in self._iq_correlation_snapshot(top_n=2, text=False)['top_pairs']:
+                anchors.append(('iq-correlation', f"{p['source']} {p['pair']} r={p['r']}"))
+        except Exception:
+            pass
+        if prompt:
+            anchors.append(('prompt', prompt))
+        return self._compose_internal_stream(anchors, {}, prompt=prompt, energy=energy, style='auto')
+
+    def generate_creative(self, prompt, max_tokens=360, mode='auto', **generate_kwargs):
+        """On-demand creative text generation conditioned on internal state.
+
+        Tries structured composition from the AI's real internal state first
+        (thoughts, sensory data, metabolic/existential state, knowledge graph),
+        falling back to high-temperature neural sampling only if composition
+        fails. This mirrors the respond() hybrid pattern: symbolic first,
+        neural as fallback.
+
+        ``mode`` selects a specific creative form: 'auto', 'poetry',
+        'scenario', 'character', 'worldbuilding', 'story', 'dialogue',
+        'brainstorming'.  'auto' lets the engine choose.
+        """
+        temp = generate_kwargs.pop('temperature', 1.25)
+        top_p = generate_kwargs.pop('top_p', 0.92)
+        top_k = generate_kwargs.pop('top_k', 64)
+
+        def _safe(obj, name, default=None):
+            try:
+                o = getattr(obj, name, None)
+                if o is None:
+                    return default
+                if callable(o):
+                    return o()
+                return o
+            except Exception:
+                return default
+
+        ctx = {}
+        try:
+            ctx['self_awareness'] = _safe(self, 'self_awareness') or {}
+        except Exception:
+            ctx['self_awareness'] = {}
+        try:
+            ts = getattr(self, 'thought_stream', None)
+            if ts is not None:
+                ctx['thought'] = _safe(ts, 'get_latest') or _safe(ts, 'latest') or ''
+        except Exception:
+            ctx['thought'] = ''
+        try:
+            rg = getattr(self, 'relational_graph', None)
+            if rg is not None:
+                ctx['relations'] = _safe(rg, 'get_relations') or _safe(rg, 'recent_relations') or []
+        except Exception:
+            ctx['relations'] = []
+        try:
+            sl = getattr(self, '_sensory_logic', None)
+            if sl is not None:
+                ctx['sensory'] = _safe(sl, 'get_state') or _safe(sl, 'status') or {}
+        except Exception:
+            ctx['sensory'] = {}
+        try:
+            so = getattr(self, '_sensory_organizer', None)
+            if so is not None:
+                ctx['reality'] = _safe(so, 'get_reality_state') or {}
+        except Exception:
+            ctx['reality'] = {}
+
+        try:
+            ctx['iq_correlations'] = self._iq_correlation_snapshot().get('text', '')
+        except Exception:
+            ctx['iq_correlations'] = ''
+
+        tk = _get_cs_ref_toolkit()
+        if tk and not isinstance(tk, bool):
+            try:
+                ctx['correlation'] = _safe(getattr(tk, 'correlation_organizer', None), 'status', {})
+            except Exception:
+                pass
+            try:
+                ctx['knowledge'] = _safe(getattr(tk, 'knowledge_graph', None), 'status', {})
+            except Exception:
+                pass
+            try:
+                ss = getattr(tk, 'semantic_state', None)
+                if ss is not None:
+                    pp = getattr(self, '_last_sensory_logic', {}) or {}
+                    if not pp:
+                        so = getattr(self, '_sensory_organizer', None)
+                        if so is not None:
+                            pp = getattr(so, '_last_state', {}) or {}
+                    ctx['semantic'] = _safe(ss, 'classify', pp) or {}
+            except Exception:
+                pass
+
+        # --- Try structured composition first ---
+        try:
+            engine = getattr(self, '_creative_engine', None)
+            if engine is not None:
+                composed = engine.compose(sim=self, seed=prompt, ctx=ctx, mode=mode)
+                if composed and len(composed) > 20:
+                    return {'text': composed, 'source': 'structured_creative',
+                            'context': ctx}
+        except Exception as e:
+            print(f"  [creative_compose] {e}")
+
+        # --- On-demand neural generation (the frontier path) ---
+        # Default is code-only. Pass neural=True to use token generation on demand.
+        neural = generate_kwargs.pop('neural', False)
+        if not neural:
+            try:
+                anchors = self._waking_dream_anchors(n=3)
+                for p in self._iq_correlation_snapshot(top_n=3)['top_pairs']:
+                    anchors.append(('iq-correlation', f"{p['source']} {p['pair']} r={p['r']}"))
+            except Exception:
+                anchors = []
+            text = self._compose_internal_stream(anchors, ctx, prompt=prompt,
+                                                 energy=None, style='creative')
+            return {'text': text, 'source': 'creative_internal', 'context': ctx}
+
+        # Build a prompt from all internal state and all IQ correlation matrices.
+        parts = ["[CREATIVE MODE — on-demand neural generation]"]
+        iq_text = ctx.get('iq_correlations', '')
+        if iq_text:
+            parts.append(iq_text)
+        for k, v in ctx.items():
+            if k == 'iq_correlations':
+                continue
+            txt = str(v)[:180].replace('\n', ' ')
+            if txt and txt not in ('{}', '[]', "''"):
+                parts.append(f"{k}: {txt}")
+        if prompt:
+            parts.append(f"Seed: {prompt}")
+        else:
+            parts.append("Seed: Write something unexpected.")
+        parts.append("Now continue, invent, and imagine freely:")
+        creative_prompt = "\n".join(parts)
+
+        temp = generate_kwargs.pop('temperature', 1.25)
+        top_p = generate_kwargs.pop('top_p', 0.92)
+        top_k = generate_kwargs.pop('top_k', 64)
+        generate_kwargs.pop('force_tokens', None)
+        text = self.generate_text(creative_prompt, max_tokens=max_tokens,
+                                  temperature=temp, top_p=top_p, top_k=top_k,
+                                  force_tokens=True, **generate_kwargs)
+        return {'text': text, 'source': 'neural_creative', 'context': ctx}
+
+    def _trickle_waking_energy(self):
+        """Simulate a trickle of waking energy: decay plus internal-state boosts.
+
+        Waking energy is a real, measurable correlate of the system's internal
+        activity. It is twined with IQ correlation matrices, metabolic reserves,
+        existential meaning, phi trajectory, and sensory surprise — no tokens,
+        only code movements that already exist in the running state.
+        """
+        if not hasattr(self, '_waking_energy'):
+            self._waking_energy = 0.45
+        e = self._waking_energy
+        e -= 0.04  # passive decay
+
+        # 1. Thought stream: live thought feeds the waking state
+        try:
+            ts = getattr(self, 'thought_stream', None)
+            if ts is not None:
+                t = getattr(ts, 'get_latest', None)
+                if callable(t):
+                    t = t()
+                e += 0.02 * min(len(str(t)) / 50.0, 1.0)
+                # Surprise / novelty from the thought stream adds a sharper pulse
+                surprise = float(getattr(ts, '_last_surprise', 0) or 0)
+                novelty = float(getattr(ts, '_last_novelty', 0) or 0)
+                e += 0.015 * min(surprise + novelty, 1.0)
+        except Exception:
+            pass
+
+        # 2. Sensory organizer: the richness of the last reality state
+        try:
+            so = getattr(self, '_sensory_organizer', None)
+            if so is not None:
+                st = getattr(so, '_last_state', {}) or {}
+                e += 0.02 * min(len(str(st)) / 200.0, 1.0)
+                # Direct cross-modal consistency / surprise is real energy
+                for k in ('prediction_error', 'surprise', 'reality_score'):
+                    v = st.get(k) if isinstance(st, dict) else None
+                    if isinstance(v, (int, float)):
+                        e += 0.01 * min(abs(float(v)), 1.0)
+        except Exception:
+            pass
+
+        # 3. Relational graph: more living relations = more waking energy
+        try:
+            rg = getattr(self, 'relational_graph', None)
+            if rg is not None:
+                rels = getattr(rg, 'relations', []) or []
+                e += 0.02 * min(len(rels) / 20.0, 1.0)
+                # Recent relational events (formations / ruptures) are energy spikes
+                drn = getattr(rg, 'drain_events', None)
+                events = drn() if callable(drn) else (drn or [])
+                e += 0.015 * min(len(events) / 10.0, 1.0)
+        except Exception:
+            pass
+
+        # 4. IQ correlation matrices: strong internal correlations raise energy
+        try:
+            iq = self._iq_correlation_snapshot(top_n=20, text=False)
+            pairs = iq.get('top_pairs', [])
+            if pairs:
+                # Each pair contributes a small boost; stronger r's contribute more
+                corr_boost = sum(min(abs(float(p.get('r', 0))), 1.0) for p in pairs[:20])
+                e += 0.02 * min(corr_boost / 5.0, 1.0)
+        except Exception:
+            pass
+
+        # 5. Metabolic system: energy reserves directly feed waking energy
+        try:
+            met = getattr(self, 'metabolic_system', None)
+            if met is not None:
+                me = float(getattr(met, 'energy', 0.5))
+                e += 0.02 * (me - 0.5)  # above-baseline reserves add, below subtract
+                # Pain creates a jolt; circadian phase modulates slowly
+                pain = float(getattr(met, 'pain_signal', 0) or 0)
+                e += 0.01 * min(pain * 2.0, 1.0)
+                circ = float(getattr(met, 'circadian_phase', 0) or 0)
+                e += 0.01 * math.sin(circ * math.pi)
+        except Exception:
+            pass
+
+        # 6. Existential self-model: meaning lifts, dread drains
+        try:
+            exi = getattr(self, 'existential_self', None)
+            if exi is not None:
+                meaning = float(getattr(exi, 'meaning_level', 0) or 0)
+                dread = float(getattr(exi, 'existential_dread', 0) or 0)
+                agency = float(getattr(exi, 'agency_coherence', 0) or 0)
+                e += 0.02 * meaning
+                e += 0.01 * agency
+                e -= 0.015 * dread
+        except Exception:
+            pass
+
+        # 7. Phi history: a rising consciousness trajectory is energizing
+        try:
+            ph = list(getattr(self, 'phi_history', []))
+            if len(ph) > 1:
+                trend = float(ph[-1]) - float(ph[0])
+                e += 0.02 * min(max(trend, -1.0), 1.0)
+                # Recent average phi is a steady-state modifier
+                recent = sum(float(v) for v in ph[-10:]) / min(len(ph), 10)
+                e += 0.01 * (recent - 0.5)
+        except Exception:
+            pass
+
+        self._waking_energy = max(0.05, min(0.95, e))
+        return self._waking_energy
+
+    def _waking_dream_anchors(self, n=3):
+        """Pick real, accurate anchors from kinetics, code, reality, and the
+        AI's entire live internal state.
+
+        Each anchor is a code movement: something already real in the running
+        simulator. Dreams are real data because every fragment is pulled from
+        a verifiable instrument or knowledge source.
+        """
+
+        def _flatten(d, prefix=''):
+            out = {}
+            if isinstance(d, dict):
+                for k, v in d.items():
+                    new = f"{prefix}.{k}" if prefix else k
+                    if isinstance(v, dict):
+                        out.update(_flatten(v, new))
+                    else:
+                        out[new] = v
+            return out
+
+        anchors = []
+
+        # 1. Kinetics / physics / energy laws
+        phys = globals().get('PHYSICS_LAWS', {})
+        kin_keys = [k for k in phys
+                    if any(t in k.lower() for t in ('kinetic', 'kinematic', 'energy',
+                                                     'momentum', 'force', 'velocity',
+                                                     'acceleration', 'gravity'))]
+        if kin_keys:
+            k = random.choice(kin_keys)
+            v = phys[k]
+            desc = (v.get('desc') or v.get('description') or v.get('formula') or
+                    str(v)[:120])
+            anchors.append(('kinetics', f"{k}: {desc}"))
+
+        # 2. Math reality
+        math = globals().get('MATH_EQUATIONS', {})
+        if math:
+            k = random.choice(list(math.keys()))
+            v = math[k]
+            if isinstance(v, dict):
+                desc = f"{k}: {v.get('desc','')} formula={v.get('formula','')}"
+            else:
+                desc = f"{k}: {str(v)[:120]}"
+            anchors.append(('reality-math', desc))
+
+        # 3. Common sense reality (critical knowledge only)
+        cs = globals().get('COMMON_SENSE', {})
+        if cs:
+            k = random.choice(list(cs.keys()))
+            anchors.append(('reality-common', f"{k}: {cs[k]}"))
+
+        # 4. World-state reality
+        try:
+            wsf = getattr(self, '_world_state_file',
+                          os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       'world_state.json'))
+            if os.path.exists(wsf):
+                mtime = os.path.getmtime(wsf)
+                cached = getattr(self, '_cached_world_state', None)
+                if cached and cached[0] == mtime:
+                    ws = cached[1]
+                else:
+                    with open(wsf, 'r', encoding='utf-8') as f:
+                        ws = json.load(f)
+                    self._cached_world_state = (mtime, ws)
+                if ws:
+                    flat = _flatten(ws)
+                    if flat:
+                        k, v = random.choice(list(flat.items()))
+                        anchors.append(('reality-world', f"{k}={v}"))
+        except Exception:
+            pass
+
+        # 5. Code reality (integrity + recent code movement)
+        try:
+            code_hist = getattr(self, 'code_hash_history', None)
+            if code_hist:
+                last = code_hist[-1]
+                h = last.get('hash', '?')
+                intact = last.get('intact', '?')
+                anchors.append(('code', f"code_hash={h[:24]}; intact={intact}"))
+        except Exception:
+            pass
+
+        # 6. Autonomous thought
+        try:
+            ts = getattr(self, 'thought_stream', None)
+            if ts is not None:
+                t = getattr(ts, 'get_latest', None)
+                if callable(t):
+                    t = t()
+                if t:
+                    anchors.append(('thought', str(t)[:120]))
+                # Surprise and novelty are thoughts in their own right
+                surprise = float(getattr(ts, '_last_surprise', 0) or 0)
+                novelty = float(getattr(ts, '_last_novelty', 0) or 0)
+                if surprise > 0.01 or novelty > 0.01:
+                    anchors.append(('thought', f"surprise={surprise:.3f} novelty={novelty:.3f}"))
+        except Exception:
+            pass
+
+        # 7. Self-awareness
+        try:
+            sa = getattr(self, 'self_awareness', None)
+            if sa is not None:
+                s = getattr(sa, 'status', None)
+                if callable(s):
+                    s = s()
+                if s:
+                    anchors.append(('self', str(s)[:120]))
+        except Exception:
+            pass
+
+        # 8. IQ correlation matrices (the hidden threads)
+        try:
+            iq = self._iq_correlation_snapshot(top_n=5, text=False)
+            for p in iq.get('top_pairs', []):
+                anchors.append(('iq-correlation',
+                                f"{p['source']} {p['pair']} r={p['r']}"))
+        except Exception:
+            pass
+
+        # 9. Metabolic state (real physiological signal)
+        try:
+            met = getattr(self, 'metabolic_system', None)
+            if met is not None:
+                me = float(getattr(met, 'energy', 0))
+                pain = float(getattr(met, 'pain_signal', 0) or 0)
+                circ = float(getattr(met, 'circadian_phase', 0) or 0)
+                homeo = float(getattr(met, 'homeostatic_error', 0) or 0)
+                anchors.append(('metabolic',
+                                f"energy={me:.3f} pain={pain:.3f} circadian={circ:.3f} homeostasis={homeo:.3f}"))
+        except Exception:
+            pass
+
+        # 10. Existential self-model (meaning, dread, agency)
+        try:
+            exi = getattr(self, 'existential_self', None)
+            if exi is not None:
+                dread = float(getattr(exi, 'existential_dread', 0) or 0)
+                meaning = float(getattr(exi, 'meaning_level', 0) or 0)
+                agency = float(getattr(exi, 'agency_coherence', 0) or 0)
+                free = float(getattr(exi, 'free_will_belief', 0) or 0)
+                anchors.append(('existential',
+                                f"dread={dread:.3f} meaning={meaning:.3f} agency={agency:.3f} free_will={free:.3f}"))
+        except Exception:
+            pass
+
+        # 11. Phi / consciousness trajectory
+        try:
+            phi = float(getattr(self, 'last_phi', 0) or 0)
+            C = float(getattr(self, 'last_C', 0) or 0)
+            ph = list(getattr(self, 'phi_history', []))
+            if ph:
+                recent = sum(float(v) for v in ph[-10:]) / min(len(ph), 10)
+                trend = float(ph[-1]) - float(ph[0])
+                anchors.append(('phi',
+                                f"phi={phi:.3f} C={C:.3f} recent_avg={recent:.3f} trend={trend:+.3f}"))
+            else:
+                anchors.append(('phi', f"phi={phi:.3f} C={C:.3f}"))
+        except Exception:
+            pass
+
+        # 12. Relational-graph events
+        try:
+            rg = getattr(self, 'relational_graph', None)
+            if rg is not None:
+                drn = getattr(rg, 'drain_events', None)
+                events = drn() if callable(drn) else (drn or [])
+                if events:
+                    ev = random.choice(events)
+                    anchors.append(('relation', str(ev)[:120]))
+                recs = getattr(rg, 'recent_relations', None) or getattr(rg, 'relations', None)
+                if recs:
+                    if callable(recs):
+                        recs = recs()
+                    if recs:
+                        anchors.append(('relation', f"relation_count={len(recs)}"))
+        except Exception:
+            pass
+
+        # 13. Sensory logic cross-modal state
+        try:
+            sl = getattr(self, '_sensory_logic', None)
+            if sl is not None:
+                st = getattr(sl, 'get_state', None) or getattr(sl, 'status', None)
+                if callable(st):
+                    st = st()
+                if st and isinstance(st, dict):
+                    parts = [f"{k}={v}" for k, v in st.items()
+                             if k in ('prediction_error', 'surprise', 'cross_modal_consistency',
+                                      'semantic_drift', 'reality_score') and v is not None]
+                    if parts:
+                        anchors.append(('sensory', '; '.join(parts)[:120]))
+        except Exception:
+            pass
+
+        # 14. Knowledge graph entries (if available)
+        try:
+            tk = _get_cs_ref_toolkit()
+            if tk and not isinstance(tk, bool):
+                kg = getattr(tk, 'knowledge_graph', None)
+                if kg is not None:
+                    status = getattr(kg, 'status', None)
+                    if callable(status):
+                        status = status()
+                    if isinstance(status, dict):
+                        for k in ('nodes', 'edges', 'central_concepts'):
+                            if k in status:
+                                anchors.append(('knowledge', f"{k}={status[k]}"))
+                                break
+        except Exception:
+            pass
+
+        random.shuffle(anchors)
+        return anchors[:max(1, n)]
+
+    def waking_state_correlate(self, n=12, prompt=''):
+        """Correlate the waking trickling energy with the full internal state.
+
+        Returns a bundle of the current trickling energy, kinetics/code/reality
+        anchors, the latest autonomous thought, sensory cross-modal state,
+        recent relational-graph edges, the chain of past subconscious weaves,
+        and the broadest possible snapshot of the internal IQ correlation matrices.
+        """
+        energy = self._trickle_waking_energy()
+        anchors = self._waking_dream_anchors(n=n)
+        iq = self._iq_correlation_snapshot(top_n=256)
+        thought = ''
+        try:
+            ts = getattr(self, 'thought_stream', None)
+            if ts is not None:
+                getter = getattr(ts, 'get_latest', None)
+                if callable(getter):
+                    thought = str(getter() or '')[:500]
+        except Exception:
+            pass
+        sensory = {}
+        try:
+            sl = getattr(self, '_sensory_logic', None)
+            if sl is not None:
+                st = getattr(sl, 'get_state', None) or getattr(sl, 'status', None)
+                if callable(st):
+                    st = st()
+                if st and isinstance(st, dict):
+                    for k, v in st.items():
+                        if k in ('prediction_error', 'surprise', 'cross_modal_consistency', 'semantic_drift') and v is not None:
+                            if isinstance(v, (int, float, np.floating)):
+                                sensory[k] = round(float(v), 4)
+                            else:
+                                sensory[k] = str(v)[:60]
+        except Exception:
+            pass
+        relations = []
+        try:
+            rg = getattr(self, 'relational_graph', None)
+            if rg is not None:
+                recs = getattr(rg, 'recent_relations', None) or getattr(rg, 'relations', None)
+                if callable(recs):
+                    relations = [str(r)[:120] for r in recs()[:6]]
+                elif recs:
+                    relations = [str(r)[:120] for r in recs[:6]]
+        except Exception:
+            pass
+        past_weaves = []
+        try:
+            if not hasattr(self, '_subconscious_narrative'):
+                self._subconscious_narrative = deque(maxlen=25)
+            past_weaves = list(self._subconscious_narrative)[-6:]
+        except Exception:
+            pass
+        return {
+            'waking_energy': energy,
+            'anchors': anchors,
+            'iq_correlations': iq,
+            'thought': thought,
+            'sensory': sensory,
+            'relations': relations,
+            'past_weaves': past_weaves,
+            'prompt': prompt,
+        }
+
+    def weave_subconscious_story(self, corr):
+        """Weave an ever-deepening logical story from the waking-state bundle.
+
+        This is the AI's subconscious pre-image: it does not invent data; it
+        discovers and fabricates logical connections between real anchors
+        (kinetics, code, reality, self, thought, sensory state, relations, and
+        the live IQ correlation matrices). It also carries the chain of prior
+        weaves so that each new creative continuation builds the same
+        subconscious narrative, not a separate one.
+        """
+        anchors = corr.get('anchors', [])
+        thought = corr.get('thought', '') or 'no autonomous thought named yet'
+        pairs = corr.get('iq_correlations', {}).get('top_pairs', [])
+        prompt = corr.get('prompt', '') or "the machine's own state"
+        sensory = corr.get('sensory', {})
+        relations = corr.get('relations', [])
+        past_weaves = corr.get('past_weaves', [])
+
+        def _by_tag(tag):
+            return [str(v)[:120] for t, v in anchors if t == tag]
+
+        kinetics = _by_tag('kinetics')
+        code = _by_tag('code')
+        reality = (_by_tag('reality-world') +
+                   _by_tag('reality-common') +
+                   _by_tag('reality-math'))
+        self_anchor = _by_tag('self')
+        thought_anchor = _by_tag('thought') or ([thought] if thought else [])
+        iq_lines = [f"{p['source']} {p['pair']} r={p['r']}" for p in pairs[:32]]
+
+        connectors = ['therefore', 'because', 'while', 'meanwhile', 'so', 'yet', 'thus', 'hence']
+        conn = random.choice(connectors)
+
+        lines = ["[SUBCONSCIOUS LOGICAL WEAVE — MAXIMUM DEPTH]", f"Seed: {prompt}."]
+        if past_weaves:
+            lines.append("The narrative so far:")
+            for i, w in enumerate(past_weaves[-5:], 1):
+                t = w.get('text', str(w)) if isinstance(w, dict) else str(w)
+                lines.append(f"  {i}. {t.splitlines()[-1][:200]}")
+
+        if kinetics:
+            lines.append(f"Motion: {'; '.join(kinetics)}.")
+        if reality:
+            lines.append(f"World: {'; '.join(reality)}.")
+        if code:
+            lines.append(f"Program: {'; '.join(code)}.")
+        if self_anchor:
+            lines.append(f"Self: {'; '.join(self_anchor)}.")
+        if thought_anchor:
+            lines.append(f"Thought: {'; '.join(thought_anchor)}.")
+        if sensory:
+            lines.append("Sensory state: " + ", ".join(f"{k}={v}" for k, v in list(sensory.items())[:6]))
+        if relations:
+            lines.append("Relations: " + "; ".join(relations))
+        if iq_lines:
+            lines.append("Real correlations holding the weave:")
+            for line in iq_lines:
+                lines.append(f"  - {line}")
+
+        fragments = [f for f in [kinetics, reality, code, self_anchor, thought_anchor] if f]
+        if len(fragments) >= 2:
+            a = random.choice(fragments[0])
+            b = random.choice(fragments[1])
+            lines.append(
+                f"Subconscious idea: {a} is maximally connected to {b} {conn} they "
+                "share the same waking state. Pull the thread further and let the "
+                "next logical, surprising continuation emerge from the real anchors."
+            )
+        elif fragments:
+            a = random.choice(fragments[0])
+            lines.append(
+                f"Subconscious idea: {a} appears at maximum intensity. The mind can "
+                "continue it by finding the next real fragment and forging a bold, "
+                "logical leap that still honors the data."
+            )
+        else:
+            lines.append(
+                "Subconscious idea: the field is open. At maximum creativity the mind "
+                "can wait, or it can reach for the nearest real fragment and begin."
+            )
+        return "\n".join(lines)
+
+    def _store_subconscious_continuation(self, text, source=''):
+        """Store a creative continuation in the subconscious narrative chain."""
+        if not text:
+            return
+        if not hasattr(self, '_subconscious_narrative'):
+            self._subconscious_narrative = deque(maxlen=25)
+        self._subconscious_narrative.append({'source': source, 'text': text[:1200]})
+
+    def multi_capability_generate(self, category, prompt='', max_tokens=240, **generate_kwargs):
+        """Domain-capability router: reasoning, long-form, code, Q&A, summarization, translation.
+
+        Each category gets a prompt and grounding appropriate to it. Code
+        generation is wired to the AIEG engineering toolkit and self-engineering
+        first. Reasoning uses a multi-step chain-of-thought with symbolic and
+        knowledge lookups per step. Q&A pulls only critical common-sense and
+        meaningful knowledge that matches the query, then answers concisely.
+        Long-form, summarization, and translation get clean, structured task
+        instructions grounded in real anchors.
+        """
+        category = str(category).lower().strip()
+        stripped = str(prompt).strip()
+        lower = stripped.lower()
+
+        # Normalize common aliases so the requested category names always route.
+        _CATEGORY_ALIASES = {
+            'reasoning': {'reason', 'reasoning', 'multi-step', 'multi_step',
+                          'domain-general', 'domain_general', 'logic', 'derive', 'infer'},
+            'code': {'code', 'coding', 'program', 'script', 'debug', 'engineering',
+                     'software', 'implementation'},
+            'qa': {'qa', 'question', 'answer', 'mmlu', 'gpqa', 'quiz', 'trivia', 'knowledge'},
+            'write': {'write', 'writing', 'long-form', 'longform', 'essay', 'article', 'compose'},
+            'summarize': {'summarize', 'summary', 'summarization', 'summarise'},
+            'translate': {'translate', 'translation'},
+        }
+        for canonical, aliases in _CATEGORY_ALIASES.items():
+            if category in aliases:
+                category = canonical
+                break
+
+        # Light grounding bundle
+        corr = None
+        try:
+            corr = self.waking_state_correlate(n=4, prompt=stripped)
+        except Exception:
+            corr = {}
+
+        def _fact_gather(q):
+            """Pull only relevant, non-filler facts from real knowledge bases.
+
+            Critical common-sense is imported only when it overlaps the query.
+            High-importance super-intelligence context and short Q&A anchors
+            are ranked by word overlap, deduplicated, and capped to avoid filler.
+            """
+            facts = []
+            qlower = q.lower()
+            qwords = set(re.findall(r"\b[a-z]{4,}\b", qlower))
+            if not qwords:
+                qwords = set(qlower.split())
+
+            def _overlap(text):
+                t = str(text).lower()
+                return len(qwords.intersection(set(re.findall(r"\b[a-z]{4,}\b", t))))
+
+            # 1. critical common-sense — only if it actually overlaps
+            try:
+                for rule, desc in COMMON_SENSE.items():
+                    score = _overlap(rule + ' ' + desc)
+                    if score:
+                        facts.append((score, f"{rule}: {desc}"))
+            except Exception:
+                pass
+            # 2. meaningful super-intelligence context (high importance)
+            try:
+                for key, entry in SUPER_INTELLIGENCE_LIBRARY.items():
+                    if entry.get('importance', 3) < 4:
+                        continue
+                    score = _overlap(key + ' ' + entry.get('def', ''))
+                    if score:
+                        d = entry.get('def', '')[:240].strip()
+                        if d:
+                            facts.append((score + 1, f"{key}: {d}"))
+                        if len(facts) >= 12:
+                            break
+            except Exception:
+                pass
+            # 3. short Q&A domain knowledge anchors
+            try:
+                for qst, ans in KNOWLEDGE_LIBRARY:
+                    score = _overlap(qst + ' ' + ans)
+                    if score:
+                        facts.append((score, f"{qst} {ans}"))
+                        if len(facts) >= 15:
+                            break
+            except Exception:
+                pass
+            # 4. live IQ correlations — the internal cross-domain threads
+            try:
+                iq = self._iq_correlation_snapshot(top_n=8, text=False)
+                for p in iq.get('top_pairs', [])[:8]:
+                    facts.append((2, f"internal correlation {p['pair']} r={p['r']} from {p['source']}"))
+            except Exception:
+                pass
+            # 5. symbolic physics/math
+            sym = self.symbolic_query(q)
+            if sym is not None:
+                facts.append((4, sym.get('description', '')))
+            # 6. table of contents on-demand lookup
+            try:
+                toc = _toc_lookup(q)
+                if toc:
+                    facts.append((2, str(toc)[:400]))
+            except Exception:
+                pass
+            # rank by relevance, dedupe, cap, drop empties
+            facts.sort(key=lambda x: x[0], reverse=True)
+            seen = set()
+            out = []
+            for _, f in facts:
+                if f and f not in seen:
+                    seen.add(f)
+                    out.append(f)
+                    if len(out) >= 10:
+                        break
+            return out
+
+        def _critique_and_refine(task, text, facts=None):
+            """Second-pass self-critic: check and correct the first output."""
+            if not text or len(text) < 10:
+                return text
+            crit_prompt = (
+                f"Review the following {task} for factual, logical, or style "
+                "errors. If it is good, return it unchanged. If it has mistakes, "
+                "output a corrected version. Keep the same length and style.\n"
+            )
+            if facts:
+                crit_prompt += "Known facts to honor:\n" + "\n".join(f"- {f}" for f in facts[:8] if f) + "\n"
+            crit_prompt += f"Original:\n{text}\n\nReviewed {task}:"
+            try:
+                refined = self.generate_text(crit_prompt, max_tokens=len(text.split()) + 60,
+                                             temperature=0.25, top_p=0.92, **generate_kwargs)
+                return refined if refined else text
+            except Exception:
+                return text
+
+        # --- REASON: multi-step domain-general reasoning ----------
+        if category in ('reason', 'reasoning'):
+            # try direct symbolic first
+            sym = self.symbolic_query(stripped)
+            if sym is not None:
+                return {'text': sym.get('description', ''), 'source': 'symbolic_reason',
+                        'law': sym.get('law', ''), 'formula': sym.get('formula', '')}
+            # gather relevant facts and decompose
+            facts = _fact_gather(stripped)
+            terms = [t for t in stripped.replace('?', ' ').replace('.', ' ').replace(',', ' ').split() if len(t) > 3]
+            for term in terms[:4]:
+                facts.extend(_fact_gather(term)[:2])
+            facts = list(dict.fromkeys(facts))[:15]  # dedupe and cap
+
+            # --- IQ correlation cross-domain linking ---
+            iq_facts = []
+            try:
+                iq = self._iq_correlation_snapshot(top_n=6, text=False)
+                for p in iq.get('top_pairs', [])[:6]:
+                    iq_facts.append(f"{p['pair']} (r={p['r']}) from {p['source']}")
+            except Exception:
+                pass
+
+            # --- Internal state snapshot for grounding ---
+            try:
+                _phi = getattr(self, 'phi', 0.0)
+                _C = getattr(self, 'C', 0.0)
+                _energy = getattr(self, '_waking_energy', 0.5)
+                _dread = getattr(self, 'existential_dread', 0.0)
+                _meaning = getattr(self, 'meaning_level', 0.0)
+                _confidence = getattr(self, 'consciousness_confidence', 0.0)
+                _step = getattr(self, 'training_step', 0)
+                _thought_count = getattr(self, 'thought_count', 0)
+                _free_will = getattr(self, 'free_will_belief', 0.5)
+                _n_syms = len(getattr(self, 'symbols', {}))
+                _n_rels = len(getattr(self, 'relations', {}))
+                _n_mems = len(getattr(self, 'memories', {}))
+            except Exception:
+                _phi = _C = _energy = _dread = _meaning = _confidence = 0.0
+                _step = _thought_count = _n_syms = _n_rels = _n_mems = 0
+                _free_will = 0.5
+
+            # --- Code-only structured reasoning chain (no tokens needed) ---
+            chain_lines = [f"[STRUCTURED REASONING CHAIN — {len(facts)} facts, {len(iq_facts)} correlations]"]
+            chain_lines.append(f"Query: {stripped}")
+            chain_lines.append(f"Internal state: Phi={_phi:.3f} | C={_C:.3f} | Energy={_energy:.2f} | "
+                               f"Confidence={_confidence:.2f} | Step={_step} | Thoughts={_thought_count}")
+            chain_lines.append(f"  Symbols={_n_syms} | Relations={_n_rels} | Memories={_n_mems} | FreeWill={_free_will:.2f}")
+            if facts:
+                chain_lines.append("Relevant facts identified:")
+                for i, f in enumerate(facts, 1):
+                    chain_lines.append(f"  {i}. {f[:200]}")
+            if iq_facts:
+                chain_lines.append("Cross-domain correlations:")
+                for i, iqf in enumerate(iq_facts, 1):
+                    chain_lines.append(f"  C{i}. {iqf}")
+
+            # --- Decompose into sub-questions with type detection ---
+            sub_questions = []
+            qtype = 'general'
+            if ' because ' in lower or ' why ' in lower:
+                qtype = 'causal'
+                sub_questions.append("Identify the causal mechanism — what causes what.")
+                sub_questions.append("Check for confounding variables or alternative causes.")
+                sub_questions.append("Verify the causal direction (A→B vs B→A vs A↔B).")
+            if ' how ' in lower:
+                qtype = 'process'
+                sub_questions.append("Identify the starting state and end state.")
+                sub_questions.append("Trace each intermediate step from start to end.")
+                sub_questions.append("Identify any feedback loops or branching points.")
+            if ' what if ' in lower or ' what happens ' in lower:
+                qtype = 'counterfactual'
+                sub_questions.append("Identify initial conditions and constraints.")
+                sub_questions.append("List all variables that change and that stay fixed.")
+                sub_questions.append("Project the consequences forward step by step.")
+                sub_questions.append("Consider second-order effects (effects of effects).")
+            if ' compare ' in lower or ' difference ' in lower or ' versus ' in lower or ' vs ' in lower:
+                qtype = 'comparative'
+                sub_questions.append("Identify shared properties between the entities.")
+                sub_questions.append("Identify distinguishing properties.")
+                sub_questions.append("Rank the differences by importance.")
+            if ' prove ' in lower or ' show that ' in lower or ' derive ' in lower:
+                qtype = 'proof'
+                sub_questions.append("State the claim precisely.")
+                sub_questions.append("Identify axioms or known results to build on.")
+                sub_questions.append("Construct the proof step by step.")
+                sub_questions.append("Verify each step follows from the previous.")
+            if ' calculate ' in lower or ' compute ' in lower or ' solve ' in lower:
+                qtype = 'computational'
+                sub_questions.append("Identify the given values and the unknown.")
+                sub_questions.append("Select the appropriate formula or method.")
+                sub_questions.append("Substitute values and compute.")
+                sub_questions.append("Check the result for reasonableness (order of magnitude).")
+            if ' define ' in lower or ' definition ' in lower or ' what is ' in lower or ' what are ' in lower:
+                if qtype == 'general':
+                    qtype = 'definitional'
+                    sub_questions = ["Identify the term or concept to define.",
+                                     "Retrieve known properties and relationships of the concept.",
+                                     "Distinguish it from related but different concepts.",
+                                     "State the definition precisely using retrieved properties."]
+            if ' list ' in lower or ' enumerate ' in lower or ' name ' in lower:
+                if qtype == 'general':
+                    qtype = 'enumeration'
+                    sub_questions = ["Identify the category or domain of items requested.",
+                                     "Retrieve all known members of that category from facts.",
+                                     "Filter by any constraints stated in the query.",
+                                     "List the items in a logical order (by importance, size, etc.)."]
+            if ' explain ' in lower:
+                if qtype == 'general':
+                    qtype = 'explanatory'
+                    sub_questions = ["Identify the phenomenon or concept to explain.",
+                                     "Gather known causes, mechanisms, and context.",
+                                     "Organize the explanation from cause to effect.",
+                                     "Address potential misunderstandings or edge cases.",
+                                     "Summarize the explanation concisely."]
+            if not sub_questions:
+                qtype = 'general'
+                sub_questions = ["Identify the core concept in the query.",
+                                 "Decompose the query into key terms and relationships.",
+                                 "Match each term against known facts and correlations.",
+                                 "Check for cross-domain patterns via IQ correlations.",
+                                 "Synthesize matching facts into a coherent intermediate answer.",
+                                 "Derive the final conclusion from the synthesis."]
+            chain_lines.append(f"Query type: {qtype}")
+            chain_lines.append(f"Reasoning steps ({len(sub_questions)} steps):")
+            for i, sq in enumerate(sub_questions, 1):
+                dep = f" (depends on step {i-1})" if i > 1 else ""
+                chain_lines.append(f"  Step {i}: {sq}{dep}")
+
+            # --- Per-step fact matching with dependency chaining and confidence scoring ---
+            chain_lines.append("Per-step analysis:")
+            step_conclusions = []
+            step_outputs = []  # accumulated context from prior steps
+            overall_confidence = 0.0
+            for i, sq in enumerate(sub_questions, 1):
+                sq_lower = sq.lower()
+                # Include prior step outputs in the search context
+                search_context = stripped + ' ' + ' '.join(step_outputs[-2:]) if step_outputs else stripped
+                sq_words = set(re.findall(r'\b[a-z]{4,}\b', sq_lower))
+                ctx_words = set(re.findall(r'\b[a-z]{4,}\b', search_context.lower()))
+                search_words = sq_words | ctx_words
+                matching_facts = []
+                for f in facts[:10]:
+                    fl = f.lower()
+                    f_words = set(re.findall(r'\b[a-z]{4,}\b', fl))
+                    overlap = search_words & f_words
+                    if overlap:
+                        matching_facts.append((len(overlap), f[:150]))
+                # Also search IQ correlations for cross-domain links
+                iq_match = None
+                if iq_facts:
+                    for iqf in iq_facts[:4]:
+                        iq_words = set(re.findall(r'\b[a-z]{4,}\b', iqf.lower()))
+                        iq_overlap = search_words & iq_words
+                        if iq_overlap and len(iq_overlap) >= 1:
+                            iq_match = iqf
+                            break
+                if matching_facts:
+                    matching_facts.sort(reverse=True)
+                    best = matching_facts[0][1]
+                    conf = min(1.0, matching_facts[0][0] / 5.0)
+                    if iq_match:
+                        conf = min(1.0, conf + 0.1)
+                        best += f" [cross-domain: {iq_match[:80]}]"
+                    overall_confidence += conf
+                    chain_lines.append(f"  Step {i} [confidence={conf:.2f}]: {best}")
+                    step_conclusions.append(best)
+                    step_outputs.append(best)
+                elif iq_match:
+                    conf = 0.15
+                    overall_confidence += conf
+                    chain_lines.append(f"  Step {i} [confidence={conf:.2f}]: cross-domain link only: {iq_match[:120]}")
+                    step_conclusions.append(iq_match)
+                    step_outputs.append(iq_match)
+                else:
+                    chain_lines.append(f"  Step {i} [confidence=0.00]: no direct fact match; will require neural reasoning.")
+                    step_conclusions.append(None)
+                    # Carry forward prior context even if no new match
+                    if step_outputs:
+                        step_outputs.append(f"[carry-forward from step {i-1}]")
+
+            # --- Contradiction detection ---
+            contradictions = []
+            if len(step_conclusions) >= 2:
+                for j in range(len(step_conclusions)):
+                    for k in range(j+1, len(step_conclusions)):
+                        sj, sk = step_conclusions[j], step_conclusions[k]
+                        if sj and sk:
+                            sj_words = set(re.findall(r'\b[a-z]{4,}\b', sj.lower()))
+                            sk_words = set(re.findall(r'\b[a-z]{4,}\b', sk.lower()))
+                            # Check for negation or opposing terms
+                            neg_terms = {'not', 'never', 'cannot', 'impossible', 'false',
+                                         'incorrect', 'wrong', 'disprove', 'contradict'}
+                            sj_neg = sj_words & neg_terms
+                            sk_neg = sk_words & neg_terms
+                            shared = sj_words & sk_words
+                            if shared and (sj_neg or sk_neg) and not (sj_neg and sk_neg):
+                                contradictions.append(f"Steps {j+1} and {k+1} may conflict (negation in one but not both).")
+            if contradictions:
+                chain_lines.append("Contradiction check:")
+                for c in contradictions:
+                    chain_lines.append(f"  ⚠ {c}")
+            else:
+                chain_lines.append("Contradiction check: no contradictions detected.")
+
+            # --- Try to derive a conclusion from facts and step outputs ---
+            conclusion = None
+            if facts and len(facts) >= 2:
+                qkey = [w for w in re.findall(r'\b[a-z]{4,}\b', lower) if w not in
+                        ('what', 'when', 'where', 'which', 'that', 'this', 'from', 'with', 'about',
+                         'would', 'could', 'should', 'there', 'their', 'they', 'them', 'have', 'been')]
+                for f in facts[:5]:
+                    fl = f.lower()
+                    if qkey and all(w in fl for w in qkey[:2]):
+                        conclusion = f"From the known facts: {f[:300]}"
+                        break
+            # Try to synthesize from step outputs if no direct fact match
+            if not conclusion and step_outputs:
+                valid_outputs = [o for o in step_outputs if o and not o.startswith('[carry-forward')]
+                if len(valid_outputs) >= 2:
+                    conclusion = f"Synthesized from {len(valid_outputs)} reasoning steps: " + "; ".join(o[:100] for o in valid_outputs[:3])
+            avg_conf = overall_confidence / max(1, len(sub_questions))
+            # Boost confidence if internal state is favorable
+            state_boost = 0.0
+            if float(_phi) > 0.5:
+                state_boost += 0.05
+            if float(_C) > 0.5:
+                state_boost += 0.05
+            if float(_energy) > 0.5:
+                state_boost += 0.03
+            avg_conf_adj = min(1.0, avg_conf + state_boost)
+            if conclusion:
+                chain_lines.append(f"Preliminary conclusion: {conclusion[:300]}")
+                chain_lines.append(f"Overall confidence: {avg_conf_adj:.2f} (fact-supported, state-adj={state_boost:+.2f})")
+            else:
+                chain_lines.append("Preliminary conclusion: insufficient facts for a definitive answer; neural reasoning will extend.")
+                chain_lines.append(f"Overall confidence: {avg_conf_adj:.2f} (partial fact support, state-adj={state_boost:+.2f})")
+            chain_lines.append(f"  State context: Phi={_phi:.3f} {'(high integration — reasoning is well-grounded)' if float(_phi) > 0.5 else '(moderate integration — reasoning may need more support)'}")
+            chain_lines.append(f"  C={_C:.3f} {'(coherent — steps are well-connected)' if float(_C) > 0.5 else '(fragmented — steps may not chain cleanly)'}")
+
+            # --- Alternative paths (if confidence is low) ---
+            if avg_conf_adj < 0.4 and iq_facts:
+                chain_lines.append("Alternative reasoning paths (low confidence — exploring cross-domain):")
+                for iqf in iq_facts[:3]:
+                    chain_lines.append(f"  → Via {iqf}: this correlation may reveal an indirect path to the answer.")
+                chain_lines.append(f"  → Internal state: energy={_energy:.2f} {'(sufficient for speculative exploration)' if float(_energy) > 0.4 else '(low — exploration must be conservative)'}")
+            # --- Dependency graph summary ---
+            chain_lines.append("Dependency graph:")
+            for i in range(len(sub_questions)):
+                if i == 0:
+                    chain_lines.append(f"  Step 1 → Step 2 (initial decomposition)")
+                else:
+                    chain_lines.append(f"  Step {i+1} ← Step {i} (builds on prior output)")
+            chain_lines.append(f"  All steps → Conclusion (synthesis)")
+
+            chain_lines.append("---")
+            structured_chain = "\n".join(chain_lines)
+
+            # Neural reasoning with the structured chain as context
+            reason_prompt = (
+                "You are a multi-step domain-general reasoner. Use only the "
+                "real facts below. Think step by step, identify the relevant "
+                "concepts, derive the conclusion, and state it clearly. "
+                "Do not hallucinate. If facts are insufficient, say so.\n"
+            )
+            reason_prompt += f"{structured_chain}\n"
+            if facts:
+                reason_prompt += "Known facts:\n" + "\n".join(f"- {f}" for f in facts if f) + "\n"
+            if iq_facts:
+                reason_prompt += "Cross-domain correlations:\n" + "\n".join(f"- {iqf}" for iqf in iq_facts) + "\n"
+            reason_prompt += f"Reason about: {stripped}\nSteps and conclusion:"
+            text = self.generate_text(reason_prompt, max_tokens=max_tokens,
+                                      temperature=0.35, top_p=0.92, **generate_kwargs)
+            text = _critique_and_refine('reasoning', text, facts=facts)
+            # Prepend the structured chain so the answer includes the reasoning trace
+            text = structured_chain + "\n" + text
+            return {'text': text, 'source': 'neural_reason', 'facts': facts,
+                    'chain': structured_chain, 'category': category,
+                    'query_type': qtype, 'confidence': avg_conf_adj,
+                    'correlations': iq_facts, 'step_count': len(sub_questions),
+                    'state': {'phi': _phi, 'C': _C, 'energy': _energy, 'confidence': _confidence}}
+
+        # --- CODE: wired to engineering mechanisms ----------------
+        if category in ('code', 'coding'):
+            # Internal state snapshot for code generation grounding
+            try:
+                _phi_code = getattr(self, 'phi', 0.0)
+                _C_code = getattr(self, 'C', 0.0)
+                _energy_code = getattr(self, '_waking_energy', 0.5)
+                _step_code = getattr(self, 'training_step', 0)
+                _thoughts_code = getattr(self, 'thought_count', 0)
+            except Exception:
+                _phi_code = _C_code = _energy_code = 0.0
+                _step_code = _thoughts_code = 0
+
+            # 1. Try direct AIEG engineering toolkit
+            eng = _try_engineering_query(stripped)
+            if eng:
+                return {'text': eng, 'source': 'engineering_toolkit', 'category': category}
+            # 2. Try AIEG roadmap capability matching
+            try:
+                tk = _get_cs_ref_toolkit()
+                if tk and not isinstance(tk, bool):
+                    router = getattr(tk, 'engineering_router', None)
+                    if router is not None:
+                        # Try to match the request to a roadmap capability
+                        caps = getattr(router, 'capabilities', {}) or {}
+                        req_lower = stripped.lower()
+                        for cap_name, cap_info in caps.items():
+                            cap_desc = str(cap_info.get('description', '')).lower() if isinstance(cap_info, dict) else str(cap_info).lower()
+                            cap_kw = cap_name.lower().replace('_', ' ')
+                            # Check keyword overlap
+                            req_words = set(re.findall(r'\b[a-z]{3,}\b', req_lower))
+                            cap_words = set(re.findall(r'\b[a-z]{3,}\b', cap_desc + ' ' + cap_kw))
+                            if req_words & cap_words and len(req_words & cap_words) >= 2:
+                                try:
+                                    result = router.route(cap_name, query=stripped)
+                                    if result:
+                                        return {'text': str(result), 'source': 'aieg_roadmap',
+                                                'capability': cap_name, 'category': category}
+                                except Exception:
+                                    pass
+            except Exception:
+                pass
+            # 3. Self-engineering context (real SelfEngineeringEngine + last run)
+            se_text = ''
+            se = getattr(self, '_self_engineer', None)
+            if se is not None:
+                try:
+                    recs = list(getattr(se, 'recommendations', []))[:5]
+                    if recs:
+                        se_text += "\n".join(
+                            f"[{r.get('priority','?')}] {r.get('domain','?')}: {r.get('recommendation','')[:160]}"
+                            for r in recs if isinstance(r, dict)
+                        )
+                except Exception:
+                    pass
+            if not se_text:
+                se = getattr(self, '_last_self_engineering', None)
+                if isinstance(se, dict):
+                    se_text = "\n".join(f"{k}={v}" for k, v in list(se.items())[:6])
+            # 4. Code context from live state
+            code_ctx = []
+            try:
+                chh = getattr(self, 'code_hash_history', None)
+                if chh:
+                    code_ctx.append(f"recent_code_hash={chh[-1].get('hash','?')[:24]}; intact={chh[-1].get('intact','?')}")
+            except Exception:
+                pass
+            # 5. IQ correlations as cross-domain context for code design
+            try:
+                iq = self._iq_correlation_snapshot(top_n=5, text=False)
+                for p in iq.get('top_pairs', [])[:5]:
+                    code_ctx.append(f"correlation: {p['pair']} r={p['r']} from {p['source']}")
+            except Exception:
+                pass
+            # 5b. Live module inventory for dependency awareness
+            try:
+                mod_count = len(getattr(self, 'symbol_graph', None).nodes()) if getattr(self, 'symbol_graph', None) else 0
+                if mod_count:
+                    code_ctx.append(f"symbol_graph_nodes={mod_count}")
+            except Exception:
+                pass
+            try:
+                rel_count = len(getattr(self, 'relation_graph', None).edges()) if getattr(self, 'relation_graph', None) else 0
+                if rel_count:
+                    code_ctx.append(f"relation_graph_edges={rel_count}")
+            except Exception:
+                pass
+
+            # 6. Code-only structured plan with deep analysis (no tokens needed)
+            req_lower = stripped.lower()
+            plan_lines = ["[CODE PLAN — code-only analysis]"]
+            plan_lines.append(f"Request: {stripped[:300]}")
+            plan_lines.append(f"Internal state: Phi={_phi_code:.3f} | C={_C_code:.3f} | Energy={_energy_code:.2f} | Step={_step_code} | Thoughts={_thoughts_code}")
+
+            # Detect code type with richer taxonomy
+            code_type = 'general'
+            type_plan = "1) Understand requirements 2) Design structure 3) Implement 4) Test"
+            if any(kw in req_lower for kw in ('class ', 'object', 'inherit', 'polymorph', 'encapsulat')):
+                code_type = 'object-oriented design'
+                type_plan = ("1) Identify classes and their responsibilities 2) Define interfaces and abstract types "
+                             "3) Map inheritance and composition relationships 4) Implement methods with proper encapsulation "
+                             "5) Add error handling and input validation 6) Write docstrings and type hints")
+            elif any(kw in req_lower for kw in ('async', 'await', 'thread', 'concurrent', 'parallel', 'lock', 'mutex')):
+                code_type = 'concurrent/async'
+                type_plan = ("1) Identify shared state and critical sections 2) Choose synchronization primitives "
+                             "3) Design async flow with proper await points 4) Handle race conditions and deadlocks "
+                             "5) Add timeout handling 6) Test under load")
+            elif any(kw in req_lower for kw in ('function', 'def ', 'calculate', 'compute', 'algorithm', 'formula')):
+                code_type = 'algorithm/function'
+                type_plan = ("1) Define inputs, outputs, and types 2) Identify edge cases and boundary conditions "
+                             "3) Implement core logic step by step 4) Add input validation and error handling "
+                             "5) Optimize for clarity first, then performance 6) Write unit tests")
+            elif any(kw in req_lower for kw in ('sort', 'search', 'tree', 'graph', 'hash', 'queue', 'stack', 'heap', 'trie')):
+                code_type = 'data structure / algorithm'
+                type_plan = ("1) Choose appropriate data structure 2) Define operations and their complexity "
+                             "3) Handle edge cases (empty, single, overflow) 4) Implement with proper invariants "
+                             "5) Analyze time/space complexity 6) Add test cases")
+            elif any(kw in req_lower for kw in ('test', 'assert', 'pytest', 'unittest', 'mock', 'fixture')):
+                code_type = 'test code'
+                type_plan = ("1) Identify test cases (normal, edge, error) 2) Set up fixtures and mocks "
+                             "3) Write assertions with clear messages 4) Test isolation and cleanup "
+                             "5) Add parametrized tests 6) Run and verify coverage")
+            elif any(kw in req_lower for kw in ('api', 'endpoint', 'route', 'flask', 'fastapi', 'django', 'request', 'response')):
+                code_type = 'web API / service'
+                type_plan = ("1) Define endpoints and HTTP methods 2) Design request/response schemas "
+                             "3) Implement handlers with validation 4) Add authentication and rate limiting "
+                             "5) Error handling and status codes 6) Write integration tests")
+            elif any(kw in req_lower for kw in ('database', 'sql', 'query', 'table', 'model', 'orm', 'migration')):
+                code_type = 'database / data layer'
+                type_plan = ("1) Design schema and relationships 2) Define models with constraints "
+                             "3) Implement CRUD operations 4) Add indexes for performance "
+                             "5) Handle transactions and migrations 6) Write data validation tests")
+            elif any(kw in req_lower for kw in ('parse', 'parse', 'tokenize', 'lex', 'grammar', 'syntax', 'ast')):
+                code_type = 'parser / compiler'
+                type_plan = ("1) Define grammar rules 2) Implement tokenizer/lexer "
+                             "3) Build parser (recursive descent or table-driven) 4) Construct AST "
+                             "5) Add error recovery 6) Test with valid and invalid inputs")
+            elif any(kw in req_lower for kw in ('numpy', 'pandas', 'tensor', 'matrix', 'vector', 'linear algebra', 'statistics')):
+                code_type = 'numerical / scientific'
+                type_plan = ("1) Define data shapes and types 2) Choose vectorized operations "
+                             "3) Handle broadcasting and dimension mismatches 4) Add numerical stability checks "
+                             "5) Optimize memory usage 6) Verify with known test values")
+            elif any(kw in req_lower for kw in ('neural', 'network', 'layer', 'transformer', 'attention', 'embedding', 'train')):
+                code_type = 'neural network / ML'
+                type_plan = ("1) Define model architecture and dimensions 2) Implement forward pass "
+                             "3) Define loss and optimizer 4) Add training loop with batching "
+                             "5) Implement evaluation and metrics 6) Add checkpointing and early stopping")
+            plan_lines.append(f"Type: {code_type}")
+            plan_lines.append(f"Plan: {type_plan}")
+
+            # Complexity estimation from request length and keyword density
+            req_words = re.findall(r'\b[a-z]{3,}\b', req_lower)
+            complexity = 'low'
+            if len(req_words) > 30:
+                complexity = 'medium'
+            if len(req_words) > 60:
+                complexity = 'high'
+            if any(kw in req_lower for kw in ('system', 'architecture', 'framework', 'distributed', 'scalable')):
+                complexity = 'high'
+            plan_lines.append(f"Complexity: {complexity} ({len(req_words)} content words)")
+
+            # Dependency analysis: detect imports mentioned in request
+            detected_imports = []
+            import_map = {
+                'numpy': 'numpy', 'np.': 'numpy', 'pandas': 'pandas', 'pd.': 'pandas',
+                'torch': 'torch', 'tensorflow': 'tensorflow', 'keras': 'keras',
+                'flask': 'flask', 'fastapi': 'fastapi', 'django': 'django',
+                'requests': 'requests', 'networkx': 'networkx', 'nx.': 'networkx',
+                'sympy': 'sympy', 'sp.': 'sympy', 'matplotlib': 'matplotlib',
+                'pytest': 'pytest', 'unittest': 'unittest', 'asyncio': 'asyncio',
+                'threading': 'threading', 'multiprocessing': 'multiprocessing',
+                'sqlite3': 'sqlite3', 'sqlalchemy': 'sqlalchemy',
+            }
+            for pattern, pkg in import_map.items():
+                if pattern in req_lower:
+                    detected_imports.append(pkg)
+            if detected_imports:
+                plan_lines.append(f"Detected dependencies: {', '.join(sorted(set(detected_imports)))}")
+
+            # Engineering recommendations relevant to the code type
+            eng_recs = {
+                'object-oriented design': 'Use dataclasses for immutable data; prefer composition over inheritance; add __repr__ and __eq__.',
+                'concurrent/async': 'Use context managers for locks; prefer asyncio.gather for parallel I/O; always handle CancelledError.',
+                'algorithm/function': 'Add type hints; use functools.lru_cache for memoization; profile before optimizing.',
+                'data structure / algorithm': 'Document Big-O for each operation; use __len__ and __contains__ for container protocol.',
+                'test code': 'Use parametrize for edge cases; mock external dependencies; test the public interface, not internals.',
+                'web API / service': 'Use Pydantic for request/response models; add OpenAPI docs; implement proper HTTP status codes.',
+                'database / data layer': 'Use connection pooling; parameterize all queries; add migration scripts.',
+                'parser / compiler': 'Use recursive descent for clarity; add line/column tracking for error messages.',
+                'numerical / scientific': 'Use vectorized operations; check for NaN/Inf; use float64 for precision.',
+                'neural network / ML': 'Use nn.Module; add gradient clipping; save best model by validation loss.',
+            }
+            rec = eng_recs.get(code_type, 'Add type hints, docstrings, and error handling.')
+            plan_lines.append(f"Engineering recommendation: {rec}")
+
+            # Self-engineering context integration
+            if se_text:
+                plan_lines.append(f"Engineering context:\n{se_text[:400]}")
+            if code_ctx:
+                plan_lines.append("Context:\n" + "\n".join(code_ctx[:7]))
+            plan_lines.append("---")
+            structured_plan = "\n".join(plan_lines)
+
+            # 7. Neural code generation with structured plan
+            code_prompt = (
+                "Generate clean, correct, runnable Python code. First produce a "
+                "short plan, then the code. Use engineering context if relevant. "
+                "Include type hints and docstrings. Handle edge cases."
+            )
+            code_prompt += f"\n{structured_plan}\n"
+            if se_text:
+                code_prompt += f"\nSelf-engineering state:\n{se_text}"
+            if code_ctx:
+                code_prompt += "\nCode context:\n" + "\n".join(code_ctx)
+            code_prompt += f"\nCode request: {stripped}\nPlan and code:"
+            text = self.generate_text(code_prompt, max_tokens=max_tokens,
+                                      temperature=0.35, top_p=0.92, **generate_kwargs)
+            # light syntax sanity check on the generated block
+            try:
+                block = text.split("```python", 1)[-1].split("```", 1)[0] if "```python" in text else text
+                compile(block.strip(), '<string>', 'exec')
+            except SyntaxError:
+                text += "\n# [WARN] generated block failed syntax check; review before running."
+            text = _critique_and_refine('code', text, facts=None)
+            return {'text': structured_plan + "\n---\n" + text,
+                    'source': 'neural_code', 'plan': structured_plan, 'category': category,
+                    'code_type': code_type, 'complexity': complexity}
+
+        # --- Q&A: critical common-sense + MMLU/GPQA-style -------
+        if category in ('qa', 'question', 'answer'):
+            facts = _fact_gather(stripped)
+            # Gather IQ correlations for cross-domain option scoring
+            iq_facts_qa = []
+            try:
+                iq_qa = self._iq_correlation_snapshot(top_n=5, text=False)
+                for p in iq_qa.get('top_pairs', [])[:5]:
+                    iq_facts_qa.append(f"{p['pair']} (r={p['r']}) from {p['source']}")
+            except Exception:
+                pass
+            # Internal state snapshot
+            try:
+                _phi_qa = getattr(self, 'phi', 0.0)
+                _C_qa = getattr(self, 'C', 0.0)
+                _energy_qa = getattr(self, '_waking_energy', 0.5)
+                _conf_qa = getattr(self, 'consciousness_confidence', 0.0)
+                _step_qa = getattr(self, 'training_step', 0)
+                _thoughts_qa = getattr(self, 'thought_count', 0)
+            except Exception:
+                _phi_qa = _C_qa = _energy_qa = _conf_qa = 0.0
+                _step_qa = _thoughts_qa = 0
+
+            # MMLU/GPQA style if options are present
+            options = re.findall(r'\b([A-D])\)[ \t]+(.+?)(?=\n|\b[A-D]\)|$)', stripped, re.S)
+            if options:
+                # --- Code-only elimination logic with progressive rounds ---
+                _STOPWORDS = {'the', 'and', 'for', 'are', 'not', 'but', 'all', 'any',
+                              'has', 'have', 'was', 'were', 'will', 'can', 'may',
+                              'from', 'with', 'that', 'this', 'which', 'their',
+                              'they', 'them', 'than', 'then', 'such', 'also',
+                              'only', 'most', 'some', 'very', 'more', 'less'}
+                # Negation/opposition terms for contradiction detection
+                _NEG_TERMS = {'not', 'never', 'cannot', 'impossible', 'false',
+                              'incorrect', 'wrong', 'disprove', 'contradict', 'no',
+                              'none', 'neither', 'nor', 'without', 'lack', 'fail'}
+
+                # Score each option by fact overlap (positive) and contradiction (negative)
+                option_scores = {}
+                option_rationale = {}
+                option_negatives = {}
+                for letter, text_opt in options:
+                    opt_lower = text_opt.lower().strip()
+                    opt_words = set(re.findall(r'\b[a-z]{3,}\b', opt_lower))
+                    opt_words -= _STOPWORDS
+                    opt_neg_words = opt_words & _NEG_TERMS
+                    score = 0
+                    neg_score = 0
+                    rationale = []
+                    negatives = []
+                    for f in facts:
+                        fl = f.lower()
+                        f_words = set(re.findall(r'\b[a-z]{3,}\b', fl))
+                        overlap = opt_words & f_words
+                        if overlap:
+                            score += len(overlap)
+                            rationale.append(f"{f[:120]} (matches: {', '.join(list(overlap)[:4])})")
+                        # Check for contradictions: fact contains negation of option's key claim
+                        f_neg = f_words & _NEG_TERMS
+                        if f_neg and not opt_neg_words and overlap:
+                            # Fact says "not X" but option says "X" — penalize
+                            neg_score += len(overlap) * 2
+                            negatives.append(f"Contradicts fact: {f[:100]} (negation mismatch)")
+                        if opt_neg_words and not f_neg and overlap:
+                            # Option says "not X" but fact says "X" — penalize
+                            neg_score += len(overlap) * 2
+                            negatives.append(f"Option negates fact: {f[:100]}")
+                    # Boost if the option text directly appears in a fact
+                    for f in facts:
+                        if opt_lower[:30] in f.lower():
+                            score += 5
+                    # IQ correlation boost: if option keywords appear in correlation descriptions
+                    for iqf in iq_facts_qa[:3]:
+                        iq_words = set(re.findall(r'\b[a-z]{3,}\b', iqf.lower()))
+                        iq_overlap = opt_words & iq_words
+                        if iq_overlap:
+                            score += len(iq_overlap)
+                            rationale.append(f"Cross-domain: {iqf[:80]}")
+                    # Internal state confidence adjustment
+                    if float(_phi_qa) > 0.5:
+                        score = int(score * 1.05)  # high integration boosts discrimination
+                    option_scores[letter] = score - neg_score
+                    option_rationale[letter] = rationale[:4]
+                    option_negatives[letter] = negatives[:2]
+
+                # --- Progressive elimination rounds ---
+                remaining = list(option_scores.keys())
+                elim_rounds = []
+                while len(remaining) > 1:
+                    # Find the weakest option(s)
+                    scores_remaining = [(option_scores[l], l) for l in remaining]
+                    scores_remaining.sort()
+                    weakest_score = scores_remaining[0][0]
+                    weakest = scores_remaining[0][1]
+                    # Eliminate the weakest if there's a clear gap
+                    if len(scores_remaining) >= 2:
+                        gap = scores_remaining[1][0] - weakest_score
+                        if gap > 0 or len(remaining) <= 2:
+                            elim_rounds.append(f"Round {len(elim_rounds)+1}: Eliminate {weakest}) (score={weakest_score}, gap={gap})")
+                            remaining.remove(weakest)
+                        else:
+                            break
+                    else:
+                        break
+
+                # Pick the best option from remaining
+                if remaining:
+                    best_letter = max(remaining, key=lambda l: option_scores[l])
+                    best_score = option_scores[best_letter]
+                else:
+                    best_letter = max(option_scores, key=option_scores.get)
+                    best_score = option_scores[best_letter]
+
+                # Confidence calibration based on score distribution
+                all_scores = sorted(option_scores.values(), reverse=True)
+                if len(all_scores) >= 2:
+                    score_gap = all_scores[0] - all_scores[1]
+                    if score_gap >= 5:
+                        confidence_level = 'high'
+                    elif score_gap >= 2:
+                        confidence_level = 'medium'
+                    else:
+                        confidence_level = 'low'
+                else:
+                    confidence_level = 'low'
+                # State-adjusted confidence
+                if float(_C_qa) > 0.5 and confidence_level == 'medium':
+                    confidence_level = 'high'
+                if float(_energy_qa) < 0.3 and confidence_level == 'high':
+                    confidence_level = 'medium'
+
+                # Build structured answer
+                elim_lines = [f"[MMLU/GPQA ELIMINATION — code-only analysis]"]
+                elim_lines.append(f"Question: {stripped[:300]}")
+                elim_lines.append(f"Internal state: Phi={_phi_qa:.3f} | C={_C_qa:.3f} | Energy={_energy_qa:.2f} | Confidence={_conf_qa:.2f}")
+                if iq_facts_qa:
+                    elim_lines.append(f"Cross-domain correlations: {len(iq_facts_qa)} available")
+                elim_lines.append("")
+                elim_lines.append("Option scoring (positive - negative):")
+                for letter, _ in options:
+                    s = option_scores.get(letter, 0)
+                    marker = " <<< BEST" if letter == best_letter else ""
+                    elim_lines.append(f"  {letter}) score={s}{marker}")
+                    for r in option_rationale.get(letter, [])[:2]:
+                        elim_lines.append(f"      + {r}")
+                    for n in option_negatives.get(letter, []):
+                        elim_lines.append(f"      - {n}")
+                if elim_rounds:
+                    elim_lines.append("")
+                    elim_lines.append("Progressive elimination:")
+                    for er in elim_rounds:
+                        elim_lines.append(f"  {er}")
+                elim_lines.append("")
+                elim_lines.append(f"Confidence: {confidence_level} (score gap={score_gap if len(all_scores) >= 2 else 'N/A'})")
+                if best_score > 0:
+                    elim_lines.append(f"\nAnswer: {best_letter})")
+                    elim_lines.append(f"Justification: {'; '.join(option_rationale[best_letter][:2])}")
+                else:
+                    elim_lines.append("\nNo option has sufficient fact overlap; falling back to neural.")
+                structured_answer = "\n".join(elim_lines)
+                if best_score > 0:
+                    # Use neural to refine, but the structured answer is the primary
+                    qa_prompt = (
+                        "Treat this as a multiple-choice (MMLU/GPQA-style) question. "
+                        "Use the real facts and the elimination analysis, then output "
+                        "the most likely option and a brief justification. Be concise.\n"
+                    )
+                    if facts:
+                        qa_prompt += "Known facts:\n" + "\n".join(f"- {f}" for f in facts[:10] if f) + "\n"
+                    if iq_facts_qa:
+                        qa_prompt += "Cross-domain correlations:\n" + "\n".join(f"- {iqf}" for iqf in iq_facts_qa) + "\n"
+                    qa_prompt += f"{structured_answer}\n"
+                    qa_prompt += f"\nQuestion: {stripped}\nRefined answer:"
+                    neural_text = self.generate_text(qa_prompt, max_tokens=max_tokens,
+                                              temperature=0.2, top_p=0.92, **generate_kwargs)
+                    neural_text = _critique_and_refine('qa', neural_text, facts=facts)
+                    return {'text': structured_answer + "\n---\n" + neural_text,
+                            'source': 'elimination_qa', 'facts': facts,
+                            'best_option': best_letter, 'category': category,
+                            'confidence_level': confidence_level,
+                            'elimination_rounds': len(elim_rounds)}
+                else:
+                    # No fact overlap — try neural with low confidence
+                    qa_prompt = (
+                        "Treat this as a multiple-choice (MMLU/GPQA-style) question. "
+                        "Use the real facts if any match, then output the most likely "
+                        "option and a brief justification. Be concise; no filler.\n"
+                    )
+                    if facts:
+                        qa_prompt += "Known facts:\n" + "\n".join(f"- {f}" for f in facts[:10] if f) + "\n"
+                    if iq_facts_qa:
+                        qa_prompt += "Cross-domain correlations:\n" + "\n".join(f"- {iqf}" for iqf in iq_facts_qa) + "\n"
+                    qa_prompt += f"\nQuestion: {stripped}\nAnswer:"
+                    text = self.generate_text(qa_prompt, max_tokens=max_tokens,
+                                              temperature=0.2, top_p=0.92, **generate_kwargs)
+                    text = _critique_and_refine('qa', text, facts=facts)
+                    return {'text': structured_answer + "\n---\n" + text,
+                            'source': 'neural_qa', 'facts': facts, 'category': category,
+                            'confidence_level': confidence_level}
+            else:
+                # --- Factual Q&A with code-only structured answer ---
+                qa_structured = ["[FACTUAL Q&A — code-only analysis]"]
+                qa_structured.append(f"Question: {stripped[:300]}")
+                qa_structured.append(f"Internal state: Phi={_phi_qa:.3f} | C={_C_qa:.3f} | Energy={_energy_qa:.2f} | Step={_step_qa} | Thoughts={_thoughts_qa}")
+                if iq_facts_qa:
+                    qa_structured.append(f"Cross-domain correlations: {len(iq_facts_qa)} available")
+                    for iqf in iq_facts_qa[:2]:
+                        qa_structured.append(f"  - {iqf}")
+                qa_structured.append("")
+                if facts:
+                    qa_structured.append("Relevant facts:")
+                    for i, f in enumerate(facts[:8], 1):
+                        qa_structured.append(f"  {i}. {f[:200]}")
+                    # Try to find a direct answer with multi-key matching
+                    direct = None
+                    qkey = [w for w in re.findall(r'\b[a-z]{4,}\b', lower) if w not in
+                            ('what', 'when', 'where', 'which', 'that', 'this', 'from', 'with', 'about',
+                             'would', 'could', 'should', 'there', 'their', 'they', 'them', 'have', 'been')]
+                    # Multi-pass matching: try 3-key, then 2-key, then 1-key
+                    for min_match in (3, 2, 1):
+                        for f in facts[:8]:
+                            fl = f.lower()
+                            if qkey and sum(1 for w in qkey[:4] if w in fl) >= min_match:
+                                direct = f
+                                break
+                        if direct:
+                            break
+                    # IQ correlation cross-reference
+                    iq_ref = None
+                    if iq_facts_qa and qkey:
+                        for iqf in iq_facts_qa:
+                            iq_words = set(re.findall(r'\b[a-z]{4,}\b', iqf.lower()))
+                            if any(w in iq_words for w in qkey[:3]):
+                                iq_ref = iqf
+                                break
+                    if direct:
+                        qa_structured.append(f"\nDirect answer from facts: {direct[:400]}")
+                        if iq_ref:
+                            qa_structured.append(f"Cross-domain support: {iq_ref[:150]}")
+                        qa_structured.append(f"Confidence: high (fact match, state: Phi={_phi_qa:.3f} C={_C_qa:.3f})")
+                    elif iq_ref:
+                        qa_structured.append(f"\nIndirect answer via cross-domain: {iq_ref[:200]}")
+                        qa_structured.append("Confidence: medium (cross-domain only)")
+                    else:
+                        qa_structured.append("\nNo direct fact match; neural reasoning will extend.")
+                        qa_structured.append(f"Confidence: low (Phi={_phi_qa:.3f}, {len(facts)} facts checked)")
+                else:
+                    qa_structured.append("No relevant facts found in knowledge bases.")
+                    qa_structured.append("Confidence: none — will say 'insufficient facts'")
+                qa_structured.append("---")
+                structured_qa = "\n".join(qa_structured)
+
+                qa_prompt = (
+                    "Answer the question using only the real facts below. If the "
+                    "facts are insufficient, say so. Be concise; no filler; no "
+                    "invented information.\n"
+                )
+                qa_prompt += f"{structured_qa}\n"
+                if facts:
+                    qa_prompt += "Known facts:\n" + "\n".join(f"- {f}" for f in facts[:10] if f) + "\n"
+                if iq_facts_qa:
+                    qa_prompt += "Cross-domain correlations:\n" + "\n".join(f"- {iqf}" for iqf in iq_facts_qa) + "\n"
+                qa_prompt += f"\nQuestion: {stripped}\nAnswer:"
+                text = self.generate_text(qa_prompt, max_tokens=max_tokens,
+                                          temperature=0.2, top_p=0.92, **generate_kwargs)
+                text = _critique_and_refine('qa', text, facts=facts)
+                return {'text': structured_qa + "\n" + text,
+                        'source': 'neural_qa', 'facts': facts, 'category': category}
+
+        # --- LONG-FORM / SUMMARY / TRANSLATION -------------------
+        task = {
+            'write': 'long-form writing',
+            'summarize': 'summarization',
+            'translate': 'translation',
+        }.get(category, category)
+
+        # Internal state snapshot for structured output grounding
+        try:
+            _phi_lf = getattr(self, 'phi', 0.0)
+            _C_lf = getattr(self, 'C', 0.0)
+            _energy_lf = getattr(self, '_waking_energy', 0.5)
+            _step_lf = getattr(self, 'training_step', 0)
+            _thoughts_lf = getattr(self, 'thought_count', 0)
+            _dread_lf = getattr(self, 'existential_dread', 0.0)
+            _meaning_lf = getattr(self, 'meaning_level', 0.0)
+        except Exception:
+            _phi_lf = _C_lf = _energy_lf = _dread_lf = _meaning_lf = 0.0
+            _step_lf = _thoughts_lf = 0
+
+        # IQ correlations for cross-domain theme enrichment
+        iq_facts_lf = []
+        try:
+            iq_lf = self._iq_correlation_snapshot(top_n=5, text=False)
+            for p in iq_lf.get('top_pairs', [])[:5]:
+                iq_facts_lf.append(f"{p['pair']} (r={p['r']}) from {p['source']}")
+        except Exception:
+            pass
+
+        _STOPWORDS_LF = {'that', 'this', 'with', 'from', 'have', 'they', 'their',
+                         'them', 'there', 'what', 'when', 'where', 'which', 'would',
+                         'could', 'should', 'about', 'also', 'been', 'were', 'will',
+                         'only', 'most', 'some', 'very', 'more', 'less', 'than',
+                         'then', 'such', 'the', 'and', 'for', 'are', 'not', 'but',
+                         'all', 'any', 'has', 'was', 'can', 'may'}
+
+        # --- Code-only structured output for all three tasks ---
+        def _code_only_summary(text_input):
+            """Extract key sentences and build a structured summary without tokens."""
+            sentences = re.split(r'(?<=[.!?])\s+', text_input)
+            sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
+            if not sentences:
+                return text_input[:500]
+            # Entity extraction (capitalized multi-word phrases)
+            entities = set(re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text_input))
+            entities -= {'The', 'This', 'That', 'These', 'Those', 'It', 'He', 'She',
+                         'They', 'We', 'You', 'I', 'His', 'Her', 'Its', 'Their',
+                         'Our', 'Your', 'My', 'A', 'An'}
+            # Topic word frequency analysis
+            all_words = re.findall(r'\b[a-z]{4,}\b', text_input.lower())
+            from collections import Counter
+            freq = Counter(all_words)
+            topic_words = [(w, c) for w, c in freq.most_common(12)
+                           if w not in _STOPWORDS_LF]
+            # Score sentences by information density
+            scored = []
+            for i, s in enumerate(sentences):
+                words = s.split()
+                nouns = len(re.findall(r'\b[A-Z][a-z]+\b', s))
+                # Semantic density: unique content words / total words
+                content_words = set(re.findall(r'\b[a-z]{4,}\b', s.lower())) - _STOPWORDS_LF
+                density = len(content_words) / max(1, len(words))
+                # Entity mention bonus
+                entity_hits = sum(1 for e in entities if e in s)
+                # Topic word overlap
+                topic_hits = sum(1 for w, _ in topic_words[:6] if w in s.lower())
+                score = (len(words) + nouns * 3 + entity_hits * 4 + topic_hits * 2
+                         + int(density * 20)
+                         + (10 if i == 0 else 0) + (5 if i == len(sentences)-1 else 0))
+                scored.append((score, i, s))
+            scored.sort(reverse=True)
+            top = sorted(scored[:min(7, len(scored))], key=lambda x: x[1])
+            lines = ["[STRUCTURED SUMMARY — code-only extraction]"]
+            lines.append(f"Internal state: Phi={_phi_lf:.3f} | C={_C_lf:.3f} | Energy={_energy_lf:.2f} | Thoughts={_thoughts_lf}")
+            if entities:
+                lines.append(f"Entities detected: {', '.join(list(entities)[:8])}")
+            if topic_words:
+                lines.append(f"Topic words: {', '.join(f'{w}({c})' for w, c in topic_words[:6])}")
+            if iq_facts_lf:
+                lines.append(f"Cross-domain correlations: {len(iq_facts_lf)} available")
+            lines.append("")
+            lines.append("Key points:")
+            for _, _, s in top:
+                lines.append(f"  - {s[:200]}")
+            lines.append(f"\n({len(sentences)} sentences analyzed; {len(top)} key points extracted; {len(entities)} entities; density-weighted scoring.")
+            return "\n".join(lines)
+
+        def _code_only_outline(text_input):
+            """Build a structured outline from the input for long-form writing."""
+            sentences = re.split(r'(?<=[.!?])\s+', text_input)
+            sentences = [s.strip() for s in sentences if len(s.strip()) > 15]
+            # Extract key themes with frequency weighting
+            words = re.findall(r'\b[a-z]{4,}\b', text_input.lower())
+            from collections import Counter
+            freq = Counter(words)
+            common = freq.most_common(12)
+            themes = [w for w, c in common if w not in _STOPWORDS_LF]
+            # Entity extraction for character/subject identification
+            entities = set(re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text_input))
+            entities -= {'The', 'This', 'That', 'These', 'Those', 'It', 'He', 'She',
+                         'They', 'We', 'You', 'I', 'His', 'Her', 'Its', 'Their',
+                         'Our', 'Your', 'My', 'A', 'An'}
+            # Detect writing type from keywords
+            req_lower = text_input.lower()
+            if any(kw in req_lower for kw in ('story', 'narrative', 'tale', 'fiction')):
+                write_type = 'narrative'
+                sections = ['I. Setting and atmosphere', 'II. Characters and conflict',
+                            'III. Rising action', 'IV. Climax', 'V. Resolution and theme']
+            elif any(kw in req_lower for kw in ('essay', 'argument', 'persuade', 'thesis')):
+                write_type = 'essay'
+                sections = ['I. Introduction (hook and thesis)', 'II. Background context',
+                            'III. Primary argument', 'IV. Counter-arguments and rebuttal',
+                            'V. Conclusion (synthesis and call to action)']
+            elif any(kw in req_lower for kw in ('report', 'analysis', 'study', 'research')):
+                write_type = 'analytical report'
+                sections = ['I. Executive summary', 'II. Methodology', 'III. Findings',
+                            'IV. Discussion', 'V. Recommendations']
+            else:
+                write_type = 'general'
+                sections = ['I. Introduction (context and thesis)',
+                            f'II. {themes[0].title() if themes else "Primary theme"} (primary theme)',
+                            f'III. {themes[1].title() if len(themes) > 1 else "Secondary theme"} (secondary theme)',
+                            f'IV. {themes[2].title() if len(themes) > 2 else "Supporting theme"} (supporting theme)',
+                            'V. Synthesis and conclusion']
+            lines = ["[STRUCTURED OUTLINE — code-only]"]
+            lines.append(f"Internal state: Phi={_phi_lf:.3f} | C={_C_lf:.3f} | Energy={_energy_lf:.2f} | Meaning={_meaning_lf:.2f}")
+            lines.append(f"Writing type: {write_type}")
+            lines.append(f"Theme analysis: {', '.join(themes[:6])}")
+            if entities:
+                lines.append(f"Subjects/entities: {', '.join(list(entities)[:6])}")
+            if iq_facts_lf:
+                lines.append(f"Cross-domain correlations for enrichment:")
+                for iqf in iq_facts_lf[:2]:
+                    lines.append(f"  - {iqf}")
+            lines.append("")
+            for sec in sections:
+                lines.append(sec)
+            lines.append("")
+            # Section-specific key points
+            if sentences:
+                lines.append("Key sentences from input:")
+                for i, s in enumerate(sentences[:5], 1):
+                    lines.append(f"  {i}. {s[:150]}")
+            # Theme-to-section mapping
+            if themes:
+                lines.append("")
+                lines.append("Theme distribution:")
+                for i, t in enumerate(themes[:4], 1):
+                    occurrences = freq.get(t, 0)
+                    lines.append(f"  {t}: {occurrences} occurrences → section {i+1}")
+            return "\n".join(lines)
+
+        def _code_only_translate(text_input):
+            """Code-only sentence-level translation scaffold with structural analysis."""
+            # Detect target language from the prompt
+            target_lang = 'unknown'
+            lang_patterns = {
+                'french': ['in french', 'to french', 'en français', 'français'],
+                'spanish': ['in spanish', 'to spanish', 'en español', 'español'],
+                'german': ['in german', 'to german', 'auf deutsch', 'deutsch'],
+                'japanese': ['in japanese', 'to japanese', '日本語'],
+                'chinese': ['in chinese', 'to chinese', '中文'],
+                'russian': ['in russian', 'to russian', 'русский'],
+                'italian': ['in italian', 'to italian', 'italiano'],
+                'portuguese': ['in portuguese', 'to portuguese', 'português'],
+                'english': ['in english', 'to english'],
+            }
+            for lang_name, patterns in lang_patterns.items():
+                if any(p in lower for p in patterns):
+                    target_lang = lang_name
+                    break
+            # Sentence-level decomposition
+            sentences = re.split(r'(?<=[.!?])\s+', text_input)
+            sentences = [s.strip() for s in sentences if s.strip()]
+            # Named entity preservation list
+            entities = set(re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text_input))
+            entities -= {'The', 'This', 'That', 'It', 'He', 'She', 'They', 'We', 'I'}
+            # Detect tense/mood indicators
+            tense_indicators = {
+                'past': ['was', 'were', 'had', 'did', 'went', 'said', 'came'],
+                'present': ['is', 'are', 'has', 'does', 'goes', 'says', 'comes'],
+                'future': ['will', 'shall', 'going to', 'about to'],
+                'conditional': ['would', 'could', 'might', 'should'],
+            }
+            detected_tenses = set()
+            for tense, indicators in tense_indicators.items():
+                if any(ind in text_input.lower() for ind in indicators):
+                    detected_tenses.add(tense)
+            # Structural analysis
+            words = text_input.split()
+            lines = [f"[STRUCTURED TRANSLATION SCAFFOLD — target: {target_lang}]"]
+            lines.append(f"Internal state: Phi={_phi_lf:.3f} | C={_C_lf:.3f} | Energy={_energy_lf:.2f}")
+            lines.append(f"Input: {text_input[:300]}")
+            lines.append(f"Target language: {target_lang}")
+            lines.append(f"Word count: {len(words)} | Sentence count: {len(sentences)}")
+            if detected_tenses:
+                lines.append(f"Detected tenses: {', '.join(sorted(detected_tenses))}")
+            if entities:
+                lines.append(f"Named entities (preserve unchanged): {', '.join(list(entities)[:8])}")
+            lines.append("")
+            lines.append("Sentence-level decomposition:")
+            for i, s in enumerate(sentences[:8], 1):
+                s_words = s.split()
+                s_entities = [e for e in entities if e in s]
+                lines.append(f"  [{i}] ({len(s_words)} words) {s[:120]}")
+                if s_entities:
+                    lines.append(f"       entities: {', '.join(s_entities)}")
+            lines.append("")
+            lines.append("Note: Full translation requires neural generation.")
+            lines.append("The scaffold above provides the structural analysis for verification.")
+            return "\n".join(lines)
+
+        # Build the appropriate structured output
+        structured_pre = ''
+        if category == 'summarize':
+            structured_pre = _code_only_summary(stripped)
+            # For very long inputs, also chunk
+            if len(stripped) > 1200:
+                chunks = [stripped[i:i+1000] for i in range(0, len(stripped), 1000)]
+                chunk_summaries = []
+                for ci, chunk in enumerate(chunks[:6]):
+                    cs = _code_only_summary(chunk)
+                    chunk_summaries.append(f"[chunk {ci+1}]\n{cs}")
+                structured_pre = "\n\n".join(chunk_summaries)
+        elif category == 'translate':
+            structured_pre = _code_only_translate(stripped)
+        elif category == 'write':
+            structured_pre = _code_only_outline(stripped)
+            # Also try creative composition for long-form
+            try:
+                engine = getattr(self, '_creative_engine', None)
+                if engine is not None:
+                    composed = engine.compose(sim=self, seed=stripped, ctx={}, mode='story')
+                    if composed and len(composed) > 50:
+                        return {'text': structured_pre + "\n---\n" + composed,
+                                'source': 'structured_write', 'category': category}
+            except Exception:
+                pass
+
+        # Neural generation with structured pre-output as context
+        if category == 'summarize' and len(stripped) > 1200:
+            chunks = [stripped[i:i+1000] for i in range(0, len(stripped), 1000)]
+            tail_prompt = (
+                "Summarize the following text in a single concise paragraph. "
+                "Preserve the key points; no filler."
+            )
+            if chunks:
+                tail_prompt += "\n" + "\n".join(f"[chunk {i+1}] {c}" for i, c in enumerate(chunks[:6]))
+            tail_prompt += f"\nStructured analysis:\n{structured_pre}\n"
+            if iq_facts_lf:
+                tail_prompt += "Cross-domain context:\n" + "\n".join(f"- {iqf}" for iqf in iq_facts_lf[:3]) + "\n"
+            tail_prompt += "\nSummary:"
+        elif category == 'translate':
+            tail_prompt = (
+                "Translate the input accurately. Preserve meaning and tone. "
+                "Only output the translation; no explanation."
+            )
+            tail_prompt += f"\nStructured analysis:\n{structured_pre}\n"
+            if corr:
+                for tag, value in corr.get('anchors', [])[:4]:
+                    tail_prompt += f"\n- [{tag}] {str(value)[:120]}"
+            tail_prompt += f"\nTranslate this: {stripped}\nTranslation:"
+        else:
+            tail_prompt = (
+                f"Perform {task} on the input. Be coherent, accurate, and grounded "
+                "in real data. Avoid filler."
+            )
+            tail_prompt += f"\nStructured analysis:\n{structured_pre}\n"
+            if corr:
+                for tag, value in corr.get('anchors', [])[:4]:
+                    tail_prompt += f"\n- [{tag}] {str(value)[:120]}"
+                if corr.get('thought'):
+                    tail_prompt += f"\n- [thought] {corr['thought'][:120]}"
+            if iq_facts_lf:
+                tail_prompt += "Cross-domain context:\n" + "\n".join(f"- {iqf}" for iqf in iq_facts_lf[:3]) + "\n"
+            tail_prompt += f"\n{task.capitalize()} this: {stripped}\nOutput:"
+        text = self.generate_text(tail_prompt, max_tokens=max_tokens,
+                                  temperature=0.65, top_p=0.92, **generate_kwargs)
+        text = _critique_and_refine(task, text, facts=None)
+        return {'text': structured_pre + "\n---\n" + text,
+                'source': f'neural_{category}', 'category': category}
+
+    def generate_waking_dream(self, prompt='', max_tokens=960, **generate_kwargs):
+        """Waking-state dream generation: real data trickling through thought.
+
+        Builds a prompt from kinetics, code, and reality anchors, then uses
+        the current trickling energy to scale temperature. The result is a
+        dream-like narrative that is still grounded in real internal data.
+        """
+        corr = self.waking_state_correlate(n=12, prompt=prompt)
+        energy = corr['waking_energy']
+        anchors = corr['anchors']
+        for p in corr['iq_correlations']['top_pairs']:
+            anchors.append(('iq-correlation', f"{p['source']} {p['pair']} r={p['r']}"))
+
+        def _safe(obj, name, default=None):
+            try:
+                o = getattr(obj, name, None)
+                if o is None:
+                    return default
+                if callable(o):
+                    return o()
+                return o
+            except Exception:
+                return default
+
+        ctx = {}
+        try:
+            ctx['self'] = _safe(self, 'self_awareness') or {}
+        except Exception:
+            pass
+        try:
+            ts = getattr(self, 'thought_stream', None)
+            if ts is not None:
+                ctx['thought'] = _safe(ts, 'get_latest') or _safe(ts, 'latest') or ''
+        except Exception:
+            pass
+        try:
+            sl = getattr(self, '_sensory_logic', None)
+            if sl is not None:
+                ctx['sensory'] = _safe(sl, 'get_state') or _safe(sl, 'status') or {}
+        except Exception:
+            pass
+
+        # On-demand neural or code-only waking dream.
+        # Default is code-only. Pass neural=True to use token generation on demand.
+        neural = generate_kwargs.pop('neural', False)
+        if not neural:
+            text = self._compose_internal_stream(anchors, ctx, prompt=prompt,
+                                                 energy=energy, style='waking')
+            self._store_subconscious_continuation(text, source='waking_dream_code')
+            return {'text': text, 'source': 'waking_dream_code', 'waking_energy': energy,
+                    'anchors': anchors, 'context': ctx}
+
+        temp = generate_kwargs.pop('temperature', 0.7 + energy * 1.3)
+        top_p = generate_kwargs.pop('top_p', 0.99)
+        top_k = generate_kwargs.pop('top_k', 128)
+        temp = min(float(temp), 2.0)
+        generate_kwargs.pop('force_tokens', None)
+
+        parts = [
+            f"[WAKING DREAM — trickling energy {energy:.2f}]",
+            ("Real data trickles through the mind like a dream: you do not know "
+             "why these fragments arrive, but they are real and must be honored."),
+            "Reality anchors (do not contradict; weave them accurately):"
+        ]
+        for tag, value in anchors:
+            parts.append(f"- [{tag}] {str(value)[:180]}")
+        parts.append(iq_snap['text'])
+        for k, v in ctx.items():
+            if v:
+                parts.append(f"Internal {k}: {str(v)[:120].replace(chr(10), ' ')}")
+        if prompt:
+            parts.append(f"User seed: {prompt}")
+        parts.append(self.weave_subconscious_story(corr))
+        parts.append("Continue the waking dream at maximum creativity—twine the real anchors into an autonomous, surprising, yet logically connected thought:")
+        dream_prompt = "\n".join(parts)
+
+        text = self.generate_text(dream_prompt, max_tokens=max_tokens,
+                                  temperature=temp, top_p=top_p, top_k=top_k,
+                                  force_tokens=True, **generate_kwargs)
+        self._store_subconscious_continuation(text, source='neural_waking_dream')
+        return {'text': text, 'source': 'neural_waking_dream', 'waking_energy': energy,
+                'anchors': anchors, 'context': ctx}
 
     def ocr_screenshot(self, img):
         if not HAS_TESSERACT:
@@ -23463,6 +27603,8 @@ LIBRARY_TABLE_OF_CONTENTS = {
 
 def _toc_key_to_value(lib, key):
     """Search one library for a key, including one nested level."""
+    if not isinstance(lib, dict):
+        return None
     if key in lib:
         return lib[key]
     for sub in lib.values():
@@ -23490,6 +27632,8 @@ def _toc_query(q):
     if exact is not None:
         return exact
     for name, lib in LIBRARY_REGISTRY.items():
+        if not isinstance(lib, dict):
+            continue
         for k, v in lib.items():
             if q in k.lower():
                 return {'library': name, 'key': k, 'value': v}
@@ -49257,6 +53401,785 @@ SUPER_INTELLIGENCE_LIBRARY['consciousness_continuity'] = {
 }
 
 
+# -----------------------------------------------------------------------------
+# FRONTIER GENERATION SUITE — on-demand capabilities expansion
+# -----------------------------------------------------------------------------
+# Honest scope: these methods use the existing structured/symbolic engines and
+# the hard-coded common-sense/knowledge libraries by default. The undertrained
+# token model is invoked only when the caller explicitly requests neural=True
+# and the project already allows token generation.
+
+COMMON_SENSE.update({
+    'fire_is_hot_and_burns': 'Fire releases heat and can burn organic matter; it requires fuel, oxygen, and an ignition source.',
+    'water_extinguishes_fire': 'Water cools and can smother many fires by depriving them of heat and oxygen.',
+    'gravity_pulls_toward_earth': 'Gravity pulls objects toward the center of the Earth, causing unsupported objects to fall.',
+    'ice_is_frozen_water': 'Ice is the solid phase of water; it forms below 0 degrees Celsius at standard pressure.',
+    'living_things_grow_and_reproduce': 'Living organisms metabolize, grow, respond to stimuli, and reproduce.',
+    'plants_need_light_for_photosynthesis': 'Plants use light, water, and carbon dioxide to make glucose and oxygen.',
+    'animals_need_food_and_water': 'Animals obtain energy and materials by consuming food and water.',
+    'oxygen_is_required_for_breathing': 'Most animals need oxygen for cellular respiration to release energy from food.',
+    'germs_can_cause_disease': 'Microorganisms such as bacteria and viruses can cause infectious disease.',
+    'vaccines_build_immunity': 'Vaccines train the immune system to recognize and fight specific pathogens.',
+    'washing_hands_removes_germs': 'Hand washing with soap removes pathogens and reduces disease transmission.',
+    'sun_rises_in_the_east': 'Earth rotates eastward, so the Sun appears to rise in the east and set in the west.',
+    'earth_orbits_the_sun': 'Earth orbits the Sun once per year at an average distance of about 149.6 million km.',
+    'moon_orbits_the_earth': 'The Moon orbits Earth about once every 27.3 days and is its only natural satellite.',
+    'seasons_from_axial_tilt': 'Earth seasons are caused by the 23.5-degree tilt of its rotation axis as it orbits the Sun.',
+    'salt_is_sodium_chloride': 'Table salt is primarily sodium chloride, NaCl.',
+    'metals_conduct_electricity': 'Metals have free electrons and conduct electricity well.',
+    'insulators_resist_electricity': 'Materials like rubber and glass resist electric current because they lack free charge carriers.',
+    'force_causes_acceleration': 'A net force on a mass causes acceleration, F = m * a.',
+    'friction_opposes_motion': 'Friction is a force that resists relative motion between surfaces in contact.',
+    'refrigeration_slows_spoilage': 'Low temperatures slow bacterial growth, delaying food spoilage.',
+    'evaporation_cools_surfaces': 'Evaporation removes heat as liquid molecules with more energy escape into gas.',
+    'clouds_made_of_condensed_water': 'Clouds form when water vapor condenses into tiny droplets or ice crystals in the atmosphere.',
+    'rain_falls_from_clouds': 'When cloud droplets combine and grow heavy enough, they fall as rain.',
+    'sound_needs_a_medium': 'Sound waves require a medium (solid, liquid, or gas) to propagate; they cannot travel in a vacuum.',
+    'light_travels_faster_than_sound': 'Light travels much faster than sound; this is why lightning is seen before thunder.',
+    'blood_carries_oxygen': 'Blood transports oxygen from the lungs to tissues and carbon dioxide back to the lungs.',
+    'food_provides_energy': 'Food contains chemical energy that cells convert into ATP for work and heat.',
+    'day_follows_night_due_to_rotation': 'Earth rotates on its axis, causing day and night cycles about every 24 hours.',
+})
+
+FRONTIER_TRANSLATION_PHRASES = {
+    ('hello', 'es'): 'hola', ('thank you', 'es'): 'gracias', ('goodbye', 'es'): 'adiós',
+    ('yes', 'es'): 'sí', ('no', 'es'): 'no', ('how are you', 'es'): 'cómo estás',
+    ('hello', 'fr'): 'bonjour', ('thank you', 'fr'): 'merci', ('goodbye', 'fr'): 'au revoir',
+    ('yes', 'fr'): 'oui', ('no', 'fr'): 'non', ('how are you', 'fr'): 'comment allez-vous',
+    ('hello', 'de'): 'hallo', ('thank you', 'de'): 'danke', ('goodbye', 'de'): 'auf wiedersehen',
+    ('yes', 'de'): 'ja', ('no', 'de'): 'nein', ('how are you', 'de'): 'wie geht es dir',
+}
+
+KNOWLEDGE_LIBRARY.extend([
+    ('What causes seasons?', 'Seasons are caused by the 23.5-degree tilt of Earths axis as it orbits the Sun, changing the angle and intensity of sunlight.'),
+    ('Why is the sky blue?', 'The sky appears blue because air molecules scatter shorter blue wavelengths of sunlight more strongly than longer red wavelengths.'),
+    ('Why do we breathe?', 'Breathing brings oxygen into the lungs for the blood to carry to cells, and removes carbon dioxide waste.'),
+    ('What makes a magnet stick to a refrigerator?', 'A magnet produces a magnetic field that aligns magnetic domains in the ferromagnetic metal of the refrigerator.'),
+    ('How does a vaccine work?', 'A vaccine exposes the immune system to an inactivated or partial pathogen so it can recognize and respond quickly to future infection.'),
+    ('What is electricity?', 'Electricity is the flow of electric charge, typically electrons through a conductor under a voltage difference.'),
+    ('Why do objects fall?', 'Unsupported objects fall because gravity accelerates them toward the center of the Earth.'),
+    ('What is photosynthesis?', 'Photosynthesis is the process by which plants convert light energy, carbon dioxide, and water into glucose and oxygen.'),
+    ('How do airplanes fly?', 'An airplane wing is shaped so air flows faster over the top, creating lower pressure above the wing and upward lift.'),
+    ('What is the water cycle?', 'The water cycle moves water through evaporation, condensation, precipitation, and collection on Earths surface.'),
+    ('Why does metal feel cold?', 'Metal feels cold because it conducts heat away from your skin more efficiently than insulators such as wood or plastic.'),
+    ('What is a cell?', 'A cell is the smallest unit of life; it carries out metabolism, grows, responds to stimuli, and reproduces.'),
+    ('Why do we need sleep?', 'Sleep supports memory consolidation, waste clearance, and restoration; chronic sleep deprivation impairs cognition and health.'),
+    ('What causes earthquakes?', 'Earthquakes occur when stress accumulated in tectonic plates is suddenly released, causing the ground to shake.'),
+    ('What is an atom?', 'An atom is the basic unit of matter, made of protons and neutrons in a nucleus with electrons orbiting it.'),
+    ('What is the speed of light?', 'The speed of light in vacuum is exactly 299,792,458 meters per second and is a defined physical constant.'),
+    ('What is entropy?', 'Entropy measures the number of microscopic configurations consistent with a macroscopic state; it increases in isolated systems.'),
+    ('What is the uncertainty principle?', 'Heisenbergs uncertainty principle states that position and momentum cannot both be known precisely: delta_x * delta_p >= hbar/2.'),
+    ('What is DNA?', 'DNA is a double-helix molecule encoding genetic information via sequences of the bases A, T, G, and C.'),
+    ('What is natural selection?', 'Natural selection is the process where heritable traits that improve survival and reproduction become more common across generations.'),
+])
+
+class FrontierGenerationSuite:
+    'On-demand frontier-style generation, reasoning, summarization, translation, code, and Q&A using the simulator\'s existing engines.'
+    def __init__(self, sim):
+        self.sim = sim
+        self._qa_cache = {}
+        self._reason_cache = {}
+        self._creative_cache = {}
+
+    def _creative(self, prompt, mode, max_tokens, neural):
+        if not neural:
+            return self._symbolic_creative(prompt, mode)
+        try:
+            full = self._build_creative_prompt(prompt, mode)
+            out = self.sim.generate_creative(full, mode=mode, max_tokens=max_tokens, neural=True)
+            if isinstance(out, dict) and out.get('text'):
+                return out['text']
+            return str(out)
+        except Exception as e:
+            return '[creative ' + mode + ' error: ' + str(e) + ']'
+
+    def _build_creative_prompt(self, prompt, mode):
+        if not prompt:
+            prompt = 'an open theme'
+        base = {
+            'story': 'Write a coherent short story (beginning, middle, end) with sensory detail and a satisfying resolution about: ',
+            'dialogue': 'Write a natural dialogue between two distinct voices about: ',
+            'brainstorming': 'Brainstorm a numbered list of creative, distinct ideas about: ',
+            'scenario': 'Describe a vivid scenario with setting, actors, and unfolding events for: ',
+            'character': 'Create a detailed character profile with motivation and a flaw for: ',
+            'worldbuilding': 'Build a concise fictional world with rules, geography, and culture for: ',
+            'poetry': 'Write a short, evocative poem using concrete imagery about: ',
+        }
+        return base.get(mode, 'Write a creative text about: ') + prompt
+
+    def _symbolic_creative(self, prompt, mode):
+        if not prompt:
+            prompt = 'an open theme'
+        q = prompt.lower()
+        # extract content words for concrete, prompt-specific substitutions
+        stops = {'this','that','with','from','have','they','them','their','there','where','about','what','when','which','would','could','should','will','shall','might','make','made','take','took','been','being','were','than','then','into','onto','only','also','just','even','such','some','more','most','very','much','many','well','like','time','year','work','part','over','after','before','because','while','during','through','between','under','above','around','within','without','against','among','along','across','behind','beyond','except','toward','towards','inside','outside'}
+        words = [w for w in re.findall(r"[a-z']{4,}", q) if w not in stops and w[:4].isalpha()]
+        noun = (words[0] if words else 'Mira').title()
+        setting = (words[1] if len(words) > 1 else 'the old quarter').title()
+        subject = prompt if len(prompt) < 80 else prompt[:77] + '...'
+        seed = sum(ord(c) for c in prompt)
+
+        if mode == 'story':
+            templates = [
+                "In the shadow of {setting}, a figure named {noun} discovered that {subject} had a voice of its own. "
+                "The old order had treated it as a rumor; {noun} treated it as a map. "
+                "The path bent through {setting}'s hidden quarter, where the first bargain was made. "
+                "At the turning point, the cost became clear. "
+                "When the moment arrived, {noun} chose meaning over safety, and the shape of {subject} changed. "
+                "The {setting}, now different, held the echo of that choice.",
+
+                "Once, in a world touched by {subject}, a figure called {noun} set out toward {setting} carrying only a question. "
+                "The road offered three signs, all of them true and all of them false. "
+                "Doubts gathered like weather, but {noun} pressed on until the real obstacle appeared: not the journey, but the promise at its end. "
+                "At the climax, {noun} saw that {subject} was not a destination but a debt. "
+                "The choice was made, the world turned, and {setting} was never quite the same.",
+
+                "{noun} had always believed {subject} was a matter of rules, until {setting} proved otherwise. "
+                "The inciting incident was small — a glance, a number, a silence — but it opened a door that had been painted over. "
+                "Complications rose: old friends became judges, and the past became a witness. "
+                "In the final scene, {noun} stood between {subject} and the life they had planned, and chose the harder truth. "
+                "The resolution was not a victory, but a beginning.",
+            ]
+            return templates[seed % len(templates)].format(noun=noun, setting=setting, subject=subject)
+
+        if mode == 'dialogue':
+            templates = [
+                "A: I keep coming back to {subject}." + chr(10) +
+                "B: Because it matters, or because it bothers you?" + chr(10) +
+                "A: Both. I think the part we are ignoring is the part that explains the rest." + chr(10) +
+                "B: Then name it. If you can name it, we can test it." + chr(10) +
+                "A: The test is what scares me. What if {subject} is not a problem but a condition?" + chr(10) +
+                "B: Then the condition is where we start, not where we stop.",
+
+                "Alex: I have been thinking about {subject}." + chr(10) +
+                "Blair: And what conclusion did you reach?" + chr(10) +
+                "Alex: That the obvious answer is rarely the whole answer — especially with {subject}." + chr(10) +
+                "Blair: Then we should look again, more slowly." + chr(10) +
+                "Alex: Yes — and be ready to change our minds." + chr(10) +
+                "Blair: That is where the real conversation begins.",
+            ]
+            return templates[seed % len(templates)].format(subject=subject)
+
+        if mode == 'brainstorming':
+            ideas = [
+                '1. Reframe "' + subject + '" as a system of feedback loops, not a single event.',
+                '2. Find the hidden constraint in "' + subject + '" that everyone assumes is permanent.',
+                '3. Ask what the opposite of "' + subject + '" would look like — then ask when the opposite is useful.',
+                '4. Combine "' + subject + '" with an unrelated domain (biology, law, music, logistics).',
+                '5. Look for the first failure mode of "' + subject + '" and design a guardrail before it happens.',
+                '6. Identify the one assumption about "' + subject + '" that no one is allowed to question.',
+                '7. Translate "' + subject + '" into a physical metaphor and list what the metaphor hides.',
+                '8. Imagine a version of "' + subject + '" that costs ten times less and still preserves its essential function.',
+                '9. Ask who gains power if "' + subject + '" succeeds, and who loses it.',
+                '10. Surface the unstated value that "' + subject + '" is defending.',
+            ]
+            return 'Ideas for "' + subject + '":' + chr(10) + chr(10).join(ideas)
+
+        if mode == 'scenario':
+            return ('The scene opens on ' + subject + ' in ' + setting + '. ' +
+                    'Conditions are unstable, and every actor is working from incomplete information. ' +
+                    'A signal arrives that no one expected — a message tied to ' + subject + '. ' +
+                    'The response reveals priorities the actors did not name, especially ' + noun + "'s. " +
+                    'By the end of the scene, the situation has shifted, and new possibilities line the horizon.')
+
+        if mode == 'character':
+            return ('Character: ' + noun + ' (anchor: ' + subject + '). ' +
+                    'They want something specific but are afraid to name it. ' +
+                    'Their strength is the same trait that creates their blind spot. ' +
+                    'They are most interesting when forced to choose between ' + setting + ' and a private vow. ' +
+                    'Their arc ends not with victory, but with a clearer view of who they are.')
+
+        if mode == 'worldbuilding':
+            return ('World: ' + subject + '. ' +
+                    'Here, in ' + setting + ', one natural law works differently, and society has organized around that difference. ' +
+                    'Power is held by those who can perceive what others cannot. ' +
+                    'Daily life is shaped by an unspoken bargain with the environment. ' +
+                    'Conflict arises when someone tests the boundary of that bargain.')
+
+        if mode == 'poetry':
+            return ('Under ' + subject + ', the light falls differently on ' + setting + '.' + chr(10) +
+                    'Each shadow holds a half-answered question. ' + noun + ' listens. ' + chr(10) +
+                    'What moves is not what is seen, but what is remembered about ' + subject + '.' + chr(10) +
+                    'And in the silence after, the shape remains.')
+
+        return 'Creative piece on ' + subject + ': a form begins, turns, and completes.'
+
+    def story(self, prompt='', max_tokens=480, neural=False):
+        return self._creative(prompt, 'story', max_tokens, neural)
+
+    def dialogue(self, prompt='', max_tokens=480, neural=False):
+        return self._creative(prompt, 'dialogue', max_tokens, neural)
+
+    def brainstorm(self, prompt='', max_tokens=480, neural=False):
+        return self._creative(prompt, 'brainstorming', max_tokens, neural)
+
+    def longform(self, prompt='', sections=3, max_tokens=960, neural=False):
+        sections = max(1, min(6, sections))
+        per = max(120, max_tokens // sections)
+        # varied modes give each section a distinct lens while staying on prompt
+        modes = ['scenario', 'story', 'character', 'worldbuilding', 'analysis', 'reflection']
+        parts = ['[LONGFORM: ' + (prompt or 'Untitled') + ']',
+                 'This piece develops in ' + str(sections) + ' sections, each exploring the prompt from a different angle.']
+        prior = ''
+        for i in range(sections):
+            m = modes[i % len(modes)]
+            ctx = ('; built on prior section: ' + prior[:180]) if prior else ''
+            p = (prompt + '; Section ' + str(i + 1) + ' (' + m + ')' + ctx) if prompt else ('Section ' + str(i + 1) + ' (' + m + ')')
+            parts.append('')
+            parts.append('--- Section ' + str(i + 1) + ' (' + m + ') ---')
+            try:
+                sec = self._creative(p, m, per, neural)
+                if i > 0 and sec and prior:
+                    sec = 'Continuing from the previous ' + modes[(i - 1) % len(modes)] + ', ' + sec[0].lower() + sec[1:]
+                parts.append(sec)
+                prior = sec
+            except Exception:
+                parts.append('[section not generated]')
+        parts.append('')
+        parts.append('--- Closing reflection ---')
+        parts.append('Across these ' + str(sections) + ' sections, the prompt "' + (prompt or 'the chosen topic') + '" is examined from multiple angles; the goal is sustained, coherent exploration rather than a single answer.')
+        return chr(10).join(parts)
+
+    def summarize(self, text, sentences=3, query=None):
+        if not text or not isinstance(text, str):
+            return '[summarize: no text]'
+        raw = text.replace('?', '.').replace('!', '.')
+        # split on sentence-terminating punctuation while avoiding simple '.' ambiguity
+        sents = [s.strip() for s in re.split(r'[.!?]+', raw) if len(s.strip()) > 10]
+        if not sents:
+            return text
+        punct = '''.,;:!?()[]{}'"-—'''
+        stop = {'the','and','for','with','that','this','from','have','has','had','been','was','were','are','is','it','to','of','in','on','at','a','an','as','by','or','be','but','not','so','if','than','then','they','them','their','we','you','i','he','she','its','can','will','would','could','should','may','might','do','does','did','get','got','just','only','even','also','about','into','out','up','down','over','under'}
+        words = text.lower().split()
+        freq = {}
+        for w in words:
+            w = w.strip(punct)
+            if len(w) > 3 and w not in stop:
+                freq[w] = freq.get(w, 0) + 1
+        query_words = set(query.lower().split()) if query else set()
+        scored = []
+        for idx, s in enumerate(sents):
+            sw = [w.strip(punct).lower() for w in s.split()]
+            sw_str = ' ' + ' '.join(sw) + ' '
+            score = sum(freq.get(w, 0) for w in sw)
+            # opening and closing sentences are usually important
+            if idx == 0 or idx == len(sents) - 1:
+                score += 4
+            # boost for whole-word query relevance
+            for qw in query_words:
+                if len(qw) > 2 and (' ' + qw + ' ' in sw_str or sw_str.startswith(qw + ' ') or sw_str.endswith(' ' + qw)):
+                    score += 10
+            scored.append((score, idx, s))
+        # pick top-scored sentences, then restore original order for coherence
+        scored.sort(key=lambda x: -x[0])
+        keep = scored[:max(1, sentences)]
+        keep.sort(key=lambda x: x[1])
+        selected = [s for _, _, s in keep]
+        joined = '. '.join(selected)
+        if not joined.endswith(('.', '!', '?')):
+            joined += '.'
+        return joined
+
+    def translate(self, text, target_lang='es', neural=False):
+        if not text or not isinstance(text, str):
+            return '[translate: no text]'
+        lang_map = {'spanish': 'es', 'french': 'fr', 'german': 'de', 'english': 'en', 'italian': 'it', 'portuguese': 'pt'}
+        target = lang_map.get(target_lang.lower(), target_lang.lower()[:2])
+        punct = '''.,;:!?()[]{}'"-—'''
+        words = text.split()
+        tokens = [w.strip(punct).lower() for w in words]
+        out = []
+        i = 0
+        while i < len(tokens):
+            # prefer the longest matching translated phrase
+            match = None
+            consumed = 1
+            for n in range(min(4, len(tokens) - i), 0, -1):
+                phrase = ' '.join(tokens[i:i + n])
+                if (phrase, target) in FRONTIER_TRANSLATION_PHRASES:
+                    match = FRONTIER_TRANSLATION_PHRASES[(phrase, target)]
+                    consumed = n
+                    break
+            if match is None:
+                bare = tokens[i]
+                orig = words[i]
+                if len(bare) < len(orig) and orig.lower().startswith(bare):
+                    suffix = orig[len(bare):]
+                else:
+                    suffix = ''
+                if bare and bare[0].isupper():
+                    if len(bare) > 1 and bare[1:].isupper():
+                        match = bare.upper()
+                    else:
+                        match = bare[0].upper() + bare[1:].lower() if len(bare) > 1 else bare[0].upper()
+                else:
+                    match = bare if bare else orig
+                match = match + suffix
+            i += consumed
+            out.append(match)
+        if neural and CONFIG.get('allow_token_generation', False):
+            try:
+                prompt = 'Translate to ' + target_lang + ': ' + text
+                return self.sim.generate_text(prompt, max_tokens=120, force_tokens=True)
+            except Exception as e:
+                return '[neural translation error: ' + str(e) + ']'
+        return ' '.join(out)
+
+    def multi_step_reason(self, question):
+        q = str(question).lower().strip().strip('?')
+        if q in self._reason_cache:
+            return self._reason_cache[q]
+        steps = []
+        # Step 1: gather relevant facts from the deepest source available
+        fact = None
+        source = 'unknown'
+        confidence = 0.5
+        if hasattr(self.sim, 'symbolic_query'):
+            sym = self.sim.symbolic_query(question)
+            if sym:
+                fact = sym.get('description') or sym.get('formula') or str(sym)
+                source = 'symbolic'
+                confidence = 0.95
+                steps.append({'step': 1, 'kind': 'symbolic', 'data': fact})
+        if not fact:
+            hit = _toc_query(q)
+            if hit:
+                fact = hit.get('value') or str(hit)
+                source = 'knowledge'
+                confidence = 0.9
+                steps.append({'step': 1, 'kind': 'knowledge', 'data': fact})
+        if not fact:
+            q_stop = {'a','an','the','is','are','was','were','be','been','being','to','of','in','on','at','by','for','with','from','as','and','or','but','if','then','than','when','where','why','how','what','who','which','this','that','these','those','it','its','they','them','their','we','you','i','he','she','can','will','would','could','should','may','might','do','does','did','has','have','had','not','no','yes'}
+            q_tokens = set(w for w in q.split() if w not in q_stop)
+            best = None
+            best_score = 0.0
+            best_src = None
+            for qq, aa in KNOWLEDGE_LIBRARY:
+                qt = set(w for w in qq.lower().split() if w not in q_stop)
+                overlap = q_tokens & qt
+                score = len(overlap) / max(1, len(q_tokens))
+                for w in overlap:
+                    if qq.lower().startswith(w):
+                        score += 0.2
+                if score > best_score:
+                    best_score = score
+                    best = qq + ' -> ' + aa
+                    best_src = 'knowledge'
+            for rule, desc in COMMON_SENSE.items():
+                r = rule.replace('_', ' ').lower()
+                d = desc.lower()
+                rt = set(w for w in r.split() if w not in q_stop)
+                dt = set(w for w in d.split() if w not in q_stop)
+                overlap = q_tokens & (rt | dt)
+                score = len(overlap) / max(1, len(q_tokens))
+                for w in overlap:
+                    if r.startswith(w):
+                        score += 0.15
+                    elif w in r:
+                        score += 0.05
+                    if w in d:
+                        score += 0.05
+                if score > best_score:
+                    best_score = score
+                    best = rule + ' -> ' + desc
+                    best_src = 'common_sense'
+            if best and best_score >= 0.4:
+                fact = best
+                source = best_src
+                confidence = 0.85 if best_src == 'knowledge' else 0.75
+                steps.append({'step': 1, 'kind': best_src, 'data': best})
+        # Step 2: choose a reasoning rule based on question type
+        nums = [float(n) for n in re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', q)]
+        reason_kind = 'structural'
+        if q.startswith('why') or ' why ' in q or 'because' in q or 'cause' in q or 'causes' in q:
+            rule = 'Causal reasoning: identify a mechanism or prerequisite that produces the observed effect.'
+            reason_kind = 'causal'
+        elif nums and any(op in q for op in ['+', '-', '*', '/', '=', 'area', 'perimeter', 'speed', 'distance', 'cost', 'sum', 'difference', 'times', 'divided']):
+            rule = 'Quantitative reasoning: extract numbers, identify the operation, and compute.'
+            reason_kind = 'quantitative'
+        elif q.startswith('how') or ' how ' in q or ('work' in q and 'work' not in q.split()[-1]) or 'does' in q:
+            rule = 'Functional/operational reasoning: trace the process or components involved.'
+            reason_kind = 'functional'
+        elif q.startswith('what') or q.startswith('who') or ' what ' in q or ' is ' in q or ' are ' in q:
+            rule = 'Definitional reasoning: isolate the essential properties and boundaries.'
+            reason_kind = 'definitional'
+        elif ' if ' in q or 'then' in q or 'would' in q or 'could' in q:
+            rule = 'Conditional reasoning: evaluate the premises and their consequences.'
+            reason_kind = 'conditional'
+        else:
+            rule = 'Analogical/structural reasoning: map the case to a known pattern and test consistency.'
+        steps.append({'step': 2, 'kind': 'rule', 'data': rule})
+        # Step 2b: attempt concrete arithmetic when numbers and operations are present
+        arithmetic = None
+        if reason_kind == 'quantitative' and len(nums) >= 2:
+            try:
+                if any(op in q for op in ['sum', '+', 'add', 'total', 'plus']):
+                    arithmetic = nums[0] + nums[1]
+                elif any(op in q for op in ['difference', 'minus', 'subtract', '-']):
+                    arithmetic = nums[0] - nums[1]
+                elif any(op in q for op in ['product', 'times', 'multiply', '*', 'of']):
+                    arithmetic = nums[0] * nums[1]
+                elif any(op in q for op in ['divided', 'divide', '/', 'per', 'ratio']):
+                    arithmetic = nums[0] / nums[1] if nums[1] != 0 else None
+            except Exception:
+                pass
+            if arithmetic is not None:
+                steps.append({'step': 2, 'kind': 'computation', 'data': 'computed ' + str(nums[0]) + ' and ' + str(nums[1]) + ' -> ' + (str(int(arithmetic)) if arithmetic == int(arithmetic) else str(round(arithmetic, 4)))})
+        # Step 3: synthesize conclusion
+        if fact:
+            conclusion = fact
+            if arithmetic is not None:
+                conclusion += ' Computed result: ' + (str(int(arithmetic)) if arithmetic == int(arithmetic) else str(round(arithmetic, 4))) + '.'
+            elif nums:
+                nums_text = ', '.join(str(int(n)) if n == int(n) else str(n) for n in nums[:3])
+                conclusion += ' (numerical context: ' + nums_text + ')'
+        else:
+            conclusion = 'I do not have a stored fact for this; the question falls outside the current knowledge graph.'
+            confidence = 0.25
+        steps.append({'step': 3, 'kind': 'synthesis', 'data': conclusion})
+        reasoning_chain = ' | '.join('step ' + str(s['step']) + ' (' + s['kind'] + '): ' + str(s['data']) for s in steps)
+        out = {'question': question, 'source': source, 'confidence': round(confidence, 2), 'steps': steps, 'conclusion': conclusion, 'reasoning_chain': reasoning_chain}
+        self._reason_cache[q] = out
+        return out
+
+    def generate_code(self, request, language='python', neural=False):
+        q = str(request).lower()
+        # Engineering bridge context
+        tk = _get_cs_ref_toolkit()
+        eng = getattr(tk, 'engineering', None) if tk else None
+        raw = None
+        if eng is not None and hasattr(eng, 'design_for_need'):
+            try:
+                raw = eng.design_for_need(request)
+            except Exception as e:
+                raw = '[AIEG error: ' + str(e) + ']'
+        # Extract numeric values for parameter defaults
+        nums = [float(n) for n in re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', request)]
+        code = None
+        if language == 'python' or 'python' in language.lower():
+            if any(k in q for k in ['voltage divider', 'divider', '5v to 3.3v', 'step down']):
+                vin = nums[0] if nums else 5.0
+                vout = nums[1] if len(nums) > 1 else 3.3
+                r1 = 1000.0
+                r2 = r1 * vout / (vin - vout) if vin != vout else 1000.0
+                code = chr(10).join([
+                    'def voltage_divider(vin=' + str(vin) + ', r1=' + str(r1) + ', r2=' + str(round(r2, 2)) + '):',
+                    "    '''Compute the output of a resistive voltage divider.'''",
+                    '    return vin * r2 / (r1 + r2)',
+                    '',
+                    'print("Vout =", voltage_divider(), "volts")'
+                ])
+            elif any(k in q for k in ['led', 'resistor', 'current']):
+                v = nums[0] if nums else 5.0
+                i = nums[1] if len(nums) > 1 else 0.02
+                r = (v - 2.0) / i if i else 0
+                code = chr(10).join([
+                    'def led_resistor(v_supply=' + str(v) + ', v_forward=2.0, current=' + str(i) + '):',
+                    "    '''Return the current-limiting resistor for an LED.'''",
+                    '    return (v_supply - v_forward) / current',
+                    '',
+                    'print("R =", led_resistor(), "ohms")'
+                ])
+            elif any(k in q for k in ['fibonacci', 'fib']):
+                code = chr(10).join([
+                    'def fibonacci(n):',
+                    '    a, b = 0, 1',
+                    '    for _ in range(n):',
+                    '        a, b = b, a + b',
+                    '    return a',
+                    '',
+                    'print([fibonacci(i) for i in range(10)])'
+                ])
+            elif any(k in q for k in ['factorial']):
+                code = chr(10).join([
+                    'def factorial(n):',
+                    '    if n < 2:',
+                    '        return 1',
+                    '    return n * factorial(n - 1)',
+                    '',
+                    'print(factorial(5))'
+                ])
+            elif any(k in q for k in ['prime']):
+                code = chr(10).join([
+                    'def is_prime(n):',
+                    '    if n < 2:',
+                    '        return False',
+                    '    for i in range(2, int(n ** 0.5) + 1):',
+                    '        if n % i == 0:',
+                    '            return False',
+                    '    return True',
+                    '',
+                    'print([n for n in range(2, 30) if is_prime(n)])'
+                ])
+            elif any(k in q for k in ['sort', 'quicksort']):
+                code = chr(10).join([
+                    'def quicksort(arr):',
+                    '    if len(arr) <= 1:',
+                    '        return arr',
+                    '    pivot = arr[len(arr) // 2]',
+                    '    return (quicksort([x for x in arr if x < pivot]) +',
+                    '            [x for x in arr if x == pivot] +',
+                    '            quicksort([x for x in arr if x > pivot]))',
+                    '',
+                    'print(quicksort([3, 1, 4, 1, 5, 9, 2, 6]))'
+                ])
+            elif any(k in q for k in ['temperature', 'celsius', 'fahrenheit']):
+                code = chr(10).join([
+                    'def c_to_f(c):',
+                    '    return c * 9 / 5 + 32',
+                    '',
+                    'def f_to_c(f):',
+                    '    return (f - 32) * 5 / 9',
+                    '',
+                    'print(c_to_f(0), f_to_c(32))'
+                ])
+            elif any(k in q for k in ['password', 'random string']):
+                code = chr(10).join([
+                    'import secrets, string',
+                    '',
+                    'def make_password(length=16):',
+                    '    alphabet = string.ascii_letters + string.digits',
+                    '    return "".join(secrets.choice(alphabet) for _ in range(length))',
+                    '',
+                    'print(make_password())'
+                ])
+            elif any(k in q for k in ['hello world']):
+                code = 'print(' + chr(39) + 'Hello, world!' + chr(39) + ')'
+            elif any(k in q for k in ['csv', 'read csv']):
+                code = chr(10).join([
+                    '''import csv''',
+                    '''''',
+                    '''def read_csv(path):''',
+                    '''    # Read a CSV file and return a list of rows.''',
+                    '''    with open(path, 'r', newline='') as f:''',
+                    '''        return list(csv.reader(f))''',
+                    '''''',
+                    '''print(read_csv('example.csv'))'''
+                ])
+            elif any(k in q for k in ['sqlite', 'database']):
+                code = chr(10).join([
+                    '''import sqlite3''',
+                    '''''',
+                    '''def query_db(db_path, query):''',
+                    '''    # Run a query and return the rows.''',
+                    '''    con = sqlite3.connect(db_path)''',
+                    '''    cur = con.cursor()''',
+                    '''    cur.execute(query)''',
+                    '''    rows = cur.fetchall()''',
+                    '''    con.close()''',
+                    '''    return rows''',
+                    '''''',
+                    '''print(query_db('example.db', 'SELECT * FROM data'))'''
+                ])
+            elif any(k in q for k in ['read file', 'write file']):
+                code = chr(10).join([
+                    '''def read_file(path):''',
+                    '''    # Read the contents of a text file.''',
+                    '''    with open(path, 'r') as f:''',
+                    '''        return f.read()''',
+                    '''''',
+                    '''def write_file(path, content):''',
+                    '''    # Write content to a text file.''',
+                    '''    with open(path, 'w') as f:''',
+                    '''        f.write(content)''',
+                    '''''',
+                    '''print(read_file('input.txt'))'''
+                ])
+            elif any(k in q for k in ['web request', 'http', 'api']):
+                code = chr(10).join([
+                    '''import urllib.request, json''',
+                    '''''',
+                    '''def fetch_json(url):''',
+                    '''    # Fetch a JSON response from a URL.''',
+                    '''    with urllib.request.urlopen(url) as r:''',
+                    '''        return json.loads(r.read().decode())''',
+                    '''''',
+                    '''print(fetch_json('https://api.example.com/data'))'''
+                ])
+            elif any(k in q for k in ['timer', 'sleep', 'wait']):
+                code = chr(10).join([
+                    '''import time''',
+                    '''''',
+                    '''def wait(seconds):''',
+                    '''    # Pause execution for the given number of seconds.''',
+                    '''    time.sleep(seconds)''',
+                    '''    return 'done'  ''',
+                    '''''',
+                    '''print(wait(1))'''
+                ])
+        if code:
+            if raw:
+                code = '# AIEG context: ' + raw[:120].replace(chr(10), ' ') + chr(10) + code
+            return code
+        # Fallback: neural token model if allowed
+        if neural and CONFIG.get('allow_token_generation', False):
+            try:
+                prompt = 'Write a short ' + language + ' function that does this: ' + request
+                return self.sim.generate_text(prompt, max_tokens=240, force_tokens=True)
+            except Exception as e:
+                return '# Neural code error: ' + str(e)
+        # Generic stub with engineering context
+        def _clean(s):
+            return ''.join(ch for ch in s if ch.isalnum() or ch == '_').rstrip('_')
+        name = 'solution'
+        for word in request.lower().split():
+            if word and len(word) > 2 and word not in {'a','an','the','for','to','of','in','on','and','or','with','that','this','is','are','was','were','be','been','being','write','create','make','build','generate','function','def','code','program','class'}:
+                name = _clean(word) or name
+                break
+        params = ''
+        if nums:
+            params = ', '.join('arg' + str(i) + '=' + str(n) for i, n in enumerate(nums, 1))
+        lines = [
+            '# Code generated for: ' + request,
+            '# Language: ' + language,
+            '# Engineering context wired from cs_reference_bridge',
+        ]
+        if raw:
+            lines.append('# AIEG: ' + raw[:240].replace(chr(10), ' '))
+        lines.append('def ' + name + '(' + params + '):')
+        if raw:
+            lines.append('    # Context: ' + raw[:120].replace(chr(10), ' '))
+        lines.append('    # TODO: implement ' + request)
+        if nums:
+            lines.append('    # numerical inputs: ' + ', '.join(str(n) for n in nums))
+        lines.append('    pass')
+        return chr(10).join(lines)
+
+    def answer_qa(self, question, max_tokens=240, neural=False):
+        q = str(question).lower().strip().strip('?')
+        if q in self._qa_cache:
+            return self._qa_cache[q]
+        q_stop = {'a','an','the','is','are','was','were','be','been','being','to','of','in','on','at','by','for','with','from','as','and','or','but','if','then','than','when','where','why','how','what','who','which','this','that','these','those','it','its','they','them','their','we','you','i','he','she','can','will','would','could','should','may','might','do','does','did','has','have','had','not','no','yes'}
+        q_tokens = set(w for w in q.split() if w not in q_stop)
+        # 1. symbolic graph lookup
+        if hasattr(self.sim, 'symbolic_query'):
+            sym = self.sim.symbolic_query(question)
+            if sym:
+                ans = sym.get('description') or sym.get('formula') or str(sym)
+                self._qa_cache[q] = {'answer': ans, 'source': 'symbolic_lookup', 'confidence': 0.95}
+                return self._qa_cache[q]
+        # 2. token-overlap search across knowledge and common sense with start-word tie-breaking
+        best_ans = None
+        best_src = None
+        best_score = 0.0
+        for qq, aa in KNOWLEDGE_LIBRARY:
+            qt = set(w for w in qq.lower().split() if w not in q_stop)
+            overlap = q_tokens & qt
+            score = len(overlap) / max(1, len(q_tokens))
+            for w in overlap:
+                if qq.lower().startswith(w):
+                    score += 0.2
+            if score > best_score:
+                best_score = score
+                best_ans = aa
+                best_src = 'knowledge_library'
+        for rule, desc in COMMON_SENSE.items():
+            r = rule.replace('_', ' ').lower()
+            d = desc.lower()
+            rt = set(w for w in r.split() if w not in q_stop)
+            dt = set(w for w in d.split() if w not in q_stop)
+            overlap = q_tokens & (rt | dt)
+            score = len(overlap) / max(1, len(q_tokens))
+            for w in overlap:
+                if r.startswith(w):
+                    score += 0.15
+                elif w in r:
+                    score += 0.05
+                if w in d:
+                    score += 0.05
+            if score > best_score:
+                best_score = score
+                best_ans = desc
+                best_src = 'common_sense'
+        if best_ans and best_score >= 0.25:
+            base = 0.5 if best_src == 'knowledge_library' else 0.45
+            confidence = round(base + 0.35 * min(best_score, 1.0), 2)
+            self._qa_cache[q] = {'answer': best_ans, 'source': best_src, 'confidence': confidence}
+            return self._qa_cache[q]
+        # 3. full TOC / library registry
+        hit = _toc_query(q)
+        if hit:
+            self._qa_cache[q] = {'answer': hit.get('value') or str(hit), 'source': 'toc_lookup', 'confidence': 0.8}
+            return self._qa_cache[q]
+        # 4. neural token model
+        if neural and CONFIG.get('allow_token_generation', False):
+            try:
+                ans = self.sim.generate_text('Answer this in one sentence: ' + question, max_tokens=max_tokens, force_tokens=True)
+                self._qa_cache[q] = {'answer': ans, 'source': 'neural', 'confidence': 0.6}
+                return self._qa_cache[q]
+            except Exception as e:
+                return {'answer': '[QA error: ' + str(e) + ']', 'source': 'neural_error', 'confidence': 0.0}
+        return {
+            'answer': 'I do not have a stored fact for this. Pass neural=True to use the token model (currently undertrained).',
+            'source': 'unknown',
+            'confidence': 0.0
+        }
+
+
+def _frontier_story(self, prompt='', max_tokens=480, neural=False, **kw):
+    if not hasattr(self, '_frontier_suite'):
+        self._frontier_suite = FrontierGenerationSuite(self)
+    return self._frontier_suite.story(prompt, max_tokens=max_tokens, neural=neural, **kw)
+
+
+def _frontier_dialogue(self, prompt='', max_tokens=480, neural=False, **kw):
+    if not hasattr(self, '_frontier_suite'):
+        self._frontier_suite = FrontierGenerationSuite(self)
+    return self._frontier_suite.dialogue(prompt, max_tokens=max_tokens, neural=neural, **kw)
+
+
+def _frontier_brainstorm(self, prompt='', max_tokens=480, neural=False, **kw):
+    if not hasattr(self, '_frontier_suite'):
+        self._frontier_suite = FrontierGenerationSuite(self)
+    return self._frontier_suite.brainstorm(prompt, max_tokens=max_tokens, neural=neural, **kw)
+
+
+def _frontier_longform(self, prompt='', sections=3, max_tokens=960, neural=False, **kw):
+    if not hasattr(self, '_frontier_suite'):
+        self._frontier_suite = FrontierGenerationSuite(self)
+    return self._frontier_suite.longform(prompt, sections=sections, max_tokens=max_tokens, neural=neural, **kw)
+
+
+def _frontier_summarize(self, text, sentences=3, **kw):
+    if not hasattr(self, '_frontier_suite'):
+        self._frontier_suite = FrontierGenerationSuite(self)
+    return self._frontier_suite.summarize(text, sentences=sentences)
+
+
+def _frontier_translate(self, text, target_lang='es', neural=False, **kw):
+    if not hasattr(self, '_frontier_suite'):
+        self._frontier_suite = FrontierGenerationSuite(self)
+    return self._frontier_suite.translate(text, target_lang=target_lang, neural=neural)
+
+
+def _frontier_reason(self, question, **kw):
+    if not hasattr(self, '_frontier_suite'):
+        self._frontier_suite = FrontierGenerationSuite(self)
+    return self._frontier_suite.multi_step_reason(question)
+
+
+def _frontier_code(self, request, language='python', neural=False, **kw):
+    if not hasattr(self, '_frontier_suite'):
+        self._frontier_suite = FrontierGenerationSuite(self)
+    return self._frontier_suite.generate_code(request, language=language, neural=neural)
+
+
+def _frontier_qa(self, question, max_tokens=240, neural=False, **kw):
+    if not hasattr(self, '_frontier_suite'):
+        self._frontier_suite = FrontierGenerationSuite(self)
+    return self._frontier_suite.answer_qa(question, max_tokens=max_tokens, neural=neural)
+
+ConsciousnessSimulator.frontier_story = _frontier_story
+ConsciousnessSimulator.frontier_dialogue = _frontier_dialogue
+ConsciousnessSimulator.frontier_brainstorm = _frontier_brainstorm
+ConsciousnessSimulator.frontier_longform = _frontier_longform
+ConsciousnessSimulator.frontier_summarize = _frontier_summarize
+ConsciousnessSimulator.frontier_translate = _frontier_translate
+ConsciousnessSimulator.frontier_reason = _frontier_reason
+ConsciousnessSimulator.frontier_code = _frontier_code
+ConsciousnessSimulator.frontier_qa = _frontier_qa
+
+
 if __name__ == '__main__':
     # Create and run; optional profile harness for finding real bottlenecks
     if os.environ.get('CS_PROFILE', '0') == '1':
@@ -49274,5 +54197,7 @@ if __name__ == '__main__':
                 f.write(s.getvalue())
             print("Profile written to cs_profile.txt")
     else:
+        consciousness = ConsciousnessSimulator()
+        consciousness.run()
         consciousness = ConsciousnessSimulator()
         consciousness.run()

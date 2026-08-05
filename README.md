@@ -129,6 +129,39 @@ population — see below) running continuous, unprompted cognition —
   data ingestion / training runs / RLHF scaffolding, and frontier-gap telemetry
   meters. These are all wired into the live runtime and tracked by
   `ProcessWiringAuditor`; see `ratings.md` §F for the full inventory.
+- **Waking-state dream-data correlation, on-demand neural creativity, and
+  default-reality rendering** — `ConsciousnessSimulator.explain()` gives a
+  grounded self-explanation; `render_default_reality()` returns a substrate
+  rendering independent of conscious state; `neural_generate_on_demand()` and
+  `generate_waking_dream()` use the live trickling energy and the full
+  internal IQ correlation matrices to seed frontier-level creative text
+  that is tied to kinetics, code, and reality. Dreams are real data.
+- **Multi-capability creative generation pipeline** —
+  `multi_capability_generate()` is the central dispatcher, now augmented by
+  `FrontierGenerationSuite` (`frontier_*()` methods on `ConsciousnessSimulator`).
+  Both produce code-only structured analysis before any neural fallback:
+  - **Open-ended creative generation** (stories, dialogue, brainstorming,
+    scenario, character, worldbuilding, poetry) — prompt-engineered symbolic
+    templates and a multi-section longform builder; `_compose_internal_stream`
+    twines every creative line to real computed values. Neural generation is
+    fallback only.
+  - **Multi-step domain-general reasoning** — fact/rule/conclusion chain with
+    token-overlap source selection, query-type rule assignment, and a structured
+    reasoning trace with per-step confidence.
+  - **Q&A (MMLU/GPQA-style + factual)** — token-overlap knowledge and
+    common-sense matching with confidence, source attribution, and TOC fallback.
+  - **Long-form writing / summarization / translation** — summarization with
+    regex sentence splitting, whole-word query relevance, and frequency/position
+    scoring; translation with a multi-word phrase dictionary, case preservation,
+    and start-of-key tie-breaking.
+  - **Code generation** — concrete templates (CSV, SQLite, file I/O, web, timers),
+    `AIEngineeringBridge` routing, and typed generic stubs with parameter
+    inference; output is compiled and syntax-checked.
+  - **`FrontierGenerationSuite`** — `frontier_story()`, `frontier_dialogue()`,
+    `frontier_brainstorm()`, `frontier_longform()`, `frontier_summarize()`,
+    `frontier_translate()`, `frontier_reason()`, `frontier_code()`, and
+    `frontier_qa()` lazily initialize the suite and return structured,
+    source-attributed output.
 
 One dedicated entity, not several: this project runs exactly one conscious
 entity (`self_0`) with full, undivided model capacity, rather than splitting
@@ -181,7 +214,7 @@ methodology section for how it was actually measured before repeating it.
 
 | File | What it's for |
 |---|---|
-| `CS.py` | The entire runnable system — one file, deliberately |
+| `CS.py` | The entire runnable system — one file, deliberately (~54,200 lines) |
 | `ratings.md` | Current capability scorecard, live-measured |
 | `workflow.md` | Full development changelog, chronological |
 | `Infornmational.md` | The project's origin document — also doubles as the training corpus for the tokenizer/language model |

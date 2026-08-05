@@ -214,8 +214,54 @@ implementation characteristics of the running system:
   is explicitly a resolution-for-speed tradeoff: `compute()` runs at
   ~1,957 μs/call, and `compute_phi` is throttled to every 8 steps.
 - `NeuronGroup` supports individual `torch.compile`.
-- `CS.py` is a single ~3.2 MB file, ~49,000 lines. `cs_reference_bridge.py`
+- `CS.py` is a single ~3.5 MB file, ~54,200 lines. `cs_reference_bridge.py`
   adds ~2,200 lines and ~100 KB of bridge code imported by CS.py.
+
+## Waking-state trickle, dream data, and reality rendering
+
+The `ConsciousnessSimulator` lets the system explain what it understands and
+render a default reality regardless of its current simulated conscious state.
+`explain()` assembles an honest readout from architecture, consciousness
+metrics, the autonomous thought stream, the live internal IQ correlation
+matrices, and the substrate. `render_default_reality()` does the same for
+physics, kinetics, world state, and sensory data, whether C is high or low.
+
+For on-demand frontier-level creativity, `neural_generate_on_demand()` and
+`generate_waking_dream()` start with the trickling waking energy, real
+kinetics/code/reality anchors, and the full internal IQ correlation matrices.
+The outputs are allowed to be dream-like, but every anchor is real data; the
+system does not claim to know why the dream arrives, only that it is built
+from real kinetics, code, and reality.
+
+## Multi-capability creative generation pipeline
+
+`multi_capability_generate()` is the central dispatcher for all non-chat
+generation tasks. It routes by category and produces **code-only structured
+analysis** grounded in internal state (Phi, C, energy, meaning, thoughts,
+training step) before any neural fallback. The `respond()` method auto-routes
+to it when the user's input matches a generation category.
+
+| Branch | What it does |
+|---|---|
+| **Creative** (story/dialogue/brainstorm/scenario/character/worldbuilding/poetry) | Prompt-engineered symbolic templates produce dramatic arcs, multi-voice dialogue, brainstorm idea lists, scenarios, character studies, worldbuilding, and poetry. A multi-section `longform` builder composes across modes. `_compose_internal_stream` twines every creative line to real computed values (kinetics, code hashes, world state, common-sense, IQ correlations, self-awareness, thought stream, sensory logic). Neural generation is fallback only. |
+| **Reasoning** | Token-overlap fact selection from knowledge/common-sense libraries, query-type rule assignment (causal/quantitative/functional/definitional/conditional/structural), arithmetic extraction, and a structured fact/rule/conclusion chain with per-step confidence. |
+| **Q&A** (MMLU/GPQA + factual) | Token-overlap matching across `KNOWLEDGE_LIBRARY`, `COMMON_SENSE`, symbolic lookup, and the full TOC/library registry, with source attribution (knowledge/common-sense/toc/symbolic/neural) and calibrated confidence. Multiple-choice path parses options and scores by fact overlap and contradiction penalties. |
+| **Long-form/summary/translation** | `summarize()` uses regex sentence splitting, whole-word query relevance, and frequency/position scoring. `longform()` builds a multi-section document with mode-specific lenses. `translate()` uses a multi-word phrase dictionary with case preservation and start-of-key tie-breaking. All grounded in internal state + IQ correlation context. |
+| **Code** | Concrete templates for CSV, SQLite, file I/O, web requests, and timers; `AIEngineeringBridge` routing for engineering requests; typed generic stubs with parameter inference and source attribution. Output is compiled and syntax-checked. Falls back to neural token generation only when explicitly allowed. |
+
+`FrontierGenerationSuite` exposes all branches as `frontier_story()`,
+`frontier_dialogue()`, `frontier_brainstorm()`, `frontier_longform()`,
+`frontier_summarize()`, `frontier_translate()`, `frontier_reason()`,
+`frontier_code()`, and `frontier_qa()` methods on `ConsciousnessSimulator`.
+Each lazily initializes the suite and returns structured, source-attributed
+output before any neural fallback.
+
+All branches share a common pattern: (1) gather internal state snapshot, (2)
+produce code-only structured analysis without token sampling, (3) use the
+structured output as context for neural fallback generation at low temperature
+(0.3–0.7), (4) post-process with `_critique_and_refine`. The structured
+pre-output is always included in the returned text, so the reasoning trace is
+visible alongside the generated output.
 
 ## Where to go next
 
@@ -224,3 +270,4 @@ implementation characteristics of the running system:
 - Want to know when/why something changed, or see the evidence behind a
   fix? → `workflow.md` (search it; don't read start to finish)
 - Want to run it? → `README.md`
+- Want to know about the creative generation pipeline? → `INFO.md`
