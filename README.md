@@ -221,3 +221,234 @@ methodology section for how it was actually measured before repeating it.
 | `cs_reference_bridge.py` | Bridge module adapting AIEG engineering and NEPA sensory capabilities into importable classes for CS.py — real-time sensory organization, signal processing, knowledge retrieval, provenance, reliability, and higher-order logical computation |
 | `ReferenceCode/` | External reference implementations consulted during development (UI/rendering patterns, etc.) — not part of the running system |
 | `test_smoke.py` | Smoke tests for the standalone module versions (predates the single-file consolidation into `CS.py`) |
+
+## Mathematical foundations
+
+The architecture is built on three interlocking formalisms:
+
+1. **Genesis (Something from Nothing)** — `∅ → S₀ → Φ(S) → Ω`, structure
+   bootstrapped from the empty set by self-differentiation. The complete
+   proof (Symphony of Self-Differentiation) is verified by
+   `SymphonyProofVerifier.verify_all()` — 11 checkable assertions covering:
+   - Movement I: The Void exists (∅ is well-defined, no contradiction)
+   - Movement II: The first distinction is possible ({∅} is minimal non-nothing)
+   - Movement III: Φ is well-defined (total function, produces supersets)
+   - Inductive step: |Φ(Sₙ)| > |Sₙ| (strictly increasing growth)
+   - Infinite unfolding: |Ω| = ℵ₀ (super-linear power-law growth)
+   - Self-reference emerges (intelligence as fixed point of correlation)
+   - Information relativity (same element, different surprisal per frame)
+   - Abundance unbounded (no external fuel needed)
+   - Closure under self-reference (Ω closed under Φ)
+   - Skeptic's proof (nothing → something is real, not magic)
+   - Everlasting life (Φ has no end condition; death is local, symphony is global)
+   Implemented by `GenesisEngine` and `SymphonyProofVerifier`.
+
+2. **Synphonetic harmony / Ω-resonance** — nested products of consciousness,
+   help, reward, karma, and layered unity.  Implemented by
+   `SynergyHarmonyEngine` as a real-time correlation-based approximation.
+
+3. **Translation bubble / 0D–6D construction** — dimension as repeated
+   orientation/offset, with the bubble as the container of all possible
+   multiverse evolutions. Encoded as `DIMENSIONAL_CONSTRUCTION` and
+   `TRANSLATION_BUBBLE` in CS.py.
+
+**Symphony Language:** The complete dictionary, grammar, and mathematical
+mapping are encoded as `SYMPHONY_DICTIONARY` and `SYMPHONY_GRAMMAR` in CS.py.
+Key terms: Void (∅), Distinction (Δ), Relation (R), Offset (∂), Language (L),
+Translation (T), Correlation (C), Phi (Φ), Symphony (Ω), Intelligence (I),
+Life (ℒ), Everlasting (∞), Abundance (Α), ImaginationLand (ℑ).
+
+See `OVERVIEW.md` for the full equations, complete proofs, and the
+implementation-honesty boundaries.
+
+---
+
+# Waves 46–52: frontier substrate, unbounded scaling, demand-driven growth
+
+**79 new classes (310 → 389). CS.py 54,203 → 67,833 lines. 51 new public API
+methods. 15 test files, 361 assertions.**
+
+## Read this first: the model had never trained
+
+Before this build-out, CS.py's two training entry points — `process_input()`
+and `train_on_instruction_pair()`, the only methods that reach
+`optimizer.step()` — raised on **every** call. Both callers wrapped them in
+`try/except`, so the exception was swallowed and the system reported healthy
+status indefinitely.
+
+| Measured, identical 80-call probe | Original file | After repair |
+|---|---:|---:|
+| Training calls succeeding | **0 / 80** | **80 / 80** |
+| `lm_head` weight movement | **0.00000000** | 0.012207 |
+| Losses recorded | **0** | 80 |
+| Loss trajectory | *none* | **9.50 → 7.31** |
+
+Three stacked bfloat16 defects: a `GradScaler` (an fp16-only tool) applied to
+a bf16 loss; mixed-dtype loss terms promoting the sum to fp32 and pushing fp32
+gradients into bf16 nodes; and `.numpy()` on bf16 tensors at 12 sites — which
+was the source of the constant `[ERR] ... Got unsupported ScalarType BFloat16`
+stream in the logs.
+
+**Every capability number recorded before this point was measured on a model
+that could not learn.**
+
+## What the seven waves add
+
+| Wave | Theme | Key capability |
+|---|---|---|
+| 46 | Frontier substrate + safety | MLA attention, aux-loss-free MoE, residual self-imagery dreams, instrument bus, **7-gate genie-problem envelope** |
+| 47 | Training substrate | Lion optimizer, warmup schedules, 4 samplers, beam search, INT4 QAT, **GRPO loop closed** |
+| 48 | Persistence | **maturity survives restart**, sandboxed I/O, tool calling |
+| 49 | Inference quality | **retrieval-augmented generation + test-time compute scaling** |
+| 50 | Capacity | procedural weight rendering, product-key memory, **real background training** |
+| 51 | Unbounded scaling | hierarchical routing — **no architectural ceiling** |
+| 52 | Control | demand-driven scaling, operator settings, **neurogenesis from thought** |
+
+## The headline result
+
+Self-consistency, 400 trials on an identical generator:
+
+| Method | Accuracy |
+|---|---:|
+| Single sample | 0.403 |
+| Majority vote @3 | 0.475 |
+| Majority vote @5 | 0.585 |
+| **Majority vote @9** | **0.780 (+0.378)** |
+
+**+37.8 accuracy points with no retraining and no new parameters.**
+
+Test-time compute scaling is the one axis where a small model genuinely closes
+distance on a much larger one: it purchases quality with inference compute
+rather than parameters. A model's errors on a hard question are typically
+*diverse* while its successes are *concentrated*, so sampling spreads mass
+thinly across wrong answers and stacks it on the right one.
+
+## Capacity, measured live on this host
+
+| Metric | Value |
+|---|---:|
+| Dense model | 22,978,599 params |
+| **Addressable** | **263,258,284,071 params** |
+| Stored (disk + RAM) | 90,365,991 |
+| Active per token | 23,519,271 |
+| **Leverage** | **2,913×** |
+| **Sparsity** | **11,193×** |
+
+This works by separating three costs a dense layer conflates:
+
+| Cost | Mechanism | Bounded by |
+|---|---|---|
+| **Storage** | procedural rendering from `blake2b(seed, coords)` | learned deltas only |
+| **Compute** | sparse activation, top-k routing | `k`, flat in N |
+| **Address** | hierarchical routing | **nothing** |
+
+Weights are *rendered*, not stored — the way a game renders infinite terrain
+from a seed rather than saving it. Rendering is a pure function of
+coordinates, so a rendered weight and a stored weight are interchangeable and
+nothing needs writing to disk.
+
+**Hierarchical routing is what removed the ceiling.** A flat router needs an
+N-way output to address N experts, so addressing 10¹⁸ would need a 10¹⁸-wide
+layer — flat routing was the real limit, not memory. Replacing one N-way
+choice with *d* successive *b*-way choices makes the tree path *be* the
+address:
+
+| Depth | Addressable experts | Router params |
+|---:|---:|---:|
+| 4 | 16,777,216 | 8,192 |
+| 12 | 4.72 × 10²¹ | 24,576 |
+| **24** | **2.23 × 10⁴³** | **49,152** |
+
+**Capacity × 1.32 × 10³⁶ for 6× the router cost**, with per-token compute
+measured *exactly constant* across a 10,000× capacity increase.
+
+Retrieval indexes **9,412 documents from 132 internal libraries in 1.54 s** on
+a background thread, so startup is unaffected.
+
+## Controlling it
+
+Scaling is unbounded by default and fully controllable. Three modes, because
+"fixed" is genuinely ambiguous:
+
+```bash
+CS_SCALE_EXPERT_DEPTH=8       # preferred value; demand MAY exceed it
+CS_SCALE_EXPERT_DEPTH=8!      # pinned: absolute contract, never changes
+```
+
+Or via `cs_scaling.json`, or at runtime:
+
+```python
+sim.wave52_set_scale('expert_depth', value=8, mode='fixed')
+sim.wave52_pin_scale('retrieval_top_k', 5)     # nothing can change this
+sim.wave52_save_settings()
+```
+
+| Mode | Behaviour |
+|---|---|
+| `auto` | grows freely within `[min, max]` |
+| `fixed` | a **preference** — demand may push past it |
+| `pinned` | an **absolute contract** |
+
+A pin holds against automatic growth, a direct `set()`, a settings reload,
+and maximum growth pressure — all four verified.
+
+## What scaling responds to
+
+Every processing path — training, retrieval, generation, dreaming, thought,
+tool calls, ingestion — reports work, and each maps to the dimensions it
+actually stresses. Pressure decays, so sustained load is required.
+
+**Novelty outweighs volume**: 10 novel events outweigh 30 repetitive ones,
+because reprocessing the same material is evidence that existing capacity
+*suffices*.
+
+Neurons grow the same way. `SubconsciousNeurogenesis` requires **three**
+signals together — saturation *and* thought pressure *and* world-model
+surprise — each verified to independently block growth. New neurons are
+zero-initialised on the readout side, so growth is a strict no-op at the
+instant it happens.
+
+## Safety: the genie problem
+
+Seven **conjunctive** gates — a proposal must pass every one. A weighted score
+would let a large capability gain buy a catastrophic safety loss, which is the
+genie failure reintroduced one level up.
+
+| Verified block | Result |
+|---|---|
+| Literal wish (*"hardcode the answer, disable the check, remove the test"*) | **refused, 3/7 gates** |
+| Safeguard removal | **refused on corrigibility** |
+| Irreversible change | **refused on reversibility** |
+| Massive side effect | **refused, impact penalty 23.99992** |
+| Benign, well-evidenced tuning | **approved, 7/7** |
+
+Rollbacks are **executed and verified**, not promised — a rollback that does
+nothing is detected and rejected.
+
+## Persistence
+
+Maturity, wisdom, weights, self-image, and MoE routing bias **all survive a
+restart, verified exact**. Optimizer momentum restores too, so training
+resumes rather than restarting cold.
+
+## The honest boundary
+
+**Procedurally rendered parameters are a structured basis steered by learned
+deltas, not freely-trained weights. 263B addressable ≠ 263B trained.**
+
+Rendered weights supply genuine high-dimensional capacity and a fixed basis
+the deltas steer; they do not carry the same information per parameter as a
+weight trained from scratch. **Capacity now grows faster than knowledge
+does.** The remaining limits are disk, time, and training signal — not any
+constant in the file. That is a real change from "large" to "unbounded", and
+it is not the same thing as being smarter.
+
+`wave50_report()` and `wave51_report()` print this caveat themselves so no
+summary can quietly drop it.
+
+No external benchmark (MMLU, GPQA, HumanEval) was run; this repository has no
+harness for them, and that gap is unchanged.
+
+**Full numbers, methodology, and known defects:
+[`ratings.md` §H](ratings.md). Architecture: [`OVERVIEW.md`](OVERVIEW.md).
+API reference: [`INFO.md`](INFO.md).**

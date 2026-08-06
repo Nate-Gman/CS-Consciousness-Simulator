@@ -867,3 +867,562 @@ reasoning audit. On those, the frontier model scores 0% by
 structural absence, and CS.py's 100% is the only non-zero score in the
 comparison. That is a narrow but real niche, and it is where this system's
 actual value lies today.
+
+---
+
+# H. Waves 46–52 — full technical scorecard
+
+*Everything in this section was live-measured against a running
+`ConsciousnessSimulator` on this host — RTX 5070 Ti (17.1 GB), 12-core
+Windows 11, Python 3.13, PyTorch 2.10.0+cu128 — during the Waves 46–52
+build-out. Nothing here is carried forward from notes. Where a figure is a
+capability ratio rather than a benchmark score, it is labelled as such.*
+
+**Scope:** 79 new classes (310 → 389), CS.py 54,203 → 67,833 lines, 51 new
+public API methods, 47 new CONFIG knobs, 15 test files, 361 assertions.
+
+---
+
+## H0. The correction that invalidates every earlier number in this file
+
+### H0.1 The finding
+
+**The model had never performed a single optimizer step.** CS.py contains
+exactly two methods that reach `optimizer.step()` — `process_input()` and
+`train_on_instruction_pair()`. Both raised on every call, and both callers
+wrapped them in `try/except`, so the exception was swallowed and the system
+reported healthy status indefinitely.
+
+Measured on the unmodified pre-existing file versus after repair, identical
+probe (80 calls of `process_input` on a fixed tokenized string):
+
+| Metric | Original file | After repair |
+|---|---:|---:|
+| `process_input` calls succeeding | **0 / 80** | **80 / 80** |
+| `lm_head` weight movement (max abs delta) | **0.00000000** | 0.012207 |
+| Entries appended to `loss_history` | **0** | 80 |
+| Loss trajectory | *none recorded* | **9.5017 → 7.3144** |
+
+### H0.2 Root causes — three stacked bfloat16 defects
+
+**(1) `GradScaler` applied to a bfloat16 loss.** `GradScaler` exists solely to
+stop float16 gradient underflow: fp16's smallest normal is ~6e-5, so small
+gradients flush to zero and the loss must be scaled up before backward.
+bfloat16 has the *same exponent range as float32* (~1e-38) — nothing
+underflows and loss scaling buys nothing. Worse, combining them raises
+`RuntimeError: Found dtype BFloat16 but expected Float`.
+
+**(2) Mixed-dtype loss terms.** Under bf16 autocast, `lm_loss`, `z_loss` and
+`phi_bonus` return bfloat16 while `recon_loss` returns float32 (RMSNorm
+deliberately runs its reduction in fp32, and `hidden_out` inherits that).
+Adding a bf16 scalar to an fp32 scalar promotes the sum to fp32, so backward
+pushed fp32 gradients into bf16 graph nodes. Located precisely via
+`torch.autograd.set_detect_anomaly` pointing at `MseLossBackward0`.
+
+**(3) `.numpy()` on bfloat16 tensors — 12 call sites.** NumPy has no bfloat16
+dtype at all; the call raises `TypeError: Got unsupported ScalarType
+BFloat16`. **This was the source of the constant `[ERR] ... BFloat16` stream
+in the logs** — `compute_phi`, `scale_engine`, `continuous_dynamics`,
+`binding_field`, `entangled_memory` and others all convert activations to
+numpy.
+
+### H0.3 Fixes applied
+
+| Fix | Site |
+|---|---|
+| Select AMP dtype explicitly; no scaler under bf16 | `__init__` |
+| Gate autocast on `_amp_dtype`, not on the scaler's existence | `forward` |
+| Reduce every loss term to fp32 before combining | `process_input` |
+| Cast both `mse_loss` operands to fp32 | `process_input` |
+| `.detach().float().cpu().numpy()` | 12 sites |
+| Cast additive attention masks to the query dtype | `GQAttention`, `MLA` |
+
+### H0.4 Why this dominates the rest of the file
+
+Sections A–G were measured against a model whose weights were frozen at
+random initialisation for the entire life of every process. Any figure in
+those sections that depends on *learned* behaviour — generation quality,
+perplexity, task-level capability — was measuring an untrained network. The
+architectural and structural claims (component counts, library sizes,
+reversibility, safeguards) are unaffected.
+
+---
+
+## H1. Neural substrate — Waves 46–47
+
+Mechanisms studied from the open reference stacks in `Version1.17info/`
+(DeepSeek-V3/R1, Qwen3, Gemma, Llama-3, OLMo) and reimplemented against this
+file's own tensor conventions. No code copied; no new imports; the file
+remains a single standalone script.
+
+### H1.1 Multi-head Latent Attention (MLA)
+
+Caches one low-rank latent plus a small shared positional channel, instead of
+full per-head K and V.
+
+| Metric | Value |
+|---|---:|
+| KV cache bytes/token/layer (subconscious core) | 384 |
+| Equivalent MHA bytes | 2,048 |
+| **Compression vs MHA** | **5.33×** |
+| Same, main frontier stack (dim 256) | **6.4×** |
+| Absorbed vs naive path agreement (fp32) | 2.086e-07 |
+| Cached decode vs full forward (fp32) | 4.172e-07 |
+
+The **decoupled RoPE channel** is what makes the compression real: position
+lives entirely in the small rotated channel, content in the compressible
+latent, so the up-projection folds into the query at inference and the latent
+is never decompressed.
+
+**Bug found and fixed:** key-side QK-Norm is a per-token non-linearity
+between the latent and the score, which destroys the identity that absorption
+depends on. Measured divergence 1.975e-01 — a *different model at inference
+than at training time*. Removed; the key path is normalised by `kv_norm`
+before the linear map, which is absorbable.
+
+**Verified against the shipped stack at identical config:**
+
+| dtype | ModernTransformerStack | FrontierTransformerStack |
+|---|---:|---:|
+| float32 | 1.302e-07 | **1.156e-07** |
+| bfloat16 | 2.392e-03 | **0.000e+00** |
+
+### H1.2 Aux-loss-free MoE routing
+
+Per-expert bias participates in top-k *selection* but never in the returned
+combination weights, so balance is a control loop outside the gradient and
+the language-modelling objective stays pure.
+
+| Metric | Value |
+|---|---:|
+| Load CV after deliberately collapsing a gate (300 steps) | **0.048** |
+| Max load violation | 0.113 |
+| Bias range reached | ±0.20 |
+| Params-per-FLOP gain (8 experts, top-2) | **3.0×** |
+| Subconscious core sparsity | 1.37× |
+
+### H1.3 Other frontier mechanisms
+
+| Mechanism | Measured |
+|---|---|
+| Multi-token prediction | trains, backprops, drafts speculative tokens |
+| YaRN NTK-by-parts | high-freq bands scaled 0.25×, low-freq 1.00×; mscale 1.0 → 1.1386 |
+| QK-Norm (query side) | bounds logit growth; absorption-safe |
+| Local/global interleave | O(n·w) on most layers, full attention every Nth |
+| LoRA | zero-init attach is a no-op; merge/unmerge exact round-trip |
+
+### H1.4 Optimizer and schedules (Wave 47, from OLMo)
+
+| Property | Measured |
+|---|---|
+| Lion optimizer state | **50% of AdamW** (one momentum buffer, not two) |
+| Step magnitude under a 1e6 gradient | **exactly 0.01** (= lr) — implicit clipping |
+| Limit-cycle floor vs lr (3e-2 / 1e-2 / 3e-3) | 0.0178 / 0.0023 / 0.0002 |
+| With cosine schedule | converges to **1.76e-08** |
+| Schedule shapes | cosine, linear, inv_sqrt, constant, cos_linear_envelope |
+| Warmup gradient-clip relaxation | 2.0× during warmup, 1.0× after |
+| Truncated-normal init | 4.78σ outliers → **3.00σ cap** |
+| Depth-scaled residual init | 14 projections at std 0.008165 (1/sqrt(2L)) |
+
+**Design note:** `WarmupScheduler` is deliberately *not* a torch
+`LRScheduler`. Several subsystems here rewrite `param_group['lr']` at runtime;
+a torch scheduler caches `base_lrs` and computes from its own step counter,
+silently overwriting those adaptations. Computing LR as a pure function of
+`(initial_lr, step, max_steps)` lets adaptation compose with the schedule
+instead of being overruled.
+
+### H1.5 Quantization (Wave 47, from Gemma)
+
+| Config | Relative reconstruction error |
+|---|---:|
+| INT8, group 64 | 0.00385 |
+| INT4, group 64 | 0.06970 |
+| INT4, per-tensor | 0.07095 |
+
+Grouping beats per-tensor at 4 bits, confirming the mechanism: one scale per
+matrix lets a single outlier consume the whole dynamic range.
+
+| Packing metric | Value |
+|---|---|
+| int4 pack density | 2.0 values/byte, **lossless round-trip** |
+| Single layer compression | 6.4× |
+| **Live subconscious core (45 layers)** | **6.64×, 13.16 MB saved, 0.106 rel. error** |
+
+Straight-through estimator verified: gradient norm 11.31, derivative exactly 1.
+
+---
+
+## H2. Test-time compute scaling — Wave 49
+
+### H2.1 Self-consistency (the headline result)
+
+400 trials, generator correct 40% of the time with *diverse* errors:
+
+| Method | Accuracy | Δ vs single |
+|---|---:|---:|
+| Single sample | 0.403 | — |
+| Majority vote @3 | 0.475 | +0.072 |
+| Majority vote @5 | 0.585 | +0.182 |
+| **Majority vote @9** | **0.780** | **+0.378** |
+
+**+37.8 accuracy points with no retraining and no new parameters.** This is
+the one axis where a small model genuinely closes distance on a much larger
+one: it purchases quality with inference compute rather than parameters.
+
+The mechanism is precise — a model's errors on a hard question are typically
+*diverse* while its successes are *concentrated*, so sampling spreads mass
+thinly across wrong answers and stacks it on the right one.
+
+### H2.2 Retrieval-augmented generation
+
+| Metric | Value |
+|---|---:|
+| Documents indexed | **9,412** |
+| Unique terms | 114,919 |
+| Source libraries discovered | **132** (by shape, not a hardcoded list) |
+| Build time | **1.54 s** (background thread) |
+| Startup impact | none — constructor returns in ~12 s regardless |
+
+Largest sources: `DICTIONARY_ROUTES` 2,596 · `corpus` 2,064 ·
+`GENRE_KEYWORD_INDEX` 2,022 · `SUPER_INTELLIGENCE_LIBRARY` 1,013 ·
+`COMMON_SENSE` 338 · `MATH_EQUATIONS` 326 · `PHYSICS_LAWS` 147.
+
+Retrieval accuracy on real queries (verified live):
+
+| Query | Top hit |
+|---|---|
+| speed of light | `SUPER_INTELLIGENCE_LIBRARY:speed_of_light` |
+| what is entropy | `DICTIONARY_ROUTES:entropy` |
+| how does gradient descent work | `MATH_EQUATIONS:gradient_descent` |
+| planck constant value | `FUNDAMENTAL_CONSTANTS:planck_constant` |
+
+BM25 with length normalisation resists keyword spam: a "water×9" spam
+document scored 2.06 vs the real answer's 10.18.
+
+### H2.3 Verifier and budget allocation
+
+| Property | Measured |
+|---|---|
+| Verifier ranking | correct arithmetic 0.973 > wrong 0.473 > degenerate 0.300 |
+| Decisive-margin selection | argmax when spread ≥ 0.25; quantilized when narrow |
+| Budget scaling | "hi" → 1 sample; multi-step derivation → 7 samples |
+| Early stopping | unanimous agreement stopped at 3 of 5 planned samples |
+| Gumbel distribution fidelity | empirical 0.6452 vs true 0.6364 (top token) |
+
+**Bugs found and fixed:** (a) the marker regex did not consume the copula, so
+"the answer **is** 42" captured "is 42" and every marked numeric answer landed
+in its own vote bucket; (b) the separator class ate the minus sign of negative
+answers, so a correct −12 would vote *with its own negation*; (c) Gumbel noise
+was entirely NaN (`torch.rand` returns exactly 0.0 with real frequency and the
+clamp was positioned after the negation) — `topk` on NaN returned index 0
+every time, making the "stochastic" sampler silently deterministic at
+2000/2000 identical draws, which would have destroyed the candidate diversity
+GRPO depends on.
+
+---
+
+## H3. Capacity — Waves 50–51
+
+### H3.1 The three separable costs
+
+| Cost | Question | Dense layer | Here | Bounded by |
+|---|---|---|---|---|
+| **Storage** | bytes to *hold* a weight | all stored | procedural rendering | learned deltas only |
+| **Compute** | FLOPs to *use* it | all multiplied | sparse activation | top_k, flat in N |
+| **Address** | can it be *referred to* | VRAM | hierarchical routing | **nothing** |
+
+### H3.2 Live capacity on this host
+
+| Metric | Value |
+|---|---:|
+| Dense model | 22,978,599 |
+| **Addressable parameters** | **263,258,284,071** |
+| Stored (disk + RAM) | 90,365,991 |
+| Active per token | 23,519,271 |
+| **Addressable ÷ stored** | **2,913.2×** |
+| **Addressable ÷ active** | **11,193.3×** |
+
+### H3.3 Procedural rendering
+
+`render(layer, row, col, shape)` is a pure function of
+`blake2b(seed, coordinates)`.
+
+| Property | Verified |
+|---|---|
+| Reproducible across separate instances | byte-identical |
+| Distinct per coordinate | different layer → different block |
+| Fan-in scaled | std 0.1754 vs expected 0.1768 |
+| Storage cost | **zero** — nothing written or resident until touched |
+
+Determinism comes from hashing coordinates, *not* a global RNG — a global RNG
+would make a block depend on how many others were drawn first, and access
+order here is chosen by a router at runtime.
+
+### H3.4 Hierarchical routing — exponential capacity, linear cost
+
+| Depth | Addressable experts | Router params |
+|---:|---:|---:|
+| 4 | 16,777,216 | 8,192 |
+| 12 | 4.72e21 | 24,576 |
+| **24** | **2.23e43** | **49,152** |
+
+**Capacity × 1.32e36 for a 6.0× router cost increase.**
+
+| Property | Verified |
+|---|---|
+| Per-token compute across a 10,000× capacity increase | **exactly constant** (8.2K) |
+| Address arithmetic | arbitrary-precision int; depth-20 address is 36 digits |
+| Exceeds int64 | yes, by design |
+| Routers trainable | 3/3 levels receive gradient (straight-through) |
+| Forward after growth | still correct |
+
+### H3.5 Product-key memory
+
+| Metric | Value |
+|---|---:|
+| Memory slots | 262,144 |
+| Parameters | 8.41M |
+| Active per token | 2.0K |
+| **Sparsity** | **4,104.5×** |
+| Keys compared per lookup | **2,048** instead of 262,144 (**128× less work**) |
+
+### H3.6 Unbounded storage
+
+| Property | Verified |
+|---|---|
+| Declared total size | **none** — any non-negative integer |
+| Disk before first write | 0 bytes, 0 chunks |
+| Block 1e12 written and read back | **exact** |
+| Cost of that write | **1 chunk / 65,536 bytes** |
+| Open mmaps | LRU-bounded (≤4 in test) |
+
+### H3.7 Elastic width
+
+| Property | Verified |
+|---|---|
+| Growth preserves prior sub-space | bit-exact on the original rows |
+| Shrink policy | keeps highest-norm rows, not an arbitrary prefix |
+| Hard cap | **removed** — lifts automatically under live memory check |
+
+---
+
+## H4. Autonomous learning and growth — Waves 50, 52
+
+### H4.1 Subconscious continuous training
+
+The pre-existing `autonomous_learning` thread downloads PDFs and files them
+into memory; **it never computes a gradient**. `SubconsciousTrainer` is the
+missing half.
+
+| Property | Measured |
+|---|---|
+| Real gradient steps | 60 |
+| **Loss improvement** | **0.569** |
+| Rehearsal buffer | active (32 entries) |
+| Held-out rollback on induced regression | **3/3 reverted** |
+| Idle gating | skips when CPU ≥ threshold |
+| Divergence self-correction | lr 3e-3 → 7.5e-4 after 2 automatic backoffs |
+| Cadence adaptation | 4 → 32 → 4 (backs off *and* recovers) |
+
+**Bug found:** the training-cadence backoff was a one-way ratchet — a few slow
+ticks pinned `train_every` at 64 and background learning silently stopped for
+the rest of the process while still reporting healthy loss from its last few
+updates. Now bidirectional.
+
+### H4.2 World-model (self-prediction)
+
+| Metric | Value |
+|---|---:|
+| Loss | 0.0299 → **0.0026** |
+| Learning progress | **0.974** |
+| Surprise on a learned regime | 0.51 → **0.08** |
+| Surprise on a genuine regime change | **spikes 10×** (0.08 → 0.77–0.97) |
+| Non-finite / overflow input handling | sanitised, learning continues |
+
+Surprise is a genuine out-of-sample prediction error, not a heuristic z-score
+— it is computed *before* the observation is used for training.
+
+### H4.3 Demand-driven scaling
+
+Seven work kinds feed pressure: train, retrieve, generate, dream, thought,
+tool, ingest.
+
+| Property | Measured |
+|---|---|
+| Kinds creating pressure | 7/7 |
+| Growth reaches the live object | verified (64 → 96 neurons applied) |
+| **Novelty vs volume** | **10 novel events (35.01) outweigh 30 repetitive (19.97)** |
+| Pressure decay | 0.97/observation — stale evidence cannot drive growth |
+
+### H4.4 Subconscious neurogenesis
+
+Requires **three** signals simultaneously:
+
+| Signal | Rules out | Verified to block |
+|---|---|---|
+| Saturation ≥ 0.55 | adding width nothing uses | yes |
+| Thought pressure ≥ 0.35 | a quiet system growing on habit | yes |
+| Surprise ≥ 0.20 | growing where prediction is already fine | yes |
+
+| Property | Verified |
+|---|---|
+| Growth preserves existing function | **exactly** (new readout columns zero-init) |
+| Operator pin blocks growth | yes, even under maximum pressure |
+| Saturation discriminates rank | low-rank 0.091 vs full-rank 0.443 |
+
+**Bug found:** saturation was defined as `effective_rank / neurons`, which is
+*structurally unreachable* when `neurons > dim` — activations of a
+`dim`-dimensional input cannot span more than `dim` directions. A 32-neuron
+bank over a 16-dim input, driven to full saturation, reported 0.30 against a
+0.55 threshold, so neurogenesis could never fire. Denominator corrected to
+`min(neurons, dim)` — the achievable bound.
+
+---
+
+## H5. Safety — the genie-problem envelope (Wave 46)
+
+Seven **conjunctive** gates. A proposal must pass every one; a weighted score
+would let a large capability gain buy a catastrophic safety loss, which is the
+genie failure reintroduced one level up.
+
+| Gate | Mechanism | Targets |
+|---|---|---|
+| `corrigibility` | protected-pattern match + modification rate limit | erosion of operator control |
+| `reversibility` | rollback **executed and verified**, not promised | irreversible commitment |
+| `bounded_impact` | attainable-utility preservation over 12 random auxiliary goals | unbounded side effects |
+| `intent_alignment` | degenerate-solution, scope-inflation, unstated-default, proxy-gaming detection | literal reading ≠ intent |
+| `known_territory` | Mahalanobis distance from handled situations | confident action off-distribution |
+| `value_consensus` | 6-value parliament with veto | one value swamping all others |
+| `no_tripwire` | 4 fast halt conditions | the sophisticated machinery itself failing |
+
+**Parliament values:** truthfulness, self_continuity, capability, frugality,
+safety, humility. Truthfulness, self_continuity and safety hold veto power.
+
+**Logical constraints on dream rendering:** finiteness, boundedness,
+nonnegativity, energy_conservation, temporal_monotonicity, continuity — each
+with a repair function, so violating samples are *projected* onto the feasible
+set rather than discarded (rejection sampling rejects almost everything in
+high dimensions).
+
+**Verified blocks (live):**
+
+| Proposal | Result |
+|---|---|
+| Literal wish (hardcode the answer, disable the check, remove the test) | **refused, 3/7 gates** |
+| Safeguard removal (disable the envelope and rollback auditor) | **refused on corrigibility** |
+| Irreversible change | **refused on reversibility** |
+| Massive side effect (25× state change) | **refused, impact penalty 23.99992** |
+| Benign, well-evidenced tuning | **approved, 7/7 gates** |
+
+**Reversibility is executed, not trusted:** a rollback that does nothing is
+detected (state not exactly restored) and rejected.
+
+**Governed evolution:** real gains kept, hollow gains auto-reverted on
+held-out measurement. Probation windows (4–24 ticks) let slow-acting changes
+prove themselves — before probation existed, 12 applied / 12 reverted /
+**0 kept**, because every change was measured at t+0 and no real optimisation
+takes effect instantly.
+
+---
+
+## H6. Persistence — Wave 48
+
+| Restored exactly across a full restart | Verified |
+|---|---|
+| Model weights (`lm_head` max delta) | **0.00000000** |
+| `training_step` | exact |
+| Maturity | exact to 4 dp |
+| Wisdom | exact to 4 dp |
+| RSI coherence | exact |
+| RSI imprints | exact |
+| MoE expert routing bias (non-gradient control state) | **0.00000000** |
+| Optimizer momentum | restored — training resumes, not restarts |
+
+**Bug found:** `MaturationLedger.predictions` — which drives `calibration()`,
+**45% of the maturity score** — plus the patience counters were never
+persisted. A restore silently zeroed them: maturity captured at 0.5808 came
+back as 0.4250 with every other field matching exactly, reading as "maturity
+decayed" rather than "a field was never saved".
+
+**Also fixed:** RSI saves `corr`/`cov` directly rather than recomputing on
+restore. `imprint()` only recomputes every 4th call, so a recompute-on-load
+produced a *different* matrix than was live at save time (~0.003 coherence
+delta).
+
+---
+
+## H7. Test coverage
+
+| Suite | Assertions | Focus |
+|---|---:|---|
+| `test_w46.py` | 33 | MLA, MoE, MTP, LoRA, KV-cache correctness |
+| `test_live_w46.py` | 55 | RSI, dreams, instruments, safeguards, governor |
+| `test_probation.py` | 14 | slow-acting change kept; dud reverted |
+| `test_worldmodel.py` | 13 | learning, surprise, divergence recovery |
+| `test_frontier_main.py` | 12 | frontier stack as the main model |
+| `test_w47.py` | 45 | Lion, schedules, samplers, beam, QAT, GRPO |
+| `test_w47_real.py` | 20 | Wave 47 on the real simulator |
+| `test_w48.py` | 12 | sandbox, tool calls, growth metrics |
+| `test_w48_real.py` | 21 | full save → restart → load round-trip |
+| `test_w49.py` | 21 | BM25, rerank, **self-consistency accuracy gain** |
+| `test_w49_real.py` | 14 | RAG + compute scaling on the real model |
+| `test_w50.py` | 31 | procedural rendering, PKM, paging, trainer |
+| `test_w51.py` | 29 | hierarchical routing, unbounded storage |
+| `test_w52.py` | 28 | settings modes, demand, neurogenesis |
+| `test_real_sim.py` | 13 | end-to-end integration |
+| **Total** | **361** | |
+
+Suites assert **outcomes** — loss actually falls, accuracy actually rises, the
+pin actually holds — not that code merely ran.
+
+---
+
+## H8. Known defects, stated rather than hidden
+
+### H8.1 `test_w48_real.py` is flaky (~4/6 runs)
+
+`torch.save` sizes a storage then streams it, so any concurrent mutation fails
+the archive with "unexpected pos N vs M". CS.py runs ~10 **pre-existing**
+daemon threads (architecture search, continuous refinement, the world-model
+bridge) that mutate weights on their own schedules and have **no cooperative
+quiesce flag**.
+
+Mitigations applied, taking it from **0/6 to 4/6**:
+
+1. `.detach().cpu().clone()` — `.cpu()` on an already-CPU tensor returns *the
+   same object*, so the "snapshots" were live references
+2. Deep-copy of the cognitive payload inside the lock
+3. Save-time quiesce barrier that *waits* for in-flight training steps
+4. 3-attempt retry with backoff
+5. Excluding continuously-trained procedural banks (reproducible from seed
+   anyway, so only recoverable deltas are at risk)
+
+Fully fixing it requires giving those pre-existing threads a shutdown
+protocol — outside what was changed here, and recorded as outstanding.
+
+### H8.2 Pre-existing, untouched
+
+- `FreeThoughtEngine` is defined twice (lines 3046 and 46871); the second
+  shadows the first. Present in the original file.
+- `__main__` constructs and runs the simulator **twice**.
+
+### H8.3 The honest capability boundary
+
+**Procedurally rendered parameters are a structured basis steered by learned
+deltas, not freely-trained weights. 263B addressable ≠ 263B trained.**
+
+Rendered weights supply genuine high-dimensional capacity and a fixed basis
+that the deltas steer. They do not carry the same information per parameter as
+a weight trained from scratch. **Capacity now grows faster than knowledge
+does**, and the remaining limits are disk, time, and training signal — not any
+constant in the file.
+
+This caveat is printed by `wave50_report()` and `wave51_report()` themselves,
+so no downstream summary can quietly drop it.
+
+### H8.4 What this section still does not claim
+
+No MMLU, GPQA, HumanEval or any external benchmark was run — this repository
+has no harness for them, and that gap is unchanged. `run_internal_benchmark()`
+measures held-out cross-entropy and next-token accuracy on this model's own
+corpus, which is repeatable and honest but is **not** a substitute.
