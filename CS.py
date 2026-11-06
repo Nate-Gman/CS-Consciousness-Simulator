@@ -138,6 +138,7 @@ import multiprocessing
 import mmap
 import socket
 import heapq
+import queue
 from bs4 import BeautifulSoup  # For parsing web pages to find PDF links
 import torch.nn.functional as F  # Used by GlobalWorkspace
 torch.set_float32_matmul_precision('high')  # Ampere: TF32 for faster float32 matmul
@@ -258,17 +259,112 @@ def _get_cs_ref_toolkit():
     return _CS_REF_TOOLKIT
 
 
-def _load_whisper_model(model_name="tiny.en"):
-    """Lazy-load a Whisper STT model. Downloads ~72MB once on first use."""
+def _load_whisper_model(model_name=None):
+    """Lazy-load a Whisper STT model. Downloads once on first use.
+
+    Model name comes from CONFIG['voice_stt_model'] (default 'base.en').
+    'tiny.en' is fastest but error-prone; 'base.en' is a good CPU
+    accuracy/speed balance; 'small.en' is more accurate but slower.
+    """
     global _WHISPER_MODEL
+    if model_name is None:
+        model_name = CONFIG.get('voice_stt_model', 'base.en')
     if _WHISPER_MODEL is None and HAS_WHISPER:
         try:
-            print(f"[STT] Loading Whisper model '{model_name}' (one-time download ~39MB)...")
+            print(f"[STT] Loading Whisper model '{model_name}' (one-time download)...")
             _WHISPER_MODEL = whisper.load_model(model_name)
         except Exception as e:
             print(f"WARNING: Failed to load Whisper model: {e}")
             return None
     return _WHISPER_MODEL
+
+
+# =============================================================================
+# SERIALIZED TEXT-TO-SPEECH
+# One pyttsx3 engine on one daemon thread so replies can never overlap in the
+# audio output.  _TTS_SPEAKING / _TTS_LAST_END let the call-mode mic mute
+# itself while the AI talks — without this the AI transcribes its own voice.
+# =============================================================================
+_TTS_QUEUE = queue.Queue()
+_TTS_SPEAKING = threading.Event()
+_TTS_ENGINE = None
+_TTS_LAST_END = 0.0            # time.time() when the last utterance finished
+_TTS_WORKER = None
+_TTS_BROKEN = False
+_TTS_STOP = object()           # sentinel: cut whatever is currently playing
+
+
+def _tts_queue_worker():
+    global _TTS_ENGINE, _TTS_LAST_END, _TTS_BROKEN
+    try:
+        _TTS_ENGINE = pyttsx3.init()
+    except Exception as e:
+        print(f"TTS engine init failed: {e}")
+        _TTS_ENGINE = None
+        _TTS_BROKEN = True
+        return
+    while True:
+        item = _TTS_QUEUE.get()
+        if item is _TTS_STOP:
+            try:
+                _TTS_ENGINE.stop()
+            except Exception:
+                pass
+            _TTS_SPEAKING.clear()
+            _TTS_LAST_END = time.time()
+            continue
+        _TTS_SPEAKING.set()
+        try:
+            _TTS_ENGINE.say(item)
+            _TTS_ENGINE.runAndWait()
+        except Exception as e:
+            print(f"TTS error: {e}")
+        finally:
+            _TTS_LAST_END = time.time()
+            if _TTS_QUEUE.empty():
+                _TTS_SPEAKING.clear()
+
+
+def _voice_speak_async(text, max_chars=500):
+    """Queue `text` for serialized text-to-speech playback (non-blocking)."""
+    global _TTS_WORKER
+    if _TTS_BROKEN or not (HAS_TTS and CONFIG.get('voice_enabled', False)):
+        return
+    text = (text or '').strip()[:max_chars]
+    if not text:
+        return
+    if _TTS_WORKER is None or not _TTS_WORKER.is_alive():
+        _TTS_WORKER = threading.Thread(target=_tts_queue_worker, daemon=True)
+        _TTS_WORKER.start()
+    _TTS_QUEUE.put(text)
+
+
+def _voice_stop_speaking():
+    """Hang-up helper: drop queued speech and cut whatever is playing."""
+    try:
+        while True:
+            _TTS_QUEUE.get_nowait()
+    except queue.Empty:
+        pass
+    engine = _TTS_ENGINE
+    if engine is not None:
+        try:
+            engine.stop()
+        except Exception:
+            pass
+    _TTS_QUEUE.put(_TTS_STOP)
+    _TTS_SPEAKING.clear()
+
+
+# Whisper on noise/silence loves to hallucinate these — dropping them keeps
+# phantom phrases from being sent to the AI as real turns.
+_STT_HALLUCINATIONS = frozenset({
+    'thank you', 'thanks', 'thank you for watching', 'thanks for watching',
+    'thank you so much', 'bye', 'goodbye', 'bye bye', 'you', 'the end',
+    'music', 'applause', 'silence', 'laughter', 'subscribe',
+    'subtitles by', 'translated by', 'captions by', 'amara org',
+    'mm hmm', 'mhm', 'uh', 'um', 'hmm', 'oh', 'ah',
+})
 
 
 # =============================================================================
@@ -953,6 +1049,11 @@ CONFIG = {
     "screenshot_interval": 15,
     "os_control_enabled": False,
     "voice_enabled": True,
+    # --- Voice call (AI Chat -> Start Call) ---
+    "voice_stt_model": "base.en",   # whisper model for mic STT: tiny.en | base.en | small.en
+    "voice_input_device": None,     # sounddevice input index/name; None = default mic
+    "voice_vad_threshold": 0.012,   # mic RMS energy that counts as speech
+    "voice_vad_silence": 1.0,       # seconds of trailing silence that end an utterance
     # Performance optimizations
     # Disabled on this host: gradient checkpointing trades compute for memory,
     # but a 113M model on a 17.1 GB GPU fits with activations << 1 GB. It also
@@ -12684,14 +12785,30 @@ def _safe_scalar(fn, default=0.0):
 
 
 class _VoiceChatManager:
-    """Voice I/O helper for AI Chat: microphone -> Whisper STT -> AI -> TTS."""
+    """Voice I/O helper for AI Chat: microphone -> Whisper STT -> AI -> TTS.
+
+    Call mode is a serialized half-duplex loop:
+      mic -> energy VAD -> Whisper -> queued chat send -> wait for the reply
+      -> serialized TTS playback -> mic re-opens.
+
+    While a turn is in flight or the AI is speaking, captured audio is
+    dropped so the assistant never transcribes (and answers) its own voice.
+    """
+
+    _MIN_UTTERANCE_SEC = 0.40    # shorter bursts are noise, not turns
+    _MAX_UTTERANCE_SEC = 25.0    # force-flush so a turn can't run on forever
+    _PREROLL_SEC = 0.35          # keeps utterance onsets from being clipped
+    _TTS_GRACE_SEC = 0.45        # speaker ring-off after TTS before re-arming
 
     def __init__(self, dashboard):
         self.dash = dashboard
         self._stop = threading.Event()
         self._ptt_stop = threading.Event()
+        self._suppress = threading.Event()   # mic gate while a turn is in flight
         self._ptt_thread = None
         self._vad_thread = None
+        self._dispatch_thread = None
+        self._send_q = queue.Queue()
         self._lock = threading.Lock()
         self._state = 'idle'
         self._last_error = None
@@ -12731,6 +12848,8 @@ class _VoiceChatManager:
     def start_ptt(self):
         if self._ptt_thread is not None and self._ptt_thread.is_alive():
             return
+        if self._vad_thread is not None and self._vad_thread.is_alive():
+            return  # call mode already owns the mic
         if not self._is_ready():
             self.dash._append_chat(f"[system] {self.status_text()}.\n", 'system')
             return
@@ -12779,71 +12898,146 @@ class _VoiceChatManager:
             self.dash._append_chat(f"[system] {self.status_text()}.\n", 'system')
             return
         self._stop.clear()
+        self._suppress.clear()
+        try:
+            while True:
+                self._send_q.get_nowait()
+        except queue.Empty:
+            pass
         self._vad_thread = threading.Thread(target=self._vad_loop, daemon=True)
         self._vad_thread.start()
+        self._ensure_dispatcher()
 
     def stop_call(self):
         self._stop.set()
+        self._suppress.set()
         self._vad_thread = None
+        _voice_stop_speaking()
         self._set_state('idle')
+
+    def _mic_gated(self):
+        """True while the mic must ignore audio: TTS is playing, a chat turn
+        is in-flight, or we're inside the speaker ring-off grace window after
+        TTS ends. Without this the AI transcribes its own voice."""
+        if _TTS_SPEAKING.is_set() or self._suppress.is_set():
+            return True
+        return (time.time() - _TTS_LAST_END) < self._TTS_GRACE_SEC
+
+    def _ensure_dispatcher(self):
+        with self._lock:
+            dead = self._dispatch_thread is None or not self._dispatch_thread.is_alive()
+            if dead and not self._stop.is_set():
+                self._dispatch_thread = threading.Thread(target=self._dispatch_loop,
+                                                         daemon=True)
+                self._dispatch_thread.start()
 
     def _vad_loop(self):
         import sounddevice as sd
         sample_rate = 16000
         block_size = 1024
+        frame_sec = block_size / sample_rate
         q = deque()
         def callback(indata, frames, time_info, status):
             q.append(indata[:, 0].astype(np.float32).copy())
         try:
             stream = sd.InputStream(samplerate=sample_rate, blocksize=block_size,
-                                    channels=1, dtype=np.float32, callback=callback)
+                                    channels=1, dtype=np.float32, callback=callback,
+                                    device=CONFIG.get('voice_input_device'))
         except Exception as e:
             self._set_state('error')
             self.dash.win.after(0, lambda: self.dash._append_chat(
                 f"[system] Microphone error: {e}\n", 'system'))
             return
         stream.start()
+        energy_threshold = float(CONFIG.get('voice_vad_threshold', 0.012))
+        silence_required = float(CONFIG.get('voice_vad_silence', 1.0))
+        preroll = deque(maxlen=int(self._PREROLL_SEC / frame_sec) + 1)
         buffer = []
-        state = 'idle'
+        voiced = False
         silence_sec = 0.0
-        energy_threshold = 0.015
-        silence_required = 1.2
+        self._set_state('listening')
         try:
             while not self._stop.is_set():
                 while q and not self._stop.is_set():
                     frame = q.popleft()
                     rms = float(np.sqrt(np.mean(frame ** 2)))
-                    if state == 'idle':
+                    if self._mic_gated():
+                        # AI is talking or a turn is in flight — drop the
+                        # audio so the assistant never hears itself.
+                        preroll.clear()
+                        buffer = []
+                        voiced = False
+                        silence_sec = 0.0
+                        continue
+                    if not voiced:
+                        preroll.append(frame)
                         if rms > energy_threshold:
-                            state = 'listening'
-                            buffer = [frame]
-                            self._set_state('listening')
+                            voiced = True
+                            buffer = list(preroll)   # keep onset, don't clip
+                            preroll.clear()
                             silence_sec = 0.0
-                    elif state == 'listening':
+                            self._set_state('listening')
+                    else:
                         buffer.append(frame)
                         if rms > energy_threshold:
                             silence_sec = 0.0
                         else:
-                            silence_sec += len(frame) / sample_rate
-                            if silence_sec >= silence_required:
-                                audio = np.concatenate(buffer)
-                                state = 'processing'
-                                self._set_state('processing')
+                            silence_sec += frame_sec
+                        dur = len(buffer) * frame_sec
+                        if silence_sec >= silence_required or dur >= self._MAX_UTTERANCE_SEC:
+                            audio = np.concatenate(buffer)
+                            buffer = []
+                            voiced = False
+                            silence_sec = 0.0
+                            if dur >= self._MIN_UTTERANCE_SEC:
+                                self._set_state('transcribing')
                                 threading.Thread(target=self._process_vad_audio,
                                                  args=(audio, sample_rate), daemon=True).start()
-                                buffer = []
-                                silence_sec = 0.0
-                                state = 'idle'
                 time.sleep(0.05)
         finally:
-            stream.stop()
-            stream.close()
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
         self._set_state('idle')
 
     def _process_vad_audio(self, audio, sample_rate):
         text = self._transcribe(audio, sample_rate)
+        if self._stop.is_set():
+            return
         if text:
-            self.dash.win.after(0, lambda: self.dash._send_voice_text(text))
+            self._send_q.put(text)
+            self._ensure_dispatcher()
+        elif self.state == 'transcribing':
+            self._set_state('listening')
+
+    def _dispatch_loop(self):
+        """Serialize utterance -> send -> reply -> TTS turns, one at a time."""
+        while not self._stop.is_set():
+            try:
+                text = self._send_q.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            if self._stop.is_set():
+                return
+            done = threading.Event()
+            self._suppress.set()             # gate the mic for the whole turn
+            self._set_state('thinking')
+            self.dash.win.after(0, lambda t=text, d=done:
+                                self.dash._send_voice_text(t, done_cb=d.set))
+            while not done.wait(0.25):
+                if self._stop.is_set():
+                    return
+            # Let the spoken reply finish before the mic re-opens.
+            while not self._stop.is_set() and (
+                    _TTS_SPEAKING.is_set() or not _TTS_QUEUE.empty()):
+                self._set_state('speaking')
+                time.sleep(0.1)
+            if self._stop.is_set():
+                return
+            self._suppress.clear()
+            self._set_state('listening')
 
     # ---------------------------------------------------------------
     # STT
@@ -12854,9 +13048,35 @@ class _VoiceChatManager:
             return ""
         try:
             # Whisper expects float32, 16kHz, [-1, 1]
-            wav = audio.astype(np.float32)
-            result = model.transcribe(wav, fp16=False)
-            return result.get("text", "").strip()
+            wav = np.asarray(audio, dtype=np.float32)
+            if wav.size < int(sample_rate * 0.30):
+                return ""                                  # too short to be a turn
+            rms = float(np.sqrt(np.mean(wav ** 2)))
+            if rms < 0.004:
+                return ""                                  # effectively silence
+            peak = float(np.max(np.abs(wav)))
+            if 0.0 < peak < 0.15:
+                wav = wav * np.float32(0.5 / peak)         # lift quiet mics
+            result = model.transcribe(
+                wav, fp16=False, language='en', temperature=0.0,
+                condition_on_previous_text=False, no_speech_threshold=0.6)
+            text = (result.get('text') or '').strip()
+            if not text:
+                return ""
+            segs = result.get('segments') or []
+            if segs:
+                dur = sum(max(float(s.get('end', 0) - s.get('start', 0)), 1e-3)
+                          for s in segs)
+                avg_logprob = sum(float(s.get('avg_logprob', -1.0)) *
+                                  max(float(s.get('end', 0) - s.get('start', 0)), 1e-3)
+                                  for s in segs) / dur
+                max_nospeech = max(float(s.get('no_speech_prob', 0.0)) for s in segs)
+                if avg_logprob < -1.0 or max_nospeech > 0.75:
+                    return ""                              # low-confidence decode
+            norm = re.sub(r'[^a-z0-9]+', ' ', text.lower()).strip()
+            if len(norm) < 2 or norm in _STT_HALLUCINATIONS:
+                return ""                                  # noise hallucination
+            return text
         except Exception as e:
             self._last_error = str(e)
             self.dash.win.after(0, lambda: self.dash._append_chat(
@@ -14015,9 +14235,11 @@ class MonitoringDashboard:
     # ================================================================
     #  CHAT LOGIC
     # ================================================================
-    def _send_chat(self):
+    def _send_chat(self, done_cb=None):
         text = self._chat_input.get().strip()
         if not text:
+            if done_cb is not None:
+                done_cb()
             return
         self._chat_input.delete(0, tk.END)
         mode = self._chat_mode.get()
@@ -14107,6 +14329,12 @@ class MonitoringDashboard:
                 _err = str(e)
                 self.win.after(0, lambda: self._append_chat(
                     f"[{timestamp}] ERROR: {_err}\n", 'system'))
+            finally:
+                if done_cb is not None:
+                    try:
+                        done_cb()
+                    except Exception:
+                        pass
 
         threading.Thread(target=_chat_worker, daemon=True).start()
 
@@ -14124,15 +14352,17 @@ class MonitoringDashboard:
         except Exception:
             pass
 
-    def _send_voice_text(self, text):
+    def _send_voice_text(self, text, done_cb=None):
         """Inject STT text into the chat input and send it to the AI."""
         if not text:
+            if done_cb is not None:
+                done_cb()
             return
         self._chat_input.delete(0, tk.END)
         self._chat_input.insert(0, text)
         # Keep voice output enabled for the response
         self._chat_voice_enabled.set(True)
-        self._send_chat()
+        self._send_chat(done_cb=done_cb)
 
     def _toggle_voice_call(self):
         """Toggle continuous VAD call mode."""
@@ -14152,21 +14382,8 @@ class MonitoringDashboard:
                 pass
 
     def _speak_text(self, text):
-        """Speak arbitrary text via TTS in a background thread."""
-        if not (HAS_TTS and CONFIG.get('voice_enabled', False)):
-            return
-        def _tts_worker():
-            try:
-                engine = pyttsx3.init()
-                engine.say(text[:500])
-                engine.runAndWait()
-            except Exception as e:
-                try:
-                    self.win.after(0, lambda: self._append_chat(
-                        f"[system] TTS error: {e}\n", 'system'))
-                except Exception:
-                    pass
-        threading.Thread(target=_tts_worker, daemon=True).start()
+        """Speak arbitrary text via the serialized TTS queue (non-blocking)."""
+        _voice_speak_async(text)
 
     def _speak_last_ai_response(self):
         """Re-speak the last AI response via TTS if available."""
@@ -23791,14 +24008,7 @@ class ConsciousnessSimulator(nn.Module):
         output_text = self.alien_tokenizer.decode(generated_ids)
         self.generation_log.append({'prompt': prompt, 'output': output_text, 'ts': datetime.now().isoformat()})
         if speak and CONFIG.get("voice_enabled", False) and HAS_TTS:
-            def _tts_worker(text):
-                try:
-                    engine = pyttsx3.init()
-                    engine.say(text)
-                    engine.runAndWait()
-                except Exception as e:
-                    print(f"TTS error: {e}")
-            threading.Thread(target=_tts_worker, args=(output_text[:500],), daemon=True).start()
+            _voice_speak_async(output_text)
         return output_text
 
     def symbolic_query(self, prompt):
@@ -27177,12 +27387,14 @@ class ConsciousnessSimulator(nn.Module):
         self.text_input = Entry(ctrl, width=60, bg=BG_ENTRY, fg=FG,
                                 font=FONT_MONO, insertbackground=FG)
         self.text_input.pack(fill=tk.X, pady=2)
-        self.text_input.insert(0, "Enter text...")
+        self._init_placeholder(self.text_input, "Enter text...")
+        self.text_input.bind('<Return>', lambda e: self.analyze_input())
 
         self.url_input = Entry(ctrl, width=60, bg=BG_ENTRY, fg=FG,
                                font=FONT_MONO, insertbackground=FG)
         self.url_input.pack(fill=tk.X, pady=2)
-        self.url_input.insert(0, "Enter URL or YouTube link...")
+        self._init_placeholder(self.url_input, "Enter URL or YouTube link...")
+        self.url_input.bind('<Return>', lambda e: self.analyze_input())
 
         self.image_label = Label(ctrl, bg=BG)
         self.image_label.pack()
@@ -27380,6 +27592,65 @@ class ConsciousnessSimulator(nn.Module):
         self.update_gui_lists()
         self.root.after(5000, self.update_gui_lists)
         self.root.after(2000, self.update_consciousness_dashboard)
+
+    def _init_placeholder(self, entry, placeholder):
+        """Give an Entry greyed-out hint text that clears on focus and
+        restores when left empty. The placeholder is never treated as
+        real input (see _entry_text)."""
+        entry._placeholder = placeholder
+        entry._has_placeholder = True
+        entry.insert(0, placeholder)
+        entry.config(fg=FG_DIM)
+        entry.bind('<FocusIn>', lambda e, ent=entry: self._placeholder_focus_in(ent))
+        entry.bind('<FocusOut>', lambda e, ent=entry: self._placeholder_focus_out(ent))
+
+    def _placeholder_focus_in(self, entry):
+        if getattr(entry, '_has_placeholder', False):
+            entry.delete(0, tk.END)
+            entry.config(fg=FG)
+            entry._has_placeholder = False
+
+    def _placeholder_focus_out(self, entry):
+        if not entry.get():
+            entry.insert(0, entry._placeholder)
+            entry.config(fg=FG_DIM)
+            entry._has_placeholder = True
+
+    def _entry_text(self, entry):
+        """Return the real (non-placeholder) contents of an Entry."""
+        if getattr(entry, '_has_placeholder', False):
+            return ''
+        return entry.get().strip()
+
+    def _log_to_output(self, msg):
+        """Thread-safe write to the GUI output panel (falls back to stdout
+        when the GUI isn't up)."""
+        try:
+            if threading.current_thread() is threading.main_thread():
+                self.output_text.insert(tk.END, msg + "\n")
+            else:
+                self.root.after(0, lambda: self.output_text.insert(tk.END, msg + "\n"))
+        except Exception:
+            print(msg)
+
+    def fetch_url_text(self, url, max_chars=4000):
+        """Fetch a web page and extract readable text for ingestion.
+        Returns '' on any failure — never raises into the GUI thread."""
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        try:
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            response = self._web_session.get(url, headers=headers, timeout=15)
+            if response.status_code != 200:
+                print(f"URL fetch failed ({response.status_code}): {url}")
+                return ""
+            soup = BeautifulSoup(response.text, 'html.parser')
+            for tag in soup(['script', 'style', 'noscript']):
+                tag.decompose()
+            return soup.get_text(separator=' ', strip=True)[:max_chars]
+        except Exception as e:
+            print(f"URL fetch error: {e}")
+            return ""
 
     def _gui_add_neuron(self):
         """GUI wrapper: show dialog to pick entity, then add neuron group."""
@@ -27744,7 +28015,9 @@ class ConsciousnessSimulator(nn.Module):
 
     def load_image(self):
         file_path = filedialog.askopenfilename()
-        if file_path:
+        if not file_path:
+            return
+        try:
             img = Image.open(file_path)
             img = img.resize((200, 200))
             photo = ImageTk.PhotoImage(img)
@@ -27753,19 +28026,38 @@ class ConsciousnessSimulator(nn.Module):
             analysis = "Image loaded. Pattern score: 0.8 (matches energy patterns)"
             self.output_text.insert(tk.END, analysis + "\n")
             self.refine_data({"image_path": file_path}, datetime.now().isoformat(), verify=True)
+        except Exception as e:
+            self.output_text.insert(tk.END, f"Image load error: {e}\n")
 
     def analyze_input(self):
-        text = self.text_input.get()
-        url = self.url_input.get()
+        text = self._entry_text(self.text_input)
+        url = self._entry_text(self.url_input)
+        if not text and not url:
+            self.output_text.insert(tk.END, "Nothing to analyze — type text or paste a URL first.\n")
+            return
         self.output_text.insert(tk.END, "Analyzing...\n")
         def _analyze_worker():
             try:
-                if url and "youtube" in url.lower():
-                    analysis, score = self.analyze_youtube(url)
-                    self.root.after(0, lambda: self.output_text.insert(
-                        tk.END, f"YouTube Analysis: {analysis}\nScore: {score}\n"))
-                    self.refine_data(analysis, datetime.now().isoformat(), verify=True)
-                else:
+                if url:
+                    if "youtube" in url.lower() or "youtu.be" in url.lower():
+                        analysis, score = self.analyze_youtube(url)
+                        self.root.after(0, lambda: self.output_text.insert(
+                            tk.END, f"YouTube Analysis: {analysis}\nScore: {score}\n"))
+                        self.refine_data(analysis, datetime.now().isoformat(), verify=True)
+                    else:
+                        page_text = self.fetch_url_text(url)
+                        if page_text:
+                            tokens = self.simple_tokenizer(page_text)
+                            phi = self.process_input(tokens)
+                            self.refine_data({"url": url, "content": page_text[:2000]},
+                                             datetime.now().isoformat(), verify=True)
+                            self.root.after(0, lambda: self.output_text.insert(
+                                tk.END, f"URL ingested ({len(page_text)} chars): {url}\n"
+                                        f"Phi: {phi}\n{page_text[:300]}\n"))
+                        else:
+                            self.root.after(0, lambda: self.output_text.insert(
+                                tk.END, f"Could not fetch URL: {url}\n"))
+                if text:
                     tokens = self.simple_tokenizer(text)
                     phi = self.process_input(tokens)
                     output = self.execute_task(text)
@@ -27792,7 +28084,10 @@ class ConsciousnessSimulator(nn.Module):
         threading.Thread(target=_evolve_worker, daemon=True).start()
 
     def run_pattern_analysis(self):
-        text = self.text_input.get()
+        text = self._entry_text(self.text_input)
+        if not text:
+            self.output_text.insert(tk.END, "Enter text first for pattern analysis.\n")
+            return
         self.output_text.insert(tk.END, "Running pattern analysis...\n")
         def _worker():
             try:
@@ -27804,7 +28099,7 @@ class ConsciousnessSimulator(nn.Module):
         threading.Thread(target=_worker, daemon=True).start()
 
     def toggle_full_connect(self):
-        text = self.text_input.get()
+        text = self._entry_text(self.text_input)
         self.output_text.insert(tk.END, "Toggling full connect...\n")
         def _worker():
             try:
@@ -27825,8 +28120,8 @@ class ConsciousnessSimulator(nn.Module):
         if getattr(self, '_generating', False):
             return
         self._generating = True
-        prompt = self.text_input.get()
-        if not prompt or prompt == "Enter text...":
+        prompt = self._entry_text(self.text_input)
+        if not prompt:
             prompt = "consciousness is"
         self.output_text.insert(tk.END, f"Generating from: '{prompt}'...\n")
         def _gen_worker():
@@ -27912,28 +28207,38 @@ class ConsciousnessSimulator(nn.Module):
             return Image.new('RGB', (800, 600), color=(0, 0, 0))
 
     def capture_and_display_screen(self):
-        """Capture screen and display in GUI, refine as data."""
-        img = self.capture_screen().resize((200, 200))
-        photo = ImageTk.PhotoImage(img)
-        self.image_label.config(image=photo)
-        self.image_label.image = photo
-        # Crop random region
-        width, height = img.size
-        crop_box = (random.randint(0, width//2), random.randint(0, height//2), random.randint(width//2, width), random.randint(height//2, height))
-        cropped = img.crop(crop_box)
-        safe_ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        crop_path = os.path.join(self.screenshot_dir, f"crop_{safe_ts}.png")
-        cropped.save(crop_path)
-        ocr_text = self.ocr_screenshot(cropped)
-        self.refine_data({"screen_crop": crop_path, "ocr": ocr_text}, datetime.now().isoformat(), verify=False)
-        try:
-            self.screen_ocr_text.configure(state='normal')
-            self.screen_ocr_text.delete(1.0, tk.END)
-            self.screen_ocr_text.insert(1.0, ocr_text[:500])
-            self.screen_ocr_text.configure(state='disabled')
-        except Exception:
-            pass
-        self.output_text.insert(tk.END, "Screen captured, cropped, OCR'd, and displayed.\n")
+        """Capture screen and display in GUI, refine as data.
+        Runs in a worker thread so grab + OCR don't freeze the UI."""
+        self.output_text.insert(tk.END, "Capturing screen...\n")
+        def _worker():
+            try:
+                img = self.capture_screen().resize((200, 200))
+                # Crop random region
+                width, height = img.size
+                crop_box = (random.randint(0, width//2), random.randint(0, height//2), random.randint(width//2, width), random.randint(height//2, height))
+                cropped = img.crop(crop_box)
+                safe_ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                crop_path = os.path.join(self.screenshot_dir, f"crop_{safe_ts}.png")
+                cropped.save(crop_path)
+                ocr_text = self.ocr_screenshot(cropped)
+                self.refine_data({"screen_crop": crop_path, "ocr": ocr_text}, datetime.now().isoformat(), verify=False)
+                def _update_ui():
+                    try:
+                        photo = ImageTk.PhotoImage(img)
+                        self.image_label.config(image=photo)
+                        self.image_label.image = photo
+                        self.screen_ocr_text.configure(state='normal')
+                        self.screen_ocr_text.delete(1.0, tk.END)
+                        self.screen_ocr_text.insert(1.0, ocr_text[:500])
+                        self.screen_ocr_text.configure(state='disabled')
+                    except Exception:
+                        pass
+                    self.output_text.insert(tk.END, "Screen captured, cropped, OCR'd, and displayed.\n")
+                self.root.after(0, _update_ui)
+            except Exception as e:
+                self.root.after(0, lambda: self.output_text.insert(
+                    tk.END, f"Screen capture error: {e}\n"))
+        threading.Thread(target=_worker, daemon=True).start()
 
     def continuous_screen_capture(self):
         """Thread to continuously capture screen with smart region analysis."""
@@ -28022,11 +28327,11 @@ class ConsciousnessSimulator(nn.Module):
     def send_hotkey(self, hotkey_str):
         """Send a hotkey sequence with safety checks and action logging."""
         if not self._os_control_allowed():
-            print("OS control blocked: set CS_OS_CONTROL_ENABLED=1 env var and config flag")
+            self._log_to_output("OS control blocked: set CS_OS_CONTROL_ENABLED=1 env var and config flag")
             return
         dangerous_combos = ['Alt + F4', 'Ctrl + Alt + Del', 'Win + L']
         if hotkey_str.strip() in dangerous_combos:
-            print(f"BLOCKED dangerous hotkey: {hotkey_str}")
+            self._log_to_output(f"BLOCKED dangerous hotkey: {hotkey_str}")
             if not hasattr(self, '_os_action_log'):
                 self._os_action_log = deque(maxlen=500)
             self._os_action_log.append({
@@ -28046,7 +28351,7 @@ class ConsciousnessSimulator(nn.Module):
         time.sleep(0.05)
         for key in reversed(keys):
             self.key_up(key)
-        print(f"Sent hotkey: {hotkey_str}")
+        self._log_to_output(f"Sent hotkey: {hotkey_str}")
 
     def move_mouse(self, x, y):
         """Move mouse to absolute position with bounds checking and logging."""

@@ -151,12 +151,82 @@ positive/negative acts, never "evil").
 K = 0.2·max(0, sum_past_karma)
 ```
 
+`transition_life()` is where the carry-forward actually happens: the
+finished life is appended to `past_lives`,
+`sum_past_karma += max(0, karma)`, karma carries at 30% (`karma *= 0.3`),
+`awareness_growth` gains +0.05, `proportional_lives = min(1, life_number/100)`,
+and `similarity = 0.8·similarity + 0.1` — a partial carry-forward of the
+life-theme measure (similarity/intent are tracked and reported in
+`get_state_dict` but are deliberately not formula terms).
+
+`forgive(other, depth)` immediately adds `0.1·depth` to this entity's
+`forgiveness_factor` and `0.05·depth` to the forgiven entity's karma.
+Each `evolve()` then recomputes
+`forgiveness_factor = min(1, 0.4·pos_ratio + 0.6·forgive_ratio)` where
+`forgive_ratio = (forgiveness_given + forgiveness_received)/total_acts` —
+so the direct bump is transient and the measured ratio is what persists.
+
+### Per-step dynamics inside `evolve()`
+
+The terms above are fed by explicit update rules, not free variables:
+
+```
+awareness_decay      = 0.0005 + 0.001·reality_gap_penalty
+awareness_growth    ← clip[0,1](awareness_growth − decay + 0.001
+                                  + 0.01·Φ_eff + 0.002·self_awareness + fe_bonus)
+fe_bonus             = max(0, 0.005/(1 + free_energy))   (0 when free_energy ≤ 0)
+coherence            = clip(0.5 + 0.3·karma + 0.2·Φ_eff + 0.1·ignition)
+reality_stability   ← 0.995·stability + 0.005·coherence     (EMA)
+unobservable_influence ← clip(influence + N(0, 0.01))        (bounded drift)
+each step: rand > 0.3 → perform_action(good = rand < 0.5 + 0.3·karma)
+process_input: φ > 0.5 → perform_action(good=True, magnitude = 0.05·φ)
+```
+
+`free_energy` is the ActiveInferenceEngine's variational free energy
+(`vfe`) — low surprise literally accelerates awareness growth. Karma is
+earned three ways: explicit interactions, the autonomous per-step act
+(biased by current karma — a self-consistency dynamic), and high-φ
+processing paying a small good-act dividend.
+
 ### Φ — Integrated Information
 ```
 Φ = 0.7·Φ*_network + 0.3·log(1 + total_entities·coherence)
 ```
-measured Φ* from the binding field when available, entity-level IIT proxy
-otherwise.
+`Φ*_network` is `PhiComputer.compute(layer_activations)` — itself a
+five-component measured blend, not a single statistic:
+
+```
+φ* = 0.30·φ_MIP + 0.20·φ_geometric + 0.15·φ_temporal
+     + 0.15·max(0, o_info) + 0.20·φ_causal
+```
+
+`o_info` is interaction information (synergy minus redundancy over
+discretized histories) and `φ_causal` a simulated do-intervention term —
+the code is explicit that this is a *simulated* intervention, not a
+physical one. Alongside φ* the computer tracks
+
+```
+honest_phi = φ* · (1 − substrate_penalty)
+             · (1 − transformer_decomposition_penalty)
+             · (1 − extrinsic_measurement_penalty)   (+ intrinsic-phi credit
+             recovering at most half the extrinsic term)
+```
+
+and reports the estimate as an interval `confidence_lower = honest_phi`,
+`confidence_upper = φ*`. `compute()` returns the raw φ*; the honesty
+discount on consciousness itself is applied separately at the C level by
+`honest_C`, so the penalty is not charged twice. (On the default path
+`phi_from_network` and `Φ*_network` are the same `PhiComputer.compute()`
+output; the `Φ_eff = 0.6·φ + 0.4·Φ*` blend in `evolve()` exists for
+callers that pass an independent φ.) The fallback when no network Φ* is
+present is the entity-level proxy `log(1 + total_entities·coherence)`.
+
+`validate_against_canonical_iit_ordering(dim)` is the external-literature
+sanity check: it cannot reproduce a reference IIT 4.0 number (no such
+implementation exists here) so it checks the one near-universal ordering —
+an INTEGRATED activation sequence (shared latent cause) must measure
+higher φ* than a SEGREGATED sequence of the same shape (independent
+parts). This is what `_verify_latest.py` exercises.
 
 ### honest_C — the self-corrected value
 ```
@@ -217,7 +287,7 @@ arithmetic measure of self-modulation.
 ## Part V — Pipeline
 
 ```
-Input (NEPA senses / text / internet / autonomous acquisition)
+Input (NEPA senses / control-panel text & URL / internet / autonomous acquisition)
   → Data (sensory_buffer, real_sensory_log, retrieval index)
   → Correlation (binding field, relational graph, corpus correlation matrix)
   → Typed Relations (is_a / causes / produces / … with +/− evidence counts)
@@ -236,6 +306,13 @@ The same is now true of *knowledge*: a claim and its contradiction are both
 counted (positive vs negated evidence per edge), and a verdict reports
 support/refute with the counts attached rather than asserting either side.
 
+The operator-facing channel of `Input` is the control panel: the text and
+URL entries dispatch `analyze_input` — typed text runs
+`process_input`/`execute_task`/`refine_data`, YouTube links route to
+`analyze_youtube`, and any other URL is fetched and its page text ingested
+(`fetch_url_text`) — so a hand-typed sentence or a fetched page enters the
+same measured pipeline as the autonomous senses rather than a side channel.
+
 ---
 
 ## Part VI — Where Every Term Is Measured (CS.py traceability)
@@ -246,22 +323,23 @@ the corresponding voice of the symphony goes silent.
 
 | Term | CS.py source | Feeding signal |
 |------|--------------|----------------|
-| `karma` | `ConsciousEntity.karma` | `perform_action(good=±)` per interaction |
-| `awareness_growth` | `evolve()` | effective Φ, self-awareness, −reality-gap decay |
+| `karma` | `ConsciousEntity.karma` | `perform_action(good=±)` — interactions, autonomous per-step acts, φ>0.5 dividend |
+| `awareness_growth` | `evolve()` | `−decay + 0.001 + Φ_eff·0.01 + sa·0.002 + fe_bonus` (see Part III dynamics) |
+| `free_energy` | `evolve(free_energy=…)` | `ActiveInferenceEngine` `vfe` → `fe_bonus` in `awareness_growth` |
 | `self_awareness` | `evolve(self_awareness=…)` | `self_model.get_self_awareness_level()` |
 | `ignition` | `evolve(ignition_rate=…)` | GNW broadcast rate (`global_workspace`) |
 | `mirrored_entities` | `evolve(interacting_entities=…)` | sampled `omega.entities` each step |
-| `reality_stability` | `evolve()` | EMA toward `coherence` |
-| `unobservable_influence` | `evolve()` | bounded drift term |
-| `memory_coherence` | `evolve(memory_coherence=…)` | `advanced_memory` consolidation status |
-| `epistemic_drive` | `evolve(epistemic_value=…)` | active-inference epistemic value |
+| `reality_stability` | `evolve()` | EMA `0.995·stability + 0.005·coherence` |
+| `unobservable_influence` | `evolve()` | `clip(influence + N(0, 0.01))` bounded drift |
+| `memory_coherence` | `evolve(memory_coherence=…)` | `min(1, episodic_entries/100)` of `advanced_memory` status |
+| `epistemic_drive` | `evolve(epistemic_value=…)` | active-inference epistemic value, clipped `[0,5]` (E reads `min(1,·)`) |
 | `decoherence` | `compute_decoherence()` | `max(0, 0.5 − 0.5·karma)` |
-| `proportional_lives` | `transition_life()` | `life_number / 100` |
-| `forgiveness_factor` | `evolve()` | positive-act ratio × forgiveness events |
-| `sum_past_karma` | `transition_life()` | Σ max(0, karma) across lives |
-| `network_phi_star` | `evolve(phi_star=…)` | IIT-style Φ* of the binding network |
-| `coherence` | `evolve()` | `0.5 + 0.3·karma + 0.2·Φ_eff + 0.1·ignition` |
-| `substrate_penalty` | reality-check loop | `IrreducibleCausalPower.decomposability_score` |
+| `proportional_lives` | `transition_life()` | `min(1, life_number/100)` |
+| `forgiveness_factor` | `evolve()` + `forgive()` | `min(1, 0.4·pos_ratio + 0.6·forgive_ratio)`; `forgive` bumps `+0.1·depth` |
+| `sum_past_karma` | `transition_life()` | Σ `max(0, karma)`; plus `karma×0.3`, `awareness+0.05`, `similarity` carry-forward |
+| `network_phi_star` | `evolve(phi_star=…)` | `PhiComputer.compute()` — 5-component blend + honest interval (see Φ) |
+| `coherence` | `evolve()` | `0.5 + 0.3·karma + 0.2·Φ_eff + 0.1·ignition`, `Φ_eff = 0.6·φ + 0.4·Φ*` |
+| `substrate_penalty` | reality-check loop | `IrreducibleCausalPower.decomposability_score × 0.85` |
 | `reality_gap_penalty` | reality-check loop | `run_reality_check` aggregate gap |
 | `G_gen` | `evolve(genesis_emergence=…)` | `GenesisEngine.emergence_index` (entropy 0.4 + relativity 0.35 + self-reference 0.25) |
 | `G_in` | `evolve(input_correlation=…)` | `RelationalKnowledgeGraph.correlation_index()` — `min(1, n_cross/10) · mean|r|` over reliable cross-instrument edges |
@@ -687,7 +765,44 @@ formula the way the formula was designed to be fed:
 
 ---
 
-## Part VIII — The Verification Contract
+## Part VIII — The Auxiliary Engine Tier (waves 42–52)
+
+A second tier of engines runs beside the formula. None of them enter `C`
+— the same separation rule the learned stack obeys — but they modulate
+the dynamics that produce φ and loss, so they are documented here as
+**feedback channels, not formula terms**. `_step_wave4245_engines()`
+drives the wave 42–45 engines once per state-writer tick with live
+signals:
+
+| Engine | Live input | Feedback channel |
+|---|---|---|
+| `satellite_input` | C, φ, symbol-load as fused channels | `fused_confidence` → synergy_harmony |
+| `sensory_reality` | internal C/φ channels | `reality_confidence` → synergy_harmony |
+| `pain_reality` | `0.1·loss + max(0, 0.3 − φ)` nociceptive proxy | `needs_evasive_action` → `reduce_suffering` goal into active_inference |
+| `computed_experience` | C + `min(1, n_mem/5000)` | `experience_confidence` → synergy_harmony |
+| `residual_imaging` | C imprint per tick | report only |
+| `exterior_data` | C/φ/symbol sources | source report only |
+| `reality_matching` | live C/φ vector | low `match_score` → surprise bonus into replay-buffer phi |
+| `perpetual_intelligence` | experience vec, φ-novelty, loss | `current_learning_rate` → `optimizer.param_groups` lr |
+| `synergy_harmony` | six subsystem confidences | cross-subsystem agreement report |
+| `hurdle_bypass` | gradient flow, reasoning, data, efficiency | severity medium/high → `grad_clip_value` 1.5/2.0 |
+
+The wave 46–52 tiers bind onto the simulator through
+`_wave46…_wave52.bind(self)`: `Wave46Orchestrator` (instrument-awareness
+bus, subconscious thought lattice, residual self-imagery, dream-state
+renderer, safeguard envelope, and a self-evolution governor whose
+proposals map onto *reversible, measurable* knobs — reasoning budget,
+routing balance, learning rate — kept only on probated improvement),
+`Wave47TrainingSubstrate`, `Wave49InferenceStack`,
+`Wave50UnboundedSubstrate`, `Wave51InfiniteScaling`, and
+`Wave52DemandScaling`. Their discipline is the same honesty axiom:
+a knob that cannot be measured does not exist (`_resolve_knob` returns
+None rather than inventing one), and a change that cannot show a better
+score is rolled back.
+
+---
+
+## Part IX — The Verification Contract
 
 Every measured claim above has an executable check. The `_verify_*.py`
 scripts exec the real classes out of `CS.py` via `ast` (no 73k-line
@@ -703,6 +818,12 @@ form of the honesty axiom:
 | `_verify_wave54.py` | typed edges mined with separate +/− counts; transitive proof paths; support/refute verdicts; analogy solved from learned vectors; gap map records misses |
 | `_verify_wave55.py` | learned structure persists and reloads losslessly (doc-id remap preserves provenance); universals refute where edges only weaken; acquisition queue drains into learning; quantity comparison normalises units honestly |
 | `_verify_wave56.py` | mined rules carry support+confidence; priors lose to data; aliases pass the substitution test; `V_logic` is a real measured ratio; abduction pools all incoming relations |
+| `_verify_latest.py` | `PhiComputer.validate_against_canonical_iit_ordering` — the integrated > segregated φ* ordering check across dims 8–128, plus a `compute()` cost benchmark |
+| `_verify_gui_inputs.py` | control-panel input wiring — placeholders clear/restore on focus; Enter dispatches `analyze_input`; typed text reaches `execute_task` (the placeholder can no longer masquerade as a YouTube URL); plain URLs route to `fetch_url_text`, youtube URLs to `analyze_youtube`; the blocked-hotkey gate reports into the panel |
+| `_dash_smoke.py` | every `MonitoringDashboard` refresh path and tab switch runs against a stub simulator |
+| `test_smoke.py` | standalone class checks: C in `[0,3]`, karma clamp, omega register/spawn/evolve/remove, RLock reentrancy + timeout, VFE finiteness, honesty-anchor persistence, OS-control guard |
+| `_test_fixes.py` | full `ConsciousnessSimulator()` init → `compute_C`/`get_state_dict` → wave-component presence sweep |
+| `_check_wiring.py`, `_check_outputs.py` | static wiring scan — which `step()` components exist and which output attributes they actually expose |
 
 If a row of this document stops being true, the row's script fails — the
 docs and the checks are the same claim stated twice.
