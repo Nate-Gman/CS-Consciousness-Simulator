@@ -113,7 +113,7 @@ boundaries.
 
 ---
 
-# Waves 46–52 — complete API and configuration reference
+# Waves 46–56 — complete API and configuration reference
 
 79 new classes, 51 new public methods, 47 new CONFIG knobs. This section is
 the operator's reference. For *why* each mechanism works see `OVERVIEW.md`;
@@ -202,6 +202,176 @@ repair, loss moves **9.5017 → 7.3144** over 80 steps.
 | `wave52_save_settings()` | path written |
 | `wave52_neurons(x=None)` | neuron count, or run x through the bank |
 | `wave52_status()` / `wave52_report()` | settings, pressure, neurogenesis |
+
+### 1.7 Wave 53 — learned correlation layer
+
+| Method | Returns |
+|---|---|
+| `wave53_answer(query)` | extractive answer quoted from learned data + provenance |
+| `wave53_expand(query)` | learned correlates of the query's terms |
+| `wave53_infer(a, b=None)` | multi-hop inference over learned correlations |
+| `wave53_correlations(term)` | top learned correlates `[(term, npmi, n_docs)]` |
+| `wave53_learn(source)` | teach text / file / dir: index + LM pass + subconscious feed |
+| `wave53_status()` / `wave53_report()` | graph size, inference counts, correlation index |
+
+Everything in Wave 53 is computed from ingested data — the canned banks
+(`KNOWLEDGE_LIBRARY`, `COMMON_SENSE`, `_toc_query`, code templates) that
+`frontier_qa`/`frontier_reason`/`frontier_code` used to consult now sit
+behind `w53_canned_fallback` / `w53_canned_code` (default False), matching
+the `w49_index_dict_libraries` convention. `KnowledgeRetriever.retrieve`
+is expanded automatically: query terms pull their strongest learned
+correlates (NPMI over the index's own postings) into a second candidate
+pass, so documents that answer in different vocabulary reach the reranker.
+
+```python
+res = sim.wave53_answer("how does chlorophyll relate to glucose?")
+# res['answer']     -> verbatim evidence sentence(s) from learned data
+# res['confidence'] -> sentence score, 0..0.95
+# res['provenance'] -> which ingested source the evidence came from
+# res['expansions'] -> learned correlates that widened the search
+inf = sim.wave53_infer('chlorophyll', 'glucose')
+# inf['path']     -> e.g. ['chlorophyll','photosynthesis','glucose']
+# inf['verified'] -> whether the pair is actually observed in the data
+# inf['note']     -> 'observed in data' | 'derived ... (unverified)'
+sim.wave53_learn('data_bank/textbooks')   # index + train on a directory
+```
+
+### 1.8 Wave 54 — learned logic layer
+
+| Method | Returns |
+|---|---|
+| `wave54_relate(query)` | answer dict for a relational question, or `{'answer': None}` |
+| `wave54_check(a, rel, b)` | `supported` / `refuted` / `conflicted` / `unknown` verdict + proof paths |
+| `wave54_derive(term, rel=None, direction='out')` | forward-chained derivations from a term |
+| `wave54_analogy(a, b, c, k=5)` | `a:b :: c:?` solved by NPMI vector arithmetic |
+| `wave54_compare(a, b)` | shared vs distinctive learned correlates and relations |
+| `wave54_gaps(k=12)` | ranked knowledge gaps — what to feed `wave53_learn` next |
+| `wave54_explain(a, b)` | auditable learned relation between two terms |
+| `wave54_status()` / `wave54_report()` | edge counts, inference counts, gap pressure |
+
+Wave 53 learned *where* terms co-occur; Wave 54 learns *what the relation
+is* and reasons over it. `LearnedRelationExtractor` mines typed directed
+edges (`is_a`, `part_of`, `located_in`, `causes`, `produces`, `prevents`,
+`uses`, `has`, `made_of`, `measures`, `used_for`, `defined_as`, plus
+numeric quantities) from the corpus's own sentences — positive and negated
+evidence counted separately per document, so a contradiction weakens an
+edge instead of hiding. `LearnedLogicEngine` forward-chains over them:
+transitivity, a composition table (`is_a ∘ has ⇒ has` — inherited
+properties), inverse relations, conflict rules (`prevents` refutes a
+`causes` question), and noisy-or pooling into verdicts with auditable
+proof paths. `CorrelationAnalogy` solves analogies by sparse arithmetic
+on the Wave-53 NPMI neighbor vectors. `KnowledgeGapMap` turns every
+missed answer into a ranked learning target and reports ingest pressure
+to the Wave-52 demand scaler.
+
+Relational questions ("does X cause Y", "what is X made of", "X vs Y",
+"how heavy is X", "is X a Y") now route through the logic layer first in
+`respond`, `wave49_answer`, `answer_qa`, and `multi_step_reason` — before
+extractive QA, retrieval voting, or any neural fallback.
+
+```python
+chk = sim.wave54_check('caffeine', 'causes', 'insomnia')
+# chk['verdict'] -> 'supported' via caffeine->alertness->insomnia
+# chk['proofs']  -> the exact learned edges the chain stands on
+sim.wave54_relate('what is water made of?')
+# -> "Learned data: water made_of hydrogen ..." with provenance
+sim.wave54_gaps()   # terms the system was asked about and couldn't answer
+```
+
+### 1.9 Wave 55 — autonomous learning loop
+
+| Method | Returns |
+|---|---|
+| `wave55_acquire(term)` | fetch + learn a topic now (Wikipedia → `wave53_learn`) |
+| `wave55_auto(k=3)` | acquire data for the top-k measured knowledge gaps |
+| `wave55_rules(term=None)` | learned universal rules (`all X are Y`, `no X is Y`) |
+| `wave55_persist()` | write the learned-memory file now, returns path |
+| `wave55_recall()` | reload learned memory from disk, restore report |
+| `wave55_status()` / `wave55_report()` | memory, rules, acquisition, persistence state |
+
+Wave 54 learned *relations*; Wave 55 closes the loop around them:
+
+- **`LearnedMemoryStore`** — checkpoints used to save weights but never
+  the learned corpus, typed edges, rules, or quantities: everything the
+  system learned died at exit. The store serialises index docs +
+  extractor state to `learned_memory.json` (atomic write), dedupes by
+  content hash on load, and remaps doc ids so edge provenance stays
+  exact. Wired into `wave48_save`/`wave48_load` and tick autosave every
+  `w55_autosave_docs` new documents.
+- **Universal rules** — `all/every/no/never/always` claims mined on the
+  same lazy doc pass as edges and folded into `check()` as strong
+  evidence: `no reptile has fur` refutes even with zero negated edges.
+- **`QuantityComparator`** — "which is heavier, X or Y" / "is X bigger
+  than Y" answered from learned magnitudes, normalised through
+  `convert_unit`; incomparable units get an honest 'cannot compare'
+  answer rather than a guess.
+- **`GapDirectedAcquisition`** — missed-question terms enqueue; the
+  cognitive tick drains them (throttled) through Wikipedia extracts into
+  `wave53_learn`, so a question the system cannot answer becomes data it
+  goes and gets. Off by default (`w55_auto_acquire`) because it touches
+  the network; `wave55_acquire`/`wave55_auto` run it manually.
+- Plural/singular phrase resolution unifies learned structure
+  (`mammals` ≡ `mammal`), including for rule and quantity lookup.
+
+All of it binds through one class-level wrap of
+`Wave54Integration.relate`, so every Wave-54 router — `respond`,
+`wave49_answer`, `answer_qa`, `multi_step_reason` — gains the new
+capabilities without re-patching.
+
+```python
+sim.wave54_relate('do all mammals have fur?')
+# -> "Yes — learned data supports it ... (universal learned rule)"
+sim.wave54_relate('which is heavier, the elephant or the mouse?')
+# -> "Learned data: elephant is heavier — 5000 kg vs 0.02 kg (250000x more)"
+sim.wave55_acquire('quantum entanglement')   # fetch + index + extract
+sim.wave55_auto(3)                           # fill top-3 measured gaps
+```
+
+### 1.10 Wave 56 — inductive logic layer
+
+| Method | Returns |
+|---|---|
+| `wave56_rules(k=24)` | mined composition-rule table — `r1 ∘ r2 ⇒ r3` with counted support, measured confidence, firing counts |
+| `wave56_verify(k=None)` | held-out measured precision: direct edges hidden, then re-derived through other paths |
+| `wave56_aliases(term)` | learned distributional aliases `[(alias, cosine)]` from the NPMI matrix |
+| `wave56_abduce(query)` | ranked learned explanations for a 'why'/'what explains' question |
+| `wave56_untyped(k=12)` | strongly correlated pairs with no typed edge — related, but not yet how |
+| `wave56_status()` / `wave56_report()` | miner state, aliases, verifier, top rules |
+
+Waves 53–55 learned the *data* of reason; the *logic* itself was still
+authored — a fixed composition table, inverse map, and conflict map.
+Wave 56 removes that ceiling: the inference rules are now **mined from
+the corpus's own graph**, each with counted support and measured
+confidence.
+
+- **`LearnedRuleMiner`** — AMIE-style induction over the typed edge
+  graph. Every observed path `a -r1-> m -r2-> b` closed by a direct
+  `a -r3-> b` edge is one counted instance of `r1 ∘ r2 ⇒ r3` (a negated
+  `(a,r3,b)` is a counter-instance). The same pass measures inverse
+  rules `P(b -r2-> a | a -r1-> b)` and conflict rules (positive `r1`
+  beside negated `r2` on the same pair means `r1` refutes `r2`). It
+  discovers compositions no author wrote — `(produces, produces)`
+  transitivity was unreachable before; if the data shows it, it is a
+  rule now. The authored tables survive only as **priors** behind
+  `w56_rule_priors` (matching the `w53_canned_fallback` convention):
+  they fill in where the corpus is thin and are outvoted where data
+  has spoken.
+- **`EquivalenceMiner`** — distributional aliases from the correlation
+  matrix alone: near-identical NPMI neighbor vectors that never
+  co-occur (`h2o` ≡ `water`). A typed edge between the pair vetoes the
+  merge — the matrix proposes, logic decides.
+- **`LogicSelfVerifier`** — measures how good the learned logic
+  actually is: hold out direct edges, re-derive through other paths,
+  report the recovered fraction. Measured, not assumed.
+- **Abduction** — 'why' questions now pool every learned relation's
+  incoming chains, not just `causes`.
+
+```python
+sim.wave56_rules()        # e.g. is_a ∘ has ⇒ has (learned, conf .50)
+sim.wave56_verify()       # {'precision': 0.46, 'sampled': 24, ...}
+sim.wave56_aliases('h2o') # [('water', 1.0)]
+sim.wave56_abduce('why does rust form?')  # moisture (causes, 0.42) ...
+```
 
 ---
 
@@ -368,6 +538,37 @@ environment → CONFIG default.
 `w52_pressure_threshold` · `w52_growth_cooldown` ·
 `w52_neurogenesis_cooldown` · `w52_subconscious_neurons`
 
+**Wave 53 — learned correlation layer**
+
+`w53_expand_retrieval` · `w53_expand_terms` · `w53_expand_score` ·
+`w53_min_evidence` · `w53_min_df` · `w53_max_scan_docs` · `w53_neighbors` ·
+`w53_answer_min_conf` · `w53_extractive_confidence` ·
+`w53_extractive_first` · `w53_canned_fallback` · `w53_canned_code` ·
+`w53_learn_train_lines` · `w53_infer_max_hops` · `w53_corr_pairs_per_mine`
+
+**Wave 54 — learned logic layer**
+
+`w54_relation_extraction` · `w54_rel_scan_docs` · `w54_rel_phrase_max` ·
+`w54_infer_max_hops` · `w54_infer_hop_decay` · `w54_answer_min_conf` ·
+`w54_analogy_neighbors` · `w54_gap_miss_decay` · `w54_gap_pressure_at` ·
+`w54_corr_pairs_per_mine` · `w54_logic_routing`
+
+**Wave 55 — autonomous learning loop**
+
+`w55_persist` · `w55_memory_file` · `w55_autosave_docs` ·
+`w55_universal_rules` · `w55_auto_acquire` · `w55_acquire_chars` ·
+`w55_acquire_cooldown` · `w55_drain_per_tick` · `w55_qty_compare`
+
+**Wave 56 — inductive logic layer**
+
+`w56_learned_rules` · `w56_rule_priors` · `w56_prior_conf` ·
+`w56_rule_min_conf` · `w56_rule_min_support` · `w56_rule_recalc` ·
+`w56_mine_max_paths` · `w56_deepen_terms` · `w56_deepen_docs` ·
+`w56_ensure_docs` · `w56_resolve_cache` · `w56_walk_cache` ·
+`w56_check_conflicts` · `w56_aliases` ·
+`w56_alias_cos` · `w56_alias_cand` · `w56_alias_min_df` ·
+`w56_alias_max` · `w56_abduce` · `w56_verify_samples`
+
 ---
 
 ## 4. How the scaling behaves
@@ -428,6 +629,11 @@ capacity.
 | Subconscious training | loss improvement **0.569**; regressions reverted 3/3 |
 | World-model | loss 0.0299 → **0.0026**, learning progress **0.974** |
 | Checkpoint fidelity | maturity, wisdom, weights, routing bias all exact |
+| Learned-stack verification | `_verify_wave53/54/55/56` — all AST checks pass |
+| Expansion recall (verify) | doc with **zero** query-vocabulary terms retrieved via learned correlates |
+| Inference honesty | derived chains labelled `derived (unverified)` when no shared doc exists |
+| Canned banks on answer path | **off by default** — `w53_canned_fallback` / `w53_canned_code` |
+| Learned persistence | docs + edges + rules + quantities survive restart via `learned_memory.json` |
 
 ---
 
@@ -442,6 +648,14 @@ No external benchmark (MMLU, GPQA, HumanEval) was run — this repository has no
 harness for them. `run_internal_benchmark()` measures held-out cross-entropy
 and next-token accuracy on the model's own corpus: repeatable and honest, but
 not a substitute.
+
+**Learned is not the same as true.** Edges, universals, quantities, and mined
+rules are counted evidence from whatever was ingested — the graph reflects
+the corpus, and contradictory evidence is kept as negated evidence rather
+than hidden. Inference results are labelled `observed in data` vs
+`derived (unverified)`; nothing is presented as fact. `LogicSelfVerifier`
+measures how often learned logic recovers held-out edges and reports the
+ratio — the honesty rule applied to the reasoning itself.
 
 Known defects, including a test that passes ~4/6 runs and why it is not fully
 fixed, are recorded in [`ratings.md` §H8](ratings.md).

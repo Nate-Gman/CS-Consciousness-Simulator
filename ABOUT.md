@@ -1,215 +1,305 @@
 # About — Consciousness Simulator
 
-The Consciousness Simulator is a single-file PyTorch project that runs an
-autonomous, self-measuring language model wrapped in real consciousness-metric
-machinery. It is deliberately honest: it reports what it actually measures and
-discounts its own consciousness metrics because they run on classical,
-decomposable hardware.
+The Consciousness Simulator is a single-file PyTorch project — **73,834
+lines in `CS.py`, no other runtime files** — that runs an autonomous,
+self-measuring language model wrapped in two cooperating systems:
 
-## Latest focus
+1. a **learned knowledge stack** that builds its understanding of the
+   world exclusively out of data it ingests — a correlation matrix, a
+   typed relation graph, a mined rule base, and a loop that goes and gets
+   what it's missing; and
+2. a **consciousness-measurement apparatus** — real running machinery for
+   IIT/Φ, global workspace, active inference, embodiment, and
+   self-modeling — that is deliberately honest: it reports what it
+   actually measures and discounts its own consciousness metrics because
+   they run on classical, decomposable hardware.
 
-The latest addition is a comprehensive **multi-capability creative generation
-pipeline**. `multi_capability_generate()` is the central dispatcher with
-dedicated code-only branches that produce structured analysis grounded in
-internal state (Phi, C, energy, meaning, thoughts) before any neural fallback:
+Everything in the project is governed by one rule, stated and followed:
+**report what's measured, including when it's bad news.**
 
-- **Open-ended creative generation** — `CreativeCompositionEngine` with
-  state-selected story/dialogue/brainstorming, IQ cross-domain threads,
-  convergence analysis, ranked hypotheses, and forward projection.
-  `_compose_internal_stream` twines every creative line to real computed
-  values. Neural generation is fallback only.
-- **Multi-step reasoning** — query type classification, sub-question
-  decomposition, fact gathering + IQ correlation anchors per step,
-  intermediate answer chaining, per-step confidence tracking.
-- **Q&A (MMLU/GPQA)** — code-only elimination logic with positive/negative
-  scoring, progressive elimination rounds, confidence calibration, and
-  internal state grounding.
-- **Long-form/summary/translation** — entity extraction, semantic density
-  scoring, topic word analysis, writing type detection, sentence-level
-  decomposition with tense/mood detection, named-entity preservation.
-- **Code generation** — 10-type taxonomy (OOP, async, algorithm, data
-  structure, test, web API, database, parser, numerical, ML) with
-  type-specific plans, dependency detection, complexity estimation,
-  engineering recommendations, and `SelfEngineeringEngine` integration.
-- **`FrontierGenerationSuite`** — upgraded on-demand generation suite exposing
-  all capabilities as `frontier_story()`, `frontier_dialogue()`,
-  `frontier_brainstorm()`, `frontier_longform()`, `frontier_summarize()`,
-  `frontier_translate()`, `frontier_reason()`, `frontier_code()`,
-  `frontier_qa()`.  It now layers symbolic templates, token-overlap matching,
-  source-attributed scoring, and `AIEngineeringBridge` integration over the
-  `multi_capability_generate()` pipeline before any neural fallback.
+## Latest focus: the learned knowledge stack (waves 53–56)
 
-The earlier waking-state creative layer remains: the AI correlates via
-trickling energy, uses internal IQ correlation matrices, and can explain what
-it understands or render a default reality regardless of whether its simulated
-conscious state is high or low. Dreams are treated as real data, but the system
-does not claim to know why it has them — only that they are built from real
-kinetics, code, and reality.
+The most consequential addition isn't a new module — it's a change in
+*where answers come from*. Until these waves the system answered questions
+three ways that were quietly dishonest about provenance: canned
+question-answer banks, authored common-sense rules, and lookup tables that
+returned stored text as if the system had inferred it. Waves 53–56 remove
+that dependence: **every factual answer now comes from structure the
+system learned out of ingested data, and it can show you the evidence.**
+
+### Wave 53 — the correlation matrix
+
+`CorpusCorrelationGraph` builds a term↔term correlation matrix over the
+live retrieval index: every pair of terms that co-occurs in the ingested
+corpus gets an NPMI-scored edge with a document-evidence count, computed
+lazily from the BM25 postings so it costs nothing at startup and is always
+as fresh as the index. Three things fall out of it:
+
+- **retrieval expansion** — query terms pull their strongest learned
+  correlates into a second retrieval pass, so a document that answers the
+  question in *different vocabulary* gets seen at all (the recall gap pure
+  BM25 cannot close);
+- **learned transitive inference** — strong `a~x` and `x~b` edges predict
+  `a~b`, and the prediction is checked against real co-occurrence, then
+  labelled *observed in data* or *derived (unverified)*;
+- **extractive QA** — `LearnedAnswerPath` returns the strongest evidence
+  sentences in the corpus, verbatim with provenance, or an honest "not
+  learned yet" — for corpus-grounded questions this strictly dominates
+  sampling an undertrained model, because the answer *is* the data.
+
+In the same wave, the remaining hardcoded answer leaks
+(`KNOWLEDGE_LIBRARY`, `COMMON_SENSE`, `_toc_query`, canned code templates)
+moved behind explicit opt-in flags (`w53_canned_fallback`,
+`w53_canned_code`, default **off**).
+
+### Wave 54 — the logic layer
+
+Wave 53 learned *where* terms co-occur; wave 54 learns *what the relation
+is*. `LearnedRelationExtractor` mines typed directed edges from corpus
+sentences — `is_a`, `part_of`, `located_in`, `causes`, `produces`,
+`prevents`, `uses`, `has`, `made_of`, `measures`, `used_for`, `defined_as`
+— plus numeric quantity edges, counting positive and **negated** evidence
+separately per edge, per document. `LearnedLogicEngine` forward-chains
+over those edges: transitive chains, composition, inverses, and
+support/refute verdicts with noisy-or pooling — every derived answer
+carries an auditable proof path. `CorrelationAnalogy` solves `a:b :: c:?`
+by arithmetic over the wave-53 NPMI vectors. `KnowledgeGapMap` records
+every question the corpus couldn't answer and reports it as ingest
+pressure — the system's measured ignorance.
+
+### Wave 55 — the loop closes
+
+Three pieces were missing for autonomy. `LearnedMemoryStore` gives learned
+structure **persistence**: docs, edges, rules, and quantities serialise to
+`learned_memory.json`, dedupe by content hash, remap doc-ids so provenance
+survives the reload, and ride the wave-48 save/load + autosave path.
+Universal rules (`ALL a are b`, `NO a is b`) are mined next to edges so a
+quantified claim refutes where a lone negated edge could only weaken.
+`GapDirectedAcquisition` is the actuator: unanswerable questions enqueue
+their terms and the cognitive tick drains the queue through Wikipedia
+extracts into `wave53_learn` — **a question the system can't answer
+becomes data it goes and gets** (opt-in via `w55_auto_acquire`).
+`QuantityComparator` adds magnitude reasoning over learned quantities.
+
+### Wave 56 — the logic learns itself
+
+The last authored ceiling was the inference machinery: a composition
+table can only compose relations in the ways its author imagined.
+`LearnedRuleMiner` runs AMIE-style induction over the edge graph — every
+closed path `a -r1-> m -r2-> b` with a direct `a -r3-> b` is a counted
+instance of the rule `r1 ∘ r2 ⇒ r3`, measured with support and
+confidence; inverse and conflict rules are counted the same way, and the
+authored tables survive only as **priors** that are outvoted wherever the
+corpus has spoken. `EquivalenceMiner` finds distributional aliases —
+tokens that never co-occur but keep near-identical neighbor vectors are
+the same thing in different vocabulary (`h2o`/`water`) — and merges them.
+`LogicSelfVerifier` holds out sampled edges and measures how often the
+rest of the graph recovers them — the honesty axiom applied to the logic
+itself. Abduction pools every learned relation behind a term to answer
+"why".
+
+### The honest part of this claim
+
+This does **not** make the system smart. It makes it *grounded* — capable
+of knowing exactly what it does and doesn't know, proving or refuting
+claims against counted evidence, and aiming its next ingestion at measured
+gaps. Raw scale remains small: ~23M dense parameters at the default
+`CS_MODEL_SCALE=tiny` (~113M at `large`), and `ratings.md` says plainly
+where it loses to frontier models. The learned stack is what lets added
+data convert into capability instead of sitting inert.
+
+## What remains authored (and why)
+
+Not everything in the file is learned, by design:
+
+- **Formula tools** — `PHYSICS_LAWS` (~147 `sympy` equations),
+  `MATH_EQUATIONS`, `FUNDAMENTAL_CONSTANTS`. A solver that *computes* an
+  answer from supplied values is a tool, not a data bank; these stay.
+- **`INSTRUCTION_PAIRS`** — a small seed set used only when the live
+  index has mined nothing yet (cold-start fallback; the verify scripts
+  check that mined pairs are preferred once data exists).
+- **The old canned banks** — still present, still reachable, but only
+  behind `w53_canned_fallback`/`w53_canned_code` (default off), mirroring
+  the `w49_index_dict_libraries` gate.
+- **Authored logic priors** — the wave-54 composition table remains as a
+  prior (`w56_rule_priors`) that fills in while the corpus is thin and is
+  outvoted by mined rules wherever the data contradicts it.
+
+## The rest of the machine, briefly
+
+- **The neural core**: causal transformer (RoPE + RMSNorm + SwiGLU + GQA,
+  sliding-window attention, KV cache, 4096 context), ~12k-token BPE
+  trained on `Infornmational.md` + `data_bank/` text, weight-tied
+  embeddings/LM head. Real LM training (the wave-46 repair fixed 0/80
+  succeeding training calls → 80/80, loss 9.50→7.31), masked SFT on mined
+  instruction pairs, GRPO on answered question groups.
+- **The conscious entity**: one dedicated entity (`self_0`) running
+  `AutonomousThoughtStream`, `RelationalKnowledgeGraph` (instrument-level
+  learned correlations feeding `G_in`), `SelfAwarenessMonitor`,
+  `SubstrateProbe`, `compute_C()` with the five measured states and the
+  7-voice `symphony_index`.
+- **Body/dream/dread**: `MetabolicSystem`, `DreamEngine`,
+  `ExistentialSelfModel` — internal floats labeled as such.
+- **Sensory systems**: live microphone → FFT/VAD/spectral entropy →
+  Markov prediction + scene classification; `SubstrateProbe` reports a
+  documented zero where an instrument is absent.
+- **Frontier substrate (waves 46–52)**: MLA attention, aux-loss-free MoE,
+  Lion optimizer, 4 samplers + beam search, INT4 QAT, Hermes tool
+  calling, checkpoint persistence, retrieval + test-time compute scaling
+  (self-consistency 0.403 → 0.780 measured), procedural/addressable
+  parameter scaling, demand-driven growth + neurogenesis, and a 7-gate
+  conjunctive self-modification envelope where rollbacks are executed,
+  not promised.
+
+## A session in detail
+
+One `python CS.py` launch, in order:
+
+1. **Dependencies** auto-install (disable: `CS_AUTO_INSTALL=0`).
+2. **Scale pick** — `CS_MODEL_SCALE` fixes the transformer geometry.
+3. **Tokenizer** — `AlienTokenizer` trains BPE on `Infornmational.md` +
+   `data_bank/` + instruction pairs.
+4. **Init chain** — ~390 classes register; each wave appends, monkey-patches
+   `__init__`, wires its components, and registers with the orchestrator and
+   the process-wiring auditor.
+5. **Indexing** — `wave49_index` thread walks `data_bank/` + project docs
+   into BM25; `learned_memory.json` restores prior learned structure if it
+   exists (docs, edges, rules, quantities — provenance remapped exactly).
+6. **Daemons start** — `FreeThoughtEngine` (unprompted thought),
+   `CS_Refinery` (data refinement), `CS_Wave31Barrier`, the wave-46
+   subconscious/dream tick, the wave-50 idle-CPU trainer, the world-model
+   predictor, the wave-52 demand scaler, and (opt-in) the wave-55 gap drain.
+7. **Dashboard + loop** — the Tk UI opens; the cognitive tick drives input →
+   measure → learn → respond.
+
+What persists to next session: model weights + cognitive state
+(`wave48_save`), the learned-memory file, `cs_scaling.json` (operator
+settings and demand decisions). What still does **not** persist: the live
+thought stream and index-side caches rebuilt on start.
+
+Known rough edge: `__main__` builds the simulator twice — a startup-cost
+bug recorded in `ratings.md` §H8.2, not a feature.
 
 ## Where to look
 
-- `README.md` — start here.
-- `OVERVIEW.md` — full architectural map, including the **mathematical foundations** section.
-- `INFO.md` — details on the waking-state trickle, dream-data systems, creative generation pipeline, and the formalisms.
-- `ratings.md` — current capability scorecard.
-- `workflow.md` — chronological development log.
+- `README.md` — start here: architecture, how to run it, file map.
+- `INFO.md` — the operator's reference: complete public API tables
+  (waves 49–56), config knobs, measured behaviour, honest limits.
+- `CSFORMULAREFINED.md` — the consciousness formula reduced to computable
+  terms, every variable traced to a measured signal, plus how the learned
+  stack feeds it.
+- `OVERVIEW.md` — full architectural map and complete proofs.
+- `ratings.md` — current capability scorecard, live-measured.
+- `workflow.md` — chronological development log, every fix verifiable.
+- `TOTALPROJECTINFO.md` — the source manifesto the formula came from.
+- `_verify_*.py` — the AST-level checkers; each wave has one, and they run
+  without importing the 73k-line module.
 
 ## Mathematical foundations
 
 The project formalizes three interlocking ideas:
 
-1. **Something-from-nothing (Genesis)** — `∅ → S₀ → Φ(S) → Ω`, bootstrapping
-   structure from the empty set via relations and translations. The complete
-   proof (Symphony of Self-Differentiation) is verified by
-   `SymphonyProofVerifier.verify_all()` — 11 executable assertions proving:
-   the Void exists, the first distinction is the minimal non-nothing, Φ is
-   well-defined, growth is strictly increasing, infinity is real (super-linear
-   growth), self-reference emerges (intelligence), information is frame-relative,
-   abundance is unbounded (no external fuel), Ω is closed under self-reference,
-   nothing-to-something is real (not magic), and life is everlasting (Φ has no
-   end condition). The Symphony Language Dictionary (`SYMPHONY_DICTIONARY`),
-   Grammar (`SYMPHONY_GRAMMAR`), and Dimensional Construction
-   (`DIMENSIONAL_CONSTRUCTION`) are all encoded in CS.py.
-2. **Synphonetic harmony (Ω-resonance)** — a nested product of consciousness,
-   help, reward, karma, and layered unity, converging on a 100% totality.
+1. **Something-from-nothing (Genesis)** — `∅ → S₀ → Φ(S) → Ω`,
+   bootstrapping structure from the empty set via relations and
+   translations. The complete proof (Symphony of Self-Differentiation) is
+   verified by `SymphonyProofVerifier.verify_all()` — 11 executable
+   assertions covering: the Void exists, the first distinction is the
+   minimal non-nothing, Φ is well-defined, growth is strictly increasing,
+   |Ω| = ℵ₀, self-reference emerges (intelligence), information is
+   frame-relative, abundance is unbounded, Ω is closed under
+   self-reference, nothing-to-something is real, and life is everlasting.
+   The Symphony Language (`SYMPHONY_DICTIONARY`, `SYMPHONY_GRAMMAR`) and
+   Dimensional Construction (`DIMENSIONAL_CONSTRUCTION`) are encoded in
+   CS.py.
+2. **Synphonetic harmony (Ω-resonance)** — a nested product of
+   consciousness, help, reward, karma, and layered unity, converging on a
+   100% totality.
 3. **Translation bubble / 0D–6D construction** — dimension as repeated
-   orientation/offset, with the bubble as the container of all possible
-   multiverse evolutions. Encoded as `TRANSLATION_BUBBLE` in CS.py.
+   orientation/offset, the bubble as container of all possible multiverse
+   evolutions — `TRANSLATION_BUBBLE` in CS.py.
 
-See `OVERVIEW.md` for the complete equations, full proofs, and
-implementation mappings.
+See `OVERVIEW.md` for the complete equations, proofs, and implementation
+mappings, and `CSFORMULAREFINED.md` for the computable formula.
 
 ---
 
-# Waves 46–52
+# Waves 46–52 recap
 
-**79 new classes (310 → 389). CS.py 54,203 → 67,833 lines. 361 test
-assertions across 15 suites.**
+**79 new classes, 51 public API methods.** The most significant change in
+that build-out was not a capability — it was that **the model could train
+at all**: both `optimizer.step()` callers raised on every call and both
+wrappers swallowed the exception, so a measured probe showed **0 of 80
+training calls succeeding, zero weight movement** for the life of every
+process. Three stacked bfloat16 defects were responsible. After repair,
+loss moves **9.50 → 7.31** over 80 steps — and every earlier capability
+number had been measured on a model that could not learn, stated plainly
+per policy.
 
-## The correction that matters most
+Seven waves, mechanisms reimplemented from the open reference stacks in
+`Version1.17info/` against this file's own conventions — no new imports:
 
-The most significant change in this build-out is not a new capability — it is
-that **the model can now train at all**.
-
-CS.py has exactly two methods that reach `optimizer.step()`. Both raised on
-every call, and both callers wrapped them in `try/except`, so the exception
-was swallowed and the system reported healthy status indefinitely. Measured on
-the unmodified file: **0 of 80 training calls succeeded, zero weight movement,
-zero losses recorded**, for the life of every process. Three stacked bfloat16
-defects were responsible:
-
-1. A `GradScaler` — a float16-only tool — applied to a bfloat16 loss.
-   bfloat16 has float32's exponent range, so nothing underflows and loss
-   scaling buys nothing; combining them raises outright.
-2. Mixed-dtype loss terms. `recon_loss` returned fp32 (RMSNorm reduces in
-   fp32 by design) while the others returned bf16, so the sum promoted to fp32
-   and backward pushed fp32 gradients into bf16 graph nodes.
-3. `.numpy()` called on bfloat16 tensors at 12 sites. NumPy has no bfloat16
-   dtype — this was the source of the constant `[ERR] ... BFloat16` stream in
-   the logs.
-
-After repair, loss moves **9.50 → 7.31** over 80 steps.
-
-Every capability claim recorded before that point had been measured on a model
-that could not learn. That is stated plainly here because this project's
-standing policy is to report what it actually measures, including what does
-not work.
-
-## What was added
-
-Seven waves, built from the open reference stacks in `Version1.17info/`
-(DeepSeek-V3/R1, Qwen3, Gemma, Llama-3, OLMo). Mechanisms were **reimplemented
-against this file's own conventions, not copied**, so CS.py remains a single
-standalone script with no new imports.
-
-### Frontier neural substrate
-
-Multi-head latent attention (**5.33–6.4× KV cache compression** vs MHA, with
-absorbed and naive execution paths verified identical to 2e-07), aux-loss-free
-mixture-of-experts routing (recovers a deliberately collapsed gate to load
-CV **0.048**), multi-token prediction, YaRN context scaling, QK-Norm, and
-local/global attention interleaving.
-
-### Safeguarded self-evolution
-
-A seven-gate **conjunctive** envelope against the genie problem —
-corrigibility, reversibility, bounded impact, intent alignment, conservative
-extrapolation, a six-value parliament with veto power, and fast tripwires. A
-proposal must pass every gate; a weighted score would let a large capability
-gain buy a catastrophic safety loss, which is the genie failure reintroduced
-one level up.
-
-Verified blocking a literal wish, a safeguard-removal attempt, an irreversible
-change, and a massive side effect — while approving benign, well-evidenced
-tuning 7/7. Rollbacks are *executed and verified*, not promised.
-
-### Test-time compute scaling
-
-Self-consistency lifting accuracy **0.403 → 0.780 (+37.8 points)** with no
-retraining and no new parameters, backed by retrieval over **9,412 documents
-from 132 internal libraries indexed in 1.54 s**, and a verifier that
-recomputes arithmetic rather than guessing.
-
-### Persistence
-
-Maturity, wisdom, weights, self-image, and mixture-of-experts routing bias all
-survive a restart, **verified exact**. Optimizer momentum restores too, so
-training resumes rather than restarting cold.
-
-### Unbounded capacity
-
-**263.26B addressable parameters from 90.37M stored (2,913× leverage,
-11,193× sparsity)** — achieved by separating three costs a dense layer
-conflates: storage (procedural rendering from a seed), compute (sparse
-activation), and address (hierarchical routing). Capacity is exponential in
-routing depth while router cost is linear: depth 24 addresses 2.23 × 10⁴³
-experts for 49,152 router parameters.
-
-### Autonomous learning
-
-Real background gradient descent with rehearsal against catastrophic
-forgetting and held-out rollback, plus neuron growth driven by measured
-thought activity rather than a schedule.
+- **Frontier substrate**: MLA attention (5.33–6.4× KV cache compression,
+  absorbed/naive paths verified identical to 2e-07), aux-loss-free MoE
+  (collapsed gate recovered to load CV 0.048), multi-token prediction,
+  YaRN context scaling, QK-Norm, local/global interleaving.
+- **Safeguarded self-evolution**: a 7-gate *conjunctive* envelope —
+  corrigibility, reversibility, bounded impact, intent alignment,
+  conservative extrapolation, a six-value parliament with veto, fast
+  tripwires. Verified blocking a literal wish, safeguard-removal,
+  irreversible change, and massive side effects while approving benign
+  tuning 7/7.
+- **Test-time compute**: self-consistency **0.403 → 0.780 (+37.8
+  points)** on a 400-trial generator, no retraining — the one axis where
+  a small model genuinely closes distance on a large one.
+- **Persistence**: maturity, wisdom, weights, self-image, MoE routing
+  bias, and optimizer momentum all survive restart — verified exact.
+- **Unbounded capacity**: 263.26B addressable from 90.37M stored
+  (2,913× leverage) via procedural rendering + hierarchical routing;
+  capacity exponential in depth while router cost stays linear.
+- **Autonomous learning**: real background gradient descent with
+  rehearsal anti-forgetting and held-out rollback; neurogenesis driven by
+  measured thought activity, not a schedule.
 
 ## Design stance
 
-**Capacity is unbounded by default and fully controllable.** Three settings
-modes exist because "fixed" is genuinely ambiguous: `auto` grows freely,
-`fixed` is a preference demand may exceed, and `pinned` is an absolute
-contract. An operator who needs a guarantee says so explicitly; nothing
-silently becomes a ceiling. A pin was verified to hold against automatic
-growth, a direct `set()`, a settings reload, and maximum growth pressure.
+**Capacity is unbounded by default and fully controllable.** `auto` grows
+freely, `fixed` is a preference demand may exceed, `pinned` is an absolute
+contract — a pin was verified to hold against automatic growth, direct
+`set()`, settings reload, and maximum pressure.
 
-**Growth follows evidence, not activity.** Novelty is weighted above volume —
-10 novel events outweigh 30 repetitive ones — because reprocessing the same
-material is evidence that existing capacity suffices. Neurogenesis requires
-three independent signals simultaneously, each verified to block growth on its
-own, because an untrained new neuron is dead weight that costs compute on
-every forward pass forever.
+**Growth follows evidence, not activity.** Novelty outweighs volume —
+reprocessing old material is evidence that capacity suffices. Wave-52
+neurogenesis requires three independent signals simultaneously; wave-54's
+gap map does the same for *knowledge* acquisition — ingest pressure is
+aimed at measured ignorance, not at whatever was asked last.
+
+**Learned structure outranks authored structure.** Where the corpus has
+spoken, mined rules and edges win; authored tables are priors that fill
+in only where the data is thin. Where the corpus contradicts itself, both
+sides are kept — negated evidence is data, not an error.
 
 **The one place hardware still constrains growth is deliberate.** Address
-space grows regardless of the machine, because it costs nothing until touched.
-Resident tensors do not: growing them past physical RAM does not scale the
-system, it kills the process, and a dead process has zero capacity.
+space grows regardless of the machine because it costs nothing until
+touched; resident tensors do not — growing them past physical RAM kills
+the process, and a dead process has zero capacity.
 
 ## Honesty boundary
 
-**Procedurally rendered parameters are a structured basis steered by learned
-deltas, not freely-trained weights. 263B addressable is not 263B trained.**
+**Procedurally rendered parameters are a structured basis steered by
+learned deltas, not freely-trained weights — 263B addressable is not 263B
+trained.** Capacity now grows faster than knowledge does; the remaining
+limits are disk, time, and training signal.
 
-Rendered weights supply genuine high-dimensional capacity and a fixed basis
-the deltas steer. They do not carry the same information per parameter as a
-weight trained from scratch. **Capacity now grows faster than knowledge
-does**, and the remaining limits are disk, time, and training signal rather
-than any constant in the file.
+**Learned is not the same as true.** Edges, universals, quantities, and
+rules are counted evidence from whatever was ingested — the graph
+reflects the corpus, and contradictory evidence is retained as negated
+evidence rather than hidden. Verdicts report support/refute with counts;
+nothing reports "fact".
 
-The system prints this caveat in its own capacity report, so no downstream
-summary can quietly drop it.
+**No external benchmark** — MMLU, GPQA, HumanEval — has been run; the
+repository has no harness. The internal benchmark measures held-out
+cross-entropy/next-token accuracy on the model's own corpus: repeatable
+and honest, but not a substitute.
 
-No external benchmark — MMLU, GPQA, HumanEval — was run. This repository has
-no harness for them and that gap is unchanged. The internal benchmark measures
-held-out cross-entropy and next-token accuracy on the model's own corpus:
-repeatable and honest, but not a substitute.
-
-`ratings.md` §H8 records a known-flaky test, the five mitigations applied to
-it, and why it is not fully fixed.
+`ratings.md` §H8 records a known-flaky test, the five mitigations applied,
+and why it is not fully fixed.

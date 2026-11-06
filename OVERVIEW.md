@@ -980,3 +980,260 @@ downstream summary can quietly drop it.
 
 **Known defects are recorded in [`ratings.md` §H8](ratings.md)**, including a
 test that passes ~4/6 runs and why it is not fully fixed.
+
+---
+
+# Waves 53–56: the learned knowledge stack
+
+This section is the architectural map for the Waves 53–56 tier: 16 classes
+that replace authored knowledge (question banks, canned code templates, a
+hand-written inference table) with structure measured out of the ingested
+corpus — the same discipline Part 7 demands of every other term. For the
+operator-facing API see [`INFO.md` §1.7–1.10](INFO.md). For the verification
+contract see [`CSFORMULAREFINED.md` Part VIII](CSFORMULAREFINED.md).
+
+## Class inventory by wave
+
+| Wave | Theme | Classes |
+|---|---|---:|
+| 53 | Learned correlation layer | 3 |
+| 54 | Learned logic layer | 5 |
+| 55 | Autonomous learning loop, persistence | 4 |
+| 56 | Inductive logic layer | 4 |
+
+Each wave appends at the tail of `CS.py` in the file's own convention: class
+definitions, then class-level method patches on `ConsciousnessSimulator`,
+then public `waveNN_*` API assignments, then registration in the init chain,
+the wave orchestrator, and the process wiring auditor. No existing call site
+is edited.
+
+## Part 8 — Wave 53: the correlation matrix over *content*
+
+### 8.1 `CorpusCorrelationGraph` (CS.py:69077)
+
+The pre-53 `RelationalKnowledgeGraph` measured whether the system's
+*instruments* correlate (`G_in`). Wave 53 builds the content-level analogue:
+a term↔term matrix over the live Wave-49 BM25 index.
+
+- **Edge weight**: NPMI (normalised pointwise mutual information)
+  `npmi(x,y) = pmi(x,y) / −log p(x,y)` ∈ [-1, 1], computed lazily from the
+  index postings lists — no index re-walk, no separate store to keep in
+  sync. `w53_max_scan_docs` bounds each lazy pass; the graph is always fresh
+  as documents arrive.
+- **Hapax filter**: `w53_min_df` floors edge-target document frequency.
+  Without it, a term appearing in exactly one document gets npmi=1.0 by
+  construction and crowds genuinely-correlated bridge terms out of every
+  top-k list — this was a measured failure in `_verify_wave53.py`, fixed by
+  the floor.
+- **Multi-hop inference**: bounded BFS (`w53_infer_max_hops`, hop-decayed
+  confidence) derives relations the data never stated. Every result is
+  labelled `observed in data` vs `derived (unverified)` — the distinction is
+  preserved all the way out to the answer text.
+- **`correlation_index()`**: mean top-edge NPMI over a deterministic mid-df
+  term sample × coverage, with a statistical floor (`n_docs < 8 ⇒ 0`,
+  refused to fabricate a reading from too little data — the verify corpus
+  had to be enlarged, not the floor lowered).
+
+### 8.2 Retrieval expansion (wrapper on `KnowledgeRetriever.retrieve`)
+
+One wrap at the *consumer* level, not per call site: query terms pull their
+strongest learned correlates (`w53_expand_terms`, `w53_expand_score`) into a
+second candidate pass, results merged by score. Because it wraps `retrieve()`
+itself, every consumer — `wave49_answer`, `respond()`, `_fact_gather`, the
+instruction miner, Wave-54 logic — gains recall across vocabulary mismatch
+for free. Verified: a document sharing zero vocabulary with the query is
+retrieved through the learned bridge alone.
+
+### 8.3 `LearnedAnswerPath` (CS.py:69319)
+
+Extractive QA over learned passages: BM25 candidates → rerank → top
+sentences scored → verbatim evidence returned **with provenance** (which
+ingested source, which passage), or an honest "not in the learned data."
+Under `w53_extractive_first` this path is consulted before the neural
+fallback — an answer grounded in a cited sentence outranks a generated one.
+
+### 8.4 Learned-only routing
+
+`answer_qa`, `multi_step_reason`, and `generate_code` previously consulted
+`KNOWLEDGE_LIBRARY`, `COMMON_SENSE`, `_toc_query`, and canned code
+templates. They now route: symbolic tools that *compute* → logic layer →
+extractive QA → retrieval voting → neural. The canned banks survive only
+behind `w53_canned_fallback` / `w53_canned_code` (default off), matching the
+file's flag convention — an unknown question gets "not in the learned data"
+and a recorded gap instead of a canned lie.
+
+### 8.5 Loop closure
+
+`wave53_learn(text|file|dir)` is the single teach-it entry point: index +
+edge extraction + correlation + optional SFT lines
+(`w53_learn_train_lines`). `refine_data` also feeds the Wave-50 subconscious
+trainer; mined correlation pairs enter `INSTRUCTION_PAIRS` so the model
+learns its own graph; `data_bank/` contributes to the BPE corpus.
+
+## Part 9 — Wave 54: learned logic layer
+
+### 9.1 `LearnedRelationExtractor` (CS.py:70317)
+
+Mines **typed directed edges** from corpus sentences — `is_a`, `part_of`,
+`located_in`, `causes`, `produces`, `prevents`, `uses`, `has`, `made_of`,
+`measures`, `used_for`, `defined_as`, plus numeric quantity edges. Positive
+and negated evidence are counted *separately per document*: a contradiction
+weakens an edge instead of hiding it — the structural difference between
+"the corpus never says" and "the corpus says no."
+
+### 9.2 `LearnedLogicEngine` (CS.py:70621)
+
+Forward-chaining over the typed graph:
+
+- transitivity on transitive relations;
+- composition table (`is_a ∘ has ⇒ has` — inherited properties);
+- inverse relations; conflict rules (`prevents` refutes `causes`);
+- **noisy-or pooling** — `1 − ∏(1 − confᵢ)` over independent proof paths,
+  so multiple corroborations strengthen rather than plateau;
+- verdicts `supported | refuted | conflicted | unknown`, each carrying the
+  exact edge-chain proofs it stands on — auditable, not asserted.
+
+### 9.3 `CorrelationAnalogy` (CS.py:70891)
+
+`a:b :: c:?` solved by sparse arithmetic on Wave-53 NPMI neighbor vectors
+(the distributional analogue of `vec(b) − vec(a) + vec(c)`), with a
+typed-edge bonus when the graph already encodes the relation.
+
+### 9.4 `KnowledgeGapMap` (CS.py:70967)
+
+Every unanswered/missed query records its terms (decayed by
+`w54_gap_miss_decay`), ranked by thinness of evidence, and reported as
+**ingest pressure** to the Wave-52 demand scaler — measured ignorance
+becomes a demand signal. `wave54_gaps()` is the operator view: what to feed
+`wave53_learn` next.
+
+### 9.5 Logic-first routing (`Wave54Integration`)
+
+Relational questions ("does X cause Y", "what is X made of", "X vs Y",
+"how heavy is X", "is X a Y") route through the logic layer first in
+`respond`, `wave49_answer`, `answer_qa`, and `multi_step_reason` — before
+extractive QA, retrieval voting, or any neural fallback — gated by
+`w54_logic_routing`.
+
+## Part 10 — Wave 55: autonomous learning loop and persistence
+
+### 10.1 `LearnedMemoryStore` (CS.py:72069)
+
+The gap this closes: checkpoints saved *weights* and cognitive state but
+never the learned corpus, typed edges, rules, or quantities — everything the
+system *learned* died at exit. The store serialises index documents +
+extractor state to `learned_memory.json` (atomic write), dedupes by content
+hash on load, and remaps doc ids so edge provenance stays exact across a
+restart. Wired into `wave48_save`/`wave48_load`; tick-autosaves every
+`w55_autosave_docs` new documents.
+
+### 10.2 Universal rules
+
+`all/every/no/never/always` claims mined on the same lazy doc pass as edges
+and folded into `check()` as strong evidence: `no reptile has fur` refutes a
+positive claim even with zero negated edges — quantified structure, not
+just pairwise.
+
+### 10.3 `QuantityComparator` (CS.py:72362)
+
+"Which is heavier, X or Y" answered from learned magnitudes, normalised
+through `convert_unit`; incomparable units get an honest "cannot compare"
+rather than a guess.
+
+### 10.4 `GapDirectedAcquisition` (CS.py:72234)
+
+Missed-question terms enqueue; the cognitive tick drains them (throttled by
+`w55_acquire_cooldown`, `w55_drain_per_tick`) through Wikipedia extracts
+into `wave53_learn`. A question the system cannot answer becomes data it
+goes and gets. Off by default (`w55_auto_acquire`) because it touches the
+network; `wave55_acquire`/`wave55_auto` run it manually.
+
+### 10.5 Plural/singular phrase resolution
+
+`mammals ≡ mammal` unifies learned structure across morphology — for edge,
+rule, and quantity lookup alike. All of Part 10 binds through **one**
+class-level wrap of `Wave54Integration.relate`, so every Wave-54 router
+gains the new capabilities without re-patching.
+
+## Part 11 — Wave 56: inductive logic layer
+
+Waves 53–55 learned the *data* of reason; the *logic* was still authored —
+a fixed composition table, inverse map, conflict map. Wave 56 removes that
+last authored ceiling.
+
+### 11.1 `LearnedRuleMiner` (CS.py:72941)
+
+AMIE-style induction over the typed edge graph:
+
+- every observed path `a -r1-> m -r2-> b` closed by a direct `a -r3-> b`
+  edge is a counted instance of composition rule `r1 ∘ r2 ⇒ r3` (a negated
+  `(a,r3,b)` is a counter-instance);
+- inverse rules measured as `P(b -r2-> a | a -r1-> b)`;
+- conflict rules measured as `r1` positive beside `r2` negated on the same
+  pair ⇒ `r1` refutes `r2`.
+
+Each rule carries counted `support` and measured `confidence` and fires
+through the same inference engine — compositions no author wrote
+(`(produces, produces)` transitivity was unreachable before) become rules if
+the data shows them. The authored tables survive only as **priors** behind
+`w56_rule_priors` at `w56_prior_conf` — they fill in where the corpus is
+thin and are outvoted where data has spoken.
+
+### 11.2 `EquivalenceMiner` (CS.py:73177)
+
+Distributional aliases from the correlation matrix alone: near-identical
+NPMI neighbor vectors (`w56_alias_cos`) between terms that never co-occur
+(`h2o ≡ water`). A typed edge between the pair **vetoes** the merge — the
+matrix proposes, logic decides. Aliases unify learned structure across
+vocabularies, so a question about `h2o` reaches knowledge learned about
+`water`.
+
+### 11.3 `LogicSelfVerifier` (CS.py:73285)
+
+The honesty axiom applied to reasoning itself: sample direct edges, hide
+each one, and measure what fraction the graph (plus mined rules) still
+recovers through other paths. `wave56_verify()` returns a measured ratio —
+the system knows how good its own logic is because it measured it.
+
+### 11.4 Abduction
+
+"Why" questions pool every learned relation's incoming chains ranked by
+confidence (`w56_abduce`) — not just `causes` — so the best learned
+explanation surfaces whichever edge type carries it.
+
+## Part 12 — The response cascade, final form
+
+```
+respond(x)
+  └ symbolic tools that COMPUTE (units, algebra via SymPy, physics lookup)
+  └ wave54 logic layer        — relational Q → edges/chains/rules/verdicts
+  └ wave55 universals+qty     — quantified claims, learned magnitudes
+  └ wave56 abduction          — 'why' → ranked incoming learned paths
+  └ wave53 extractive QA      — verbatim evidence + provenance
+  └ wave49 retrieval voting   — difficulty-scaled samples, self-consistency
+  └ neural generation         — the transformer, KV-cached decode
+  (canned banks only behind w53_* opt-in flags, default off)
+```
+
+Every layer above generation either **computes** its answer or **cites**
+learned evidence with provenance; the generative core is the fallback, not
+the authority. Every miss is recorded to `KnowledgeGapMap` — the system's
+failures become its acquisition queue.
+
+## Part 13 — Honesty boundaries, updated
+
+Part 7's boundaries all still hold. The learned stack adds two of its own:
+
+- **Learned ≠ true.** Edges, universals, quantities, and mined rules are
+  counted evidence from the ingested corpus — the graph reflects whatever
+  was taught it, contradictions included (kept as negated evidence, never
+  hidden). Results are labelled observed vs derived all the way out.
+- **The logic measures itself.** `LogicSelfVerifier` does not assume the
+  learned inference is good — it hold-out-tests it and reports the recovered
+  fraction. A rule's confidence is a measured ratio, not an author's
+  constant.
+
+What the stack does **not** change: model scale, training signal, corpus
+size, or any external benchmark standing. It changes which parts of the
+answer path are authored versus earned — and that change is itself measured,
+in [`ratings.md` §I](ratings.md).

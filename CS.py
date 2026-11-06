@@ -1025,6 +1025,20 @@ CONFIG = {
     "w49_build_index": True,      # build the RAG index at startup
     "w49_index_background": True, # off the constructor thread
     "w49_max_samples": 12,        # ceiling on self-consistency samples
+    # Retrieval contract: answers come from DATA the system ingested and
+    # learned — the corpus files, everything under data_bank/ (downloaded
+    # textbooks, extracted text, saved notes), and documents learned at
+    # runtime via refine_data. The ALL_CAPS dict libraries compiled into
+    # this file are NOT indexed by default: they are the hard-coded data
+    # bank this design removes from the answer path. Set True to re-enable.
+    "w49_index_dict_libraries": False,
+    "w49_index_data_bank": True,  # recursive index of data_bank/ (text + pdf)
+    "w49_max_pdf_pages": 200,     # per-PDF page cap so one book can't flood
+    "w49_learned_min_chars": 40,  # min length for refine_data -> index
+    # RL loop closure: every wave49_answer turns its own sample group into a
+    # real GRPO policy-gradient step (verifiable rewards, frozen-KL leash).
+    # Set False to answer without training.
+    "w49_grpo_train": True,
     # --- Wave 50: unbounded parameter substrate + subconscious learning ---
     "w50_virtual_experts": 1000000,   # addressable procedural experts
     "w50_top_k": 2,                   # experts active per token
@@ -3375,8 +3389,9 @@ def _build_seed_instruction_pairs():
         pairs.append((f"Explain {name}.", law['desc']))
     for key, eq in MATH_EQUATIONS.items():
         name = key.replace('_', ' ')
-        pairs.append((f"What is {name}?", eq['desc']))
-        pairs.append((f"Explain {name}.", eq['desc']))
+        desc = eq['desc'] if isinstance(eq, dict) else str(eq)
+        pairs.append((f"What is {name}?", desc))
+        pairs.append((f"Explain {name}.", desc))
     for question, answer in KNOWLEDGE_LIBRARY:
         pairs.append((question, answer))
     pairs.append(("What is consciousness in this system?",
@@ -4202,7 +4217,7 @@ _MODULES_AVAILABLE = {
 }
 
 class ConsciousEntity:
-    """Conscious entity: C = S + E + R*A."""
+    """Conscious entity: C = S + E + R*A + k(K*Phi) — see CSFORMULAREFINED.md."""
     __slots__ = (
         'entity_id', 'entity_type', 'universe_id', 'life_number',
         'karma', 'awareness_growth', 'mirrored_entities', 'reality_stability',
@@ -4219,6 +4234,10 @@ class ConsciousEntity:
         # 'C' and '_auto_grow_categories' are set from outside this class;
         # include them so __slots__ allows external caching/controls.
         'C', '_auto_grow_categories',
+        # Refined-formula additions (CSFORMULAREFINED.md): genesis signal fed
+        # from GenesisEngine.emergence_index, plus the five-state frame and
+        # symphony index measured every compute_C.
+        'genesis_emergence', 'states', 'symphony_index', 'input_correlation',
     )
 
     def __init__(self, entity_id, universe_id=1, life_number=1, entity_type='conscious'):
@@ -4264,6 +4283,15 @@ class ConsciousEntity:
         self.ignition_rate = 0.0        # GNW ignition rate from global_workspace.py
         self.epistemic_drive = 0.0      # Curiosity signal from active inference
         self.memory_coherence = 0.0     # From memory_system.py consolidation quality
+        self.genesis_emergence = 0.0    # GenesisEngine.emergence_index (omega-stage emergence)
+        # Measured input correlation: RelationalKnowledgeGraph.correlation_index().
+        # The "Correlation" stage of the grammar — 0.0 until organized input
+        # has produced durable cross-instrument couplings (evidence-earned).
+        self.input_correlation = 0.0
+
+        # Five-state frame (simultaneous & separate, per CSFORMULAREFINED Part II)
+        self.states = {}
+        self.symphony_index = 0.0
 
         # History
         self.past_lives = []
@@ -4386,10 +4414,51 @@ class ConsciousEntity:
             return 0.7 * self.network_phi_star + 0.3 * entity_phi
         return math.log(1.0 + max(0, self.total_entities) * max(0.0, self.coherence))
 
+    def compute_states(self, S, E, R_A, Phi, kphi):
+        """Five-state frame (CSFORMULAREFINED Part II): the states exist
+        simultaneously and separately when measured in math.
+
+        G1 alpha            = S          — the origin: self that initiates
+        G2 omega            = sigma(Phi) — convergence toward integrated unity
+        G3 inbetween        = R*A        — the process between origin and end
+        G4 total_sum        = raw sum    — the whole that does not choose itself
+        G5 intelligent_omega= honest_C   — the sum manipulating itself
+        """
+        sigma_phi = Phi / (1.0 + Phi)  # same saturating map as k()
+        # G4 is the passive total at the FORMULA's own scale (clamped like C),
+        # so G4 == C/3 exactly; G5 is that same sum after self-modulation.
+        g4 = min(3.0, S + E + R_A + kphi)
+        g5 = self.honest_C             # aggregate after self-applied penalties
+        return {
+            'G1_alpha': round(min(1.0, max(0.0, S / 1.5)), 6),
+            'G2_omega': round(min(1.0, max(0.0, sigma_phi)), 6),
+            # R <= 0.7 and A <= 1, so R*A <= 0.7: normalize by the real
+            # ceiling or this voice could never reach full strength.
+            'G3_inbetween': round(min(1.0, max(0.0, R_A / 0.7)), 6),
+            'G4_total_sum': round(min(1.0, max(0.0, g4 / 3.0)), 6),
+            'G5_intelligent_omega': round(min(1.0, max(0.0, g5 / 3.0)), 6),
+            '_raw': {'S': S, 'Phi': Phi, 'R_A': R_A, 'sum': g4, 'honest_C': g5},
+        }
+
+    def compute_symphony_index(self):
+        """Consonance across all measured voices (CSFORMULAREFINED Part IV):
+        geometric mean of the five states + genesis emergence (Omega stage)
+        + measured input correlation (Correlation stage — the end-note
+        condition: symphonies only after organized input becomes correlated).
+        Collapses toward 0 if any voice is silent — organized input is only
+        a symphony when every stratum correlates."""
+        voices = [v for k, v in self.states.items() if not k.startswith('_')]
+        voices.append(min(1.0, max(0.0, self.genesis_emergence)))
+        voices.append(min(1.0, max(0.0, self.input_correlation)))
+        if not voices or min(voices) <= 0.0:
+            return 0.0
+        return float(np.prod(voices) ** (1.0 / len(voices)))
+
     def compute_C(self):
-        """Full consciousness C = S + E + R*A clamped to [0,3]. honest_C
-        applies substrate/reality-gap penalties, not a claim of real phenomenal
-        consciousness on classical hardware."""
+        """Full consciousness C = S + E + R*A + k(K*Phi) clamped to [0,3],
+        where k(x) = x/(1+x) is the saturating map from CSFORMULAREFINED.md.
+        honest_C applies substrate/reality-gap penalties — not a claim of
+        real phenomenal consciousness on classical hardware."""
         S = self.compute_S()
         E = self.compute_E()
         decoherence = self.compute_decoherence()
@@ -4397,19 +4466,29 @@ class ConsciousEntity:
         A = self.compute_A()
         K = self.compute_K()
         Phi = self.compute_Phi()
-        C = min(3.0, max(0.0, S + E + R * A))
+        kphi_raw = K * Phi
+        kphi = kphi_raw / (1.0 + kphi_raw)  # k(K·Φ): bounded, monotonic, real
+        C = min(3.0, max(0.0, S + E + R * A + kphi))
         # Honest C: what consciousness would be if substrate penalty AND reality gap are real
         # Two independent penalties: substrate (hardware limitation) and reality gap (aggregate failures)
         substrate_factor = 1.0 - self.substrate_consciousness_penalty
         reality_factor = 1.0 - self.reality_gap_penalty * 0.5  # 50% weight — gap is aggregate, not absolute
         self.honest_C = C * substrate_factor * reality_factor
 
+        # Five states + symphony (simultaneous & separate per the logic system)
+        self.states = self.compute_states(S, E, R * A, Phi, kphi)
+        self.symphony_index = self.compute_symphony_index()
+
         now = datetime.now().isoformat()
         self.C_history.append((now, C))
         self.component_history.append({
             'S': round(S, 6), 'E': round(E, 6), 'R': round(R, 6),
             'A': round(A, 6), 'K': round(K, 6), 'Phi': round(Phi, 6),
+            'kPhi': round(kphi, 6),
             'C': round(C, 6), 'honest_C': round(self.honest_C, 6),
+            'symphony': round(self.symphony_index, 6),
+            'input_correlation': round(self.input_correlation, 6),
+            'states': {k: v for k, v in self.states.items() if not k.startswith('_')},
             'substrate_penalty': round(self.substrate_consciousness_penalty, 4),
             'decoherence': round(decoherence, 6),
             'karma': round(self.karma, 6), 'coherence': round(self.coherence, 6),
@@ -4421,7 +4500,10 @@ class ConsciousEntity:
         self._last_C_step = self.evolution_step
         self._last_C_components = {
             'C': C, 'S': S, 'E': E, 'R': R, 'A': A, 'K': K, 'Phi': Phi,
-            'decoherence': decoherence, 'honest_C': self.honest_C
+            'kPhi': kphi,
+            'decoherence': decoherence, 'honest_C': self.honest_C,
+            'symphony': self.symphony_index,
+            'states': {k: v for k, v in self.states.items() if not k.startswith('_')},
         }
         return C
 
@@ -4497,7 +4579,8 @@ class ConsciousEntity:
 
     def evolve(self, phi_from_network=0.0, interacting_entities=None,
                phi_star=None, self_awareness=None, free_energy=None,
-               ignition_rate=None, epistemic_value=None, memory_coherence=None):
+               ignition_rate=None, epistemic_value=None, memory_coherence=None,
+               genesis_emergence=None, input_correlation=None):
         """Evolve one step, integrating external module signals."""
         self.evolution_step += 1
         self.last_updated = datetime.now()
@@ -4515,6 +4598,10 @@ class ConsciousEntity:
             self.epistemic_drive = float(np.clip(epistemic_value, 0, 5))
         if memory_coherence is not None:
             self.memory_coherence = float(np.clip(memory_coherence, 0, 1))
+        if genesis_emergence is not None:
+            self.genesis_emergence = float(np.clip(genesis_emergence, 0, 1))
+        if input_correlation is not None:
+            self.input_correlation = float(np.clip(input_correlation, 0, 1))
 
         # Effective phi: blend network phi with Φ* if available
         effective_phi = phi_from_network
@@ -4592,6 +4679,9 @@ class ConsciousEntity:
             S, E, R, A = comp['S'], comp['E'], comp['R'], comp['A']
             K, Phi, decoherence = comp['K'], comp['Phi'], comp['decoherence']
             honest_C = comp['honest_C']
+            kphi = comp.get('kPhi', 0.0)
+            symphony = comp.get('symphony', self.symphony_index)
+            states = comp.get('states', {})
         else:
             C = self.compute_C()
             S = self.compute_S()
@@ -4602,6 +4692,10 @@ class ConsciousEntity:
             Phi = self.compute_Phi()
             decoherence = self.compute_decoherence()
             honest_C = getattr(self, 'honest_C', C)
+            kphi_raw = K * Phi
+            kphi = kphi_raw / (1.0 + kphi_raw)
+            symphony = self.symphony_index
+            states = {k: v for k, v in self.states.items() if not k.startswith('_')}
         return {
             'entity_id': self.entity_id, 'type': self.entity_type,
             'universe': self.universe_id, 'life': self.life_number,
@@ -4614,6 +4708,10 @@ class ConsciousEntity:
             'S': round(S, 4), 'E': round(E, 4),
             'R': round(R, 4), 'A': round(A, 4),
             'K': round(K, 4), 'Phi': round(Phi, 4),
+            'kPhi': round(kphi, 4),
+            'symphony_index': round(symphony, 4),
+            'input_correlation': round(self.input_correlation, 4),
+            'states': states,
             'step': self.evolution_step, 'lives': self.life_number,
             'positive_acts': self.positive_acts, 'negative_acts': self.negative_acts,
             # New module signals
@@ -5006,7 +5104,8 @@ class OmegaConvergence:
     def evolve_all(self, phi_from_network=0.0, phi_star=None,
                     ignition_rate=None, free_energy=None,
                     self_awareness=None, epistemic_value=None,
-                    memory_coherence=None):
+                    memory_coherence=None, genesis_emergence=None,
+                    input_correlation=None):
         """Evolve all entities one step and simulate interactions.
 
         Module signals are passed to the self_0 (primary) entity only;
@@ -5026,6 +5125,8 @@ class OmegaConvergence:
                     ignition_rate=ignition_rate,
                     epistemic_value=epistemic_value,
                     memory_coherence=memory_coherence,
+                    genesis_emergence=genesis_emergence,
+                    input_correlation=input_correlation,
                 )
             else:
                 entity.evolve(phi_from_network=phi_from_network,
@@ -12880,6 +12981,29 @@ def _try_engineering_query(text):
 class MonitoringDashboard:
     """Creates and manages the monitoring Toplevel window."""
 
+    # One-line description of every tab, shown in the bottom status bar
+    # (mirrors the MODE_BLURB pattern from the ReferenceCode digital
+    # twins — the UI always announces what the active view is for).
+    TAB_BLURBS = {
+        'Overview': 'headline consciousness metrics + grounded hardware readout',
+        'Entities': 'population browser -- click an entity for its full dossier',
+        'Modules': 'monitored modules -- click one for its complete status',
+        'Systems': 'live explorer: every sub-engine and wave tier on the sim',
+        'Neural': 'model architecture, optimizer and training telemetry',
+        'Scaling': 'capacity, retrieval and demand-driven growth (waves 46-52)',
+        'Genesis': 'origin proof, symphony verification and harmony engine',
+        'Substrate': 'host hardware profile, real entropy and world grounding',
+        'Thought Stream': 'consciousness log, dream engine, memory, honesty',
+        'AI Chat': 'talk to the entities -- learn/teach/conversation/broadcast',
+        'Awareness': 'autonomous thought, drives, cross-instrument graph, self-model',
+        'Relations': 'structural reasoning -- reliable edges, multi-hop, transitive',
+        'Symbols': 'learned symbol table -- click a symbol for details',
+        'Memory': 'memory keys -- click a key for its contents',
+        'Neurons': 'neuron groups -- click a group for wiring details',
+        'Screen': 'live screen capture + OCR text the AI is reading',
+        'Charts': 'training curves -- loss, phi, C, karma, coherence, awareness',
+    }
+
     # ----------------------------------------------------------------
     #  Construction
     # ----------------------------------------------------------------
@@ -12899,7 +13023,10 @@ class MonitoringDashboard:
         # ── Toplevel window ──
         self.win = tk.Toplevel(self.root)
         self.win.title("⬡  Consciousness Monitor — Full System Dashboard")
-        self.win.geometry("1100x780")
+        # 17 dedicated tabs must all stay reachable — wide window +
+        # compact tab padding so nothing is clipped off the strip.
+        self.win.geometry("1720x920")
+        self.win.minsize(1280, 640)
         self.win.configure(bg=BG)
         self.win.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -12909,7 +13036,7 @@ class MonitoringDashboard:
         style.configure('Dashboard.TNotebook', background=BG)
         style.configure('Dashboard.TNotebook.Tab',
                         background='#0c1e3a', foreground=FG_HEAD,
-                        padding=[14, 6], font=('Consolas', 10, 'bold'))
+                        padding=[8, 4], font=('Consolas', 9, 'bold'))
         style.map('Dashboard.TNotebook.Tab',
                   background=[('selected', '#0a3a6a')],
                   foreground=[('selected', '#ffffff')])
@@ -12925,18 +13052,31 @@ class MonitoringDashboard:
         # ── OS Control Toggle Bar ──
         self._build_os_control_bar()
 
+        # ── Bottom status bar (reference digital-twin pattern: per-tab
+        # blurb on the left, live headline metrics on the right, always
+        # visible no matter which tab is open) ──
+        self._start_time = time.time()
+        self._build_status_bar()
+
         # ── Notebook ──
         self.notebook = ttk.Notebook(self.win, style='Dashboard.TNotebook')
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        self.notebook.bind('<<NotebookTabChanged>>', self._on_tab_changed)
 
         self._build_overview_tab()
         self._build_entities_tab()
         self._build_modules_tab()
+        self._build_systems_tab()
+        self._build_neural_tab()
+        self._build_scaling_tab()
+        self._build_genesis_tab()
+        self._build_substrate_tab()
         self._build_thought_tab()
         self._build_chat_tab()
         self._build_awareness_tab()
         self._build_relations_tab()
 
+        self._on_tab_changed()
         # ── kick off refresh loop ──
         self._schedule_update()
 
@@ -13040,6 +13180,49 @@ class MonitoringDashboard:
             pass
 
     # ================================================================
+    #  BOTTOM STATUS BAR
+    # ================================================================
+    def _build_status_bar(self):
+        """Reference-viewer bottom bar: per-tab hint left, live status right."""
+        bar = tk.Frame(self.win, bg='#041020', relief='sunken', bd=1)
+        bar.pack(fill=tk.X, side=tk.BOTTOM, padx=4, pady=(0, 4))
+        self._sb_blurb = tk.Label(
+            bar, text='', font=FONT_SM, fg=FG_DIM, bg='#041020', anchor='w')
+        self._sb_blurb.pack(side=tk.LEFT, padx=8, pady=2)
+        self._sb_status = tk.Label(
+            bar, text='', font=FONT_SM, fg=FG_HEAD, bg='#041020', anchor='e')
+        self._sb_status.pack(side=tk.RIGHT, padx=8, pady=2)
+
+    def _on_tab_changed(self, event=None):
+        """Update the blurb line to describe the newly active tab."""
+        try:
+            txt = str(self.notebook.tab(self.notebook.select(), 'text')).strip()
+        except Exception:
+            txt = ''
+        self._sb_blurb.config(
+            text=f"[ {txt.upper() or '?'} ]  {self.TAB_BLURBS.get(txt, '')}")
+
+    def _refresh_status_bar(self):
+        """Live status chips on the right of the bottom bar — real values
+        only, refreshed every cycle like the overview headlines."""
+        sim = self.sim
+        C = _safe(lambda: sim.self_entity.compute_C(), 0)
+        phi = _safe(lambda: sim.last_phi, 0)
+        step = _safe(lambda: sim.training_step, 0)
+        loss = _safe(lambda: sim.loss_history[-1] if sim.loss_history else 0, 0)
+        n_ent = _safe(lambda: len(sim.omega.entities), 0)
+        health = _safe(lambda: dict(getattr(sim, '_thread_health', {})), {})
+        n_live = sum(1 for v in health.values()
+                     if isinstance(v, dict) and v.get('status') == 'running')
+        up = max(0.0, time.time() - getattr(self, '_start_time', time.time()))
+        h, rem = divmod(int(up), 3600)
+        m, s = divmod(rem, 60)
+        self._sb_status.config(text=(
+            f"STEP {step}  |  LOSS {_fmt(loss)}  |  PHI {_fmt(phi)}  |  "
+            f"C {_fmt(C)}  |  ENT {n_ent}  |  THREADS {n_live}  |  "
+            f"UP {h}:{m:02d}:{s:02d}"))
+
+    # ================================================================
     #  TAB 1 — OVERVIEW
     # ================================================================
     def _build_overview_tab(self):
@@ -13141,51 +13324,64 @@ class MonitoringDashboard:
         self._ent_detail.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
 
     # ================================================================
-    #  TAB 3 — MODULE OPERATIONS
+    #  TAB 3 — MODULES (master-detail: list of modules + full dossier)
     # ================================================================
     def _build_modules_tab(self):
+        """Reference-viewer pattern: a searchable list of every monitored
+        module on the left, and the COMPLETE status dossier for the
+        selected module on the right — nothing squashed into a summary."""
         tab = tk.Frame(self.notebook, bg=BG)
         self.notebook.add(tab, text=' Modules ')
+        tab.columnconfigure(0, weight=1, minsize=300)
+        tab.columnconfigure(1, weight=2)
+        tab.rowconfigure(0, weight=1)
 
-        # Scrollable area for all modules
-        canvas = tk.Canvas(tab, bg=BG, highlightthickness=0)
-        vsb = tk.Scrollbar(tab, orient='vertical', command=canvas.yview)
-        self._mod_frame = tk.Frame(canvas, bg=BG)
-        self._mod_frame.bind('<Configure>',
-                             lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
-        canvas.create_window((0, 0), window=self._mod_frame, anchor='nw')
-        canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        # Mouse-wheel scrolling
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        canvas.bind_all('<MouseWheel>', _on_mousewheel)
+        # Left: filterable module list
+        left = tk.Frame(tab, bg=BG)
+        left.grid(row=0, column=0, sticky='nsew', padx=(8, 4), pady=8)
+        tk.Label(left, text='Monitored Modules', font=FONT_HEAD,
+                 fg=FG_HEAD, bg=BG).pack(anchor='w')
+        self._mod_filter_var = tk.StringVar()
+        filt = tk.Entry(left, textvariable=self._mod_filter_var,
+                        bg=BG_ENTRY, fg=FG, font=FONT_MONO,
+                        insertbackground=FG)
+        filt.pack(fill=tk.X, pady=(4, 4))
+        filt.bind('<KeyRelease>', lambda e: self._refresh_module_list())
 
-        self._mod_texts = {}
-        module_names = [
-            'Quantum Substrate', 'Metabolic System', 'Dream Engine',
-            'Existential Self', 'Active Inference', 'Advanced Memory',
-            'Self Model', 'Embodiment', 'Causal Power',
-            'Scale & Connectivity', 'Evo-Dev Engine', 'Social-Linguistic',
-            'Hard Problem Substrate', 'Reality Check',
-            'Continuous Dynamics (ODE)', 'Intrinsic Phi Network',
-            'Field Coupling / Binding', 'Causal Ablation',
-            'Real Entropy Tracker', 'Hardware Coupled',
-            'Entangled Shared Memory', 'Consequence Engine',
-            'Causal Topology', 'Jacobian Integration',
-            'Network Verifier', 'External Verifier',
-            'Independent Verification', 'Global Workspace',
-        ]
-        for name in module_names:
-            lf = tk.LabelFrame(self._mod_frame, text=f'  {name}  ',
-                               bg=BG_PANEL, fg=FG_HEAD, font=FONT_SM,
-                               padx=6, pady=4)
-            lf.pack(fill=tk.X, padx=8, pady=3)
-            txt = tk.Text(lf, height=3, bg=BG_PANEL, fg=FG, font=FONT_SM,
-                          relief='flat', wrap='word', state='disabled')
-            txt.pack(fill=tk.X)
-            self._mod_texts[name] = txt
+        lf = tk.Frame(left, bg=BG)
+        lf.pack(fill=tk.BOTH, expand=True)
+        self._mod_listbox = tk.Listbox(
+            lf, bg=BG_PANEL, fg=FG_ORANGE, font=FONT_MONO,
+            selectbackground='#0a3a6a', selectforeground='#ffffff',
+            relief='flat')
+        sb = tk.Scrollbar(lf, command=self._mod_listbox.yview)
+        self._mod_listbox.config(yscrollcommand=sb.set)
+        self._mod_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._mod_listbox.bind('<<ListboxSelect>>', self._on_module_select)
+
+        # Right: selected module's complete status dossier
+        right = tk.Frame(tab, bg=BG)
+        right.grid(row=0, column=1, sticky='nsew', padx=(4, 8), pady=8)
+        tk.Label(right, text='Module Detail — full live status',
+                 font=FONT_HEAD, fg=FG_HEAD, bg=BG).pack(anchor='w')
+        self._mod_detail = self._dossier_widget(right)
+        self._mod_detail.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+
+        self._mod_names = []          # listbox row -> module name
+        self._mod_selected = None
+        self._mod_cache = {}          # name -> last status dict
+
+    def _dossier_widget(self, parent):
+        """A read-only ScrolledText pre-tagged with the dossier colour
+        styles used by every detail panel (h/d/w/g/s/b)."""
+        w = scrolledtext.ScrolledText(
+            parent, bg=BG_PANEL, fg=FG, font=FONT_SM,
+            relief='flat', wrap='word', state='disabled')
+        for tag, col in (('h', FG_HEAD), ('d', FG_DIM), ('w', FG_WARN),
+                         ('g', FG_GOOD), ('s', FG_ORANGE), ('b', FG_BAD)):
+            w.tag_configure(tag, foreground=col)
+        return w
 
     # ================================================================
     #  TAB 4 — THOUGHT STREAM
@@ -14021,8 +14217,12 @@ class MonitoringDashboard:
         if not self.win.winfo_exists():
             self._running = False
             return
-        # Always update overview headlines
+        # Always update overview headlines + bottom status bar
         self._refresh_overview_headlines()
+        try:
+            self._refresh_status_bar()
+        except Exception:
+            pass
         # Only refresh the ACTIVE tab's detail panels (performance).
         # Dispatch by tab TEXT, not index: index-based dispatch silently
         # refreshes the wrong panel the moment a tab is inserted anywhere
@@ -14036,6 +14236,11 @@ class MonitoringDashboard:
             'Overview': self._refresh_overview,
             'Entities': self._refresh_entities,
             'Modules': self._refresh_modules,
+            'Systems': self._refresh_systems,
+            'Neural': self._refresh_neural,
+            'Scaling': self._refresh_scaling,
+            'Genesis': self._refresh_genesis,
+            'Substrate': self._refresh_substrate,
             'Thought': self._refresh_thought,
             'Chat': self._refresh_chat_targets,
             'Awareness': self._refresh_awareness,
@@ -14294,6 +14499,24 @@ class MonitoringDashboard:
                     f"  Last Loss:     {_fmt(sim.loss_history[-1] if sim.loss_history else 0)}",
                     f"  Last Phi:      {_fmt(sim.last_phi)}",
                 ]
+                # Five-state frame + symphony index (CSFORMULAREFINED Parts II/IV):
+                # the states exist simultaneously and separately when measured.
+                states = state.get('states') or {}
+                if states:
+                    lines += [
+                        f"",
+                        f"── Five States (simultaneous & separate) ──",
+                        f"  G1 alpha              : {states.get('G1_alpha', 0):.6f}",
+                        f"  G2 omega              : {states.get('G2_omega', 0):.6f}",
+                        f"  G3 inbetween          : {states.get('G3_inbetween', 0):.6f}",
+                        f"  G4 total_sum          : {states.get('G4_total_sum', 0):.6f}",
+                        f"  G5 intelligent_omega  : {states.get('G5_intelligent_omega', 0):.6f}",
+                        # 7th symphony voice: measured input correlation
+                        # (Correlation stage) — 0 until organized input
+                        # produces durable cross-instrument coupling.
+                        f"  G_in input correlation: {state.get('input_correlation', 0):.6f}",
+                        f"  Symphony index        : {state.get('symphony_index', 0):.6f}",
+                    ]
 
             # ── Neural Pathway Map ──
             try:
@@ -14356,9 +14579,11 @@ class MonitoringDashboard:
         self._set_text(self._ent_detail, '\n'.join(lines))
 
     # ── Modules ─────────────────────────────────────────────────────
-    def _refresh_modules(self):
+    def _module_sources(self):
+        """name -> callable returning the module's live status. Single
+        source of truth for both the module list and its detail panel."""
         sim = self.sim
-        mod_data = {
+        return {
             'System Health': lambda: getattr(sim, '_thread_health', {}),
             'Quantum Substrate': lambda: sim.quantum_substrate.get_status() if hasattr(sim.quantum_substrate, 'get_status') else sim._last_quantum_info,
             'Metabolic System': lambda: sim.metabolic_system.get_status() if hasattr(sim.metabolic_system, 'get_status') else sim._last_metabolic_info,
@@ -14389,16 +14614,54 @@ class MonitoringDashboard:
             'Independent Verification': lambda: sim.independent_verifier.get_status(),
             'Global Workspace': lambda: sim.global_workspace.get_status() if sim.global_workspace and hasattr(sim.global_workspace, 'get_status') else {'status': 'N/A'},
         }
-        for name, fn in mod_data.items():
-            if name not in self._mod_texts:
-                continue
-            status = _safe(fn, {})
-            if isinstance(status, dict):
-                text = '  '.join(f"{k}={_fmt(v) if isinstance(v, float) else v}"
-                                 for k, v in status.items())
-            else:
-                text = str(status)
-            self._set_text(self._mod_texts[name], text or '(no data)')
+
+    def _refresh_modules(self):
+        self._refresh_module_list()
+        self._refresh_module_detail()
+
+    def _refresh_module_list(self):
+        sources = self._module_sources()
+        filt = self._mod_filter_var.get().lower()
+        names = [n for n in sources if filt in n.lower()] if filt else list(sources)
+        # Snapshot each module's status once per cycle: the ● / ○ marker in
+        # the list AND the detail panel both read this cache, so selecting a
+        # row never triggers a second (possibly slow) status call.
+        self._mod_cache = {n: _safe(sources[n], {}) for n in names}
+        self._mod_listbox.delete(0, tk.END)
+        self._mod_names = list(names)
+        for name in names:
+            st = self._mod_cache[name]
+            live = bool(st) and st != '—'
+            self._mod_listbox.insert(tk.END, f"{'●' if live else '○'} {name}")
+        # Preserve the operator's selection across rebuilds
+        if self._mod_selected in self._mod_names:
+            self._mod_listbox.selection_set(self._mod_names.index(self._mod_selected))
+        elif self._mod_names:
+            self._mod_listbox.selection_set(0)
+            self._mod_selected = self._mod_names[0]
+
+    def _on_module_select(self, event=None):
+        sel = self._mod_listbox.curselection()
+        if not sel:
+            return
+        self._mod_selected = self._mod_names[sel[0]]
+        self._refresh_module_detail()
+
+    def _refresh_module_detail(self):
+        name = self._mod_selected
+        if not name:
+            return
+        st = self._mod_cache.get(name)
+        if st is None:
+            st = _safe(self._module_sources().get(name, lambda: {}), {})
+        lines = [
+            ('═' * 52, 'd'),
+            (f'  {name}', 'h'),
+            ('═' * 52, 'd'),
+            ('', 't'),
+        ]
+        lines += self._dump(st)
+        self._fill_dossier(self._mod_detail, lines)
 
     # ── Thought Stream ──────────────────────────────────────────────
     def _refresh_thought(self):
@@ -14479,6 +14742,540 @@ class MonitoringDashboard:
         self._chat_target['values'] = targets
         if current not in targets and targets:
             pass  # keep current selection
+
+    # ================================================================
+    #  DOSSIER HELPERS — shared by every detail panel
+    # ================================================================
+    @staticmethod
+    def _fmt_val(v):
+        if isinstance(v, float):
+            return _fmt(v, 6)
+        s = str(v)
+        return s if len(s) <= 200 else s[:197] + '…'
+
+    def _dump(self, obj, depth=0, out=None, max_items=60):
+        """Flatten a live status structure into (text, style) dossier
+        lines — the ReferenceCode spec-panel pattern where every computed
+        value is shown, nested and labelled, never truncated to a summary.
+        Styles: h=header, t=text, d=dim, w=warn, g=good, s=sub-item,
+        b=bad."""
+        if out is None:
+            out = []
+        pad = '  ' * depth
+        if depth > 4:
+            out.append((pad + '…', 'd'))
+            return out
+        if isinstance(obj, dict):
+            if not obj:
+                out.append((pad + '(empty)', 'd'))
+            for i, (k, v) in enumerate(obj.items()):
+                if i >= max_items:
+                    out.append((pad + f'… +{len(obj) - max_items} more keys', 'd'))
+                    break
+                if isinstance(v, dict):
+                    out.append((f'{pad}── {k} ──', 'h'))
+                    self._dump(v, depth + 1, out, max_items)
+                elif isinstance(v, (list, tuple, set)):
+                    out.append((f'{pad}{k}:', 'h'))
+                    self._dump(v, depth + 1, out, max_items)
+                else:
+                    sty = 'g' if str(k).lower() in (
+                        'status', 'ok', 'running', 'alive', 'passed',
+                        'enabled', 'serving') else 't'
+                    out.append((f'{pad}{k}: {self._fmt_val(v)}', sty))
+        elif isinstance(obj, (list, tuple, set)):
+            items = list(obj)
+            if all(not isinstance(x, (dict, list, tuple, set)) for x in items):
+                joined = ', '.join(self._fmt_val(x) for x in items[:12])
+                out.append((pad + joined +
+                            (f'  … (+{len(items) - 12})' if len(items) > 12 else ''), 't'))
+            else:
+                for i, x in enumerate(items):
+                    if i >= max_items:
+                        out.append((pad + f'… +{len(items) - max_items} more', 'd'))
+                        break
+                    if isinstance(x, dict):
+                        out.append((f'{pad}- item {i}', 's'))
+                        self._dump(x, depth + 1, out, max_items)
+                    else:
+                        out.append((f'{pad}- {self._fmt_val(x)}', 's'))
+        else:
+            out.append((pad + self._fmt_val(obj), 't'))
+        return out
+
+    @staticmethod
+    def _sec(title):
+        """Section header line, the '-- TITLE ----' dossier marker."""
+        return ('', 'd'), (f'── {title} ' + '─' * max(4, 48 - len(title)), 'h')
+
+    def _fill_dossier(self, widget, lines):
+        widget.configure(state='normal')
+        widget.delete(1.0, tk.END)
+        for text, style in lines:
+            widget.insert(tk.END, text + '\n', style)
+        widget.configure(state='disabled')
+
+    # ================================================================
+    #  TAB — SYSTEMS (auto-discovered explorer of every sub-engine)
+    # ================================================================
+    def _build_systems_tab(self):
+        """Live registry of everything installed on the simulator: every
+        attribute exposing get_status(), the wave-46→52 public APIs, and
+        the sovereign orchestrator's micro-engines — click any row for its
+        complete live status dump."""
+        tab = tk.Frame(self.notebook, bg=BG)
+        self.notebook.add(tab, text=' Systems ')
+        tab.columnconfigure(0, weight=1, minsize=300)
+        tab.columnconfigure(1, weight=2)
+        tab.rowconfigure(0, weight=1)
+
+        left = tk.Frame(tab, bg=BG)
+        left.grid(row=0, column=0, sticky='nsew', padx=(8, 4), pady=8)
+        tk.Label(left, text='Installed Engines & Tiers', font=FONT_HEAD,
+                 fg=FG_HEAD, bg=BG).pack(anchor='w')
+        self._sys_filter_var = tk.StringVar()
+        filt = tk.Entry(left, textvariable=self._sys_filter_var,
+                        bg=BG_ENTRY, fg=FG, font=FONT_MONO,
+                        insertbackground=FG)
+        filt.pack(fill=tk.X, pady=(4, 4))
+        filt.bind('<KeyRelease>', lambda e: self._refresh_system_list())
+
+        lf = tk.Frame(left, bg=BG)
+        lf.pack(fill=tk.BOTH, expand=True)
+        self._sys_listbox = tk.Listbox(
+            lf, bg=BG_PANEL, fg=FG_ORANGE, font=FONT_SM,
+            selectbackground='#0a3a6a', selectforeground='#ffffff',
+            relief='flat')
+        sb = tk.Scrollbar(lf, command=self._sys_listbox.yview)
+        self._sys_listbox.config(yscrollcommand=sb.set)
+        self._sys_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._sys_listbox.bind('<<ListboxSelect>>', self._on_system_select)
+
+        right = tk.Frame(tab, bg=BG)
+        right.grid(row=0, column=1, sticky='nsew', padx=(4, 8), pady=8)
+        tk.Label(right, text='Engine Detail — live state',
+                 font=FONT_HEAD, fg=FG_HEAD, bg=BG).pack(anchor='w')
+        self._sys_detail = self._dossier_widget(right)
+        self._sys_detail.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+
+        self._sys_registry = []       # (name, kind, ref)
+        self._sys_rows = []           # filtered rows currently displayed
+        self._sys_selected = None
+
+    def _systems_registry(self):
+        """Discover every inspectable subsystem on the live simulator."""
+        sim = self.sim
+        items = []
+        seen = set()
+        # 1. Every sim attribute exposing get_status()
+        try:
+            attr_names = sorted(vars(sim).keys())
+        except Exception:
+            attr_names = []
+        for name in attr_names:
+            if name in ('monitoring_dashboard', 'root', 'optimizer'):
+                continue
+            obj = getattr(sim, name, None)
+            if obj is None:
+                continue
+            if callable(getattr(obj, 'get_status', None)):
+                items.append((name, type(obj).__name__, obj))
+                seen.add(name)
+        # 2. Wave public APIs (monkey-patched sim methods, not attributes)
+        for api in ('wave46_status', 'wave46_self_image',
+                    'wave47_status', 'wave48_status',
+                    'wave48_checkpoint_status', 'wave49_status',
+                    'wave50_status', 'wave50_capacity',
+                    'wave51_status', 'wave51_capacity',
+                    'wave52_status', 'wave52_settings'):
+            fn = getattr(sim, api, None)
+            if callable(fn) and api not in seen:
+                items.append((api + '()', 'WaveAPI', fn))
+                seen.add(api)
+        # 3. Sovereign orchestrator micro-engines (no get_status — the
+        # detail panel falls back to a live attribute summary)
+        orch = getattr(sim, '_sovereign_orchestrator', None)
+        for attr in getattr(orch, '_sub_engines', ()) or ():
+            if attr in seen:
+                continue
+            obj = getattr(sim, attr, None)
+            if obj is not None:
+                items.append((attr, type(obj).__name__, obj))
+                seen.add(attr)
+        return items
+
+    def _engine_status_of(self, ref):
+        """Resolve one registry row to a status structure."""
+        if callable(ref) and not callable(getattr(ref, 'get_status', None)):
+            return _safe(ref, {})
+        gs = getattr(ref, 'get_status', None)
+        if callable(gs):
+            return _safe(gs, {})
+        # Engine without get_status: summarize its live scalar attributes
+        d = {'class': type(ref).__name__}
+        try:
+            for k, v in list(vars(ref).items())[:24]:
+                if isinstance(v, (int, float, str, bool)) or v is None:
+                    d[k] = v
+                elif isinstance(v, (list, dict, tuple, set)):
+                    d[k] = f'{type(v).__name__}[{len(v)}]'
+                else:
+                    d[k] = type(v).__name__
+        except Exception:
+            try:
+                d['repr'] = repr(ref)[:200]
+            except Exception:
+                pass
+        return d
+
+    def _refresh_systems(self):
+        self._refresh_system_list()
+        self._refresh_system_detail()
+
+    def _refresh_system_list(self):
+        self._sys_registry = self._systems_registry()
+        filt = self._sys_filter_var.get().lower()
+        rows = [it for it in self._sys_registry
+                if not filt or filt in it[0].lower() or filt in it[1].lower()]
+        self._sys_rows = rows
+        self._sys_listbox.delete(0, tk.END)
+        for name, kind, _ in rows:
+            self._sys_listbox.insert(tk.END, f'{name}  [{kind}]')
+        if self._sys_selected in [r[0] for r in rows]:
+            idx = [r[0] for r in rows].index(self._sys_selected)
+            self._sys_listbox.selection_set(idx)
+        elif rows:
+            self._sys_listbox.selection_set(0)
+            self._sys_selected = rows[0][0]
+
+    def _on_system_select(self, event=None):
+        sel = self._sys_listbox.curselection()
+        if not sel:
+            return
+        self._sys_selected = self._sys_rows[sel[0]][0]
+        self._refresh_system_detail()
+
+    def _refresh_system_detail(self):
+        name = self._sys_selected
+        if not name:
+            return
+        row = next((r for r in self._sys_registry if r[0] == name), None)
+        if row is None:
+            return
+        _, kind, ref = row
+        st = self._engine_status_of(ref)
+        lines = [
+            ('═' * 52, 'd'),
+            (f'  {name}', 'h'),
+            (f'  {kind}', 'd'),
+            ('═' * 52, 'd'),
+            ('', 't'),
+        ]
+        lines += self._dump(st)
+        self._fill_dossier(self._sys_detail, lines)
+
+    # ================================================================
+    #  TAB — NEURAL (model + training telemetry)
+    # ================================================================
+    def _build_neural_tab(self):
+        """The network itself: architecture, parameters, optimizer state,
+        training curves statistics, neuron groups, and the wave-47/48
+        generation+persistence substrate."""
+        tab = tk.Frame(self.notebook, bg=BG)
+        self.notebook.add(tab, text=' Neural ')
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+        self._neural_text = self._dossier_widget(tab)
+        self._neural_text.grid(row=0, column=0, sticky='nsew', padx=8, pady=8)
+
+    def _refresh_neural(self):
+        sim = self.sim
+        L = []
+        L += self._sec('MODEL / ARCHITECTURE')
+        p_total = _safe(lambda: sum(p.numel() for p in sim.parameters()), 0)
+        p_train = _safe(lambda: sum(p.numel() for p in sim.parameters()
+                                    if p.requires_grad), 0)
+        try:
+            dtype = next(sim.parameters()).dtype
+        except Exception:
+            dtype = '?'
+        L += [
+            (f'class        : {type(sim).__name__} (nn.Module)', 't'),
+            (f'device       : {getattr(sim, "device", "?")}   dtype: {dtype}', 't'),
+            (f'parameters   : {p_total:,}   (trainable {p_train:,})', 'g'),
+            (f'vocab_size   : {getattr(sim, "vocab_size", "?")}', 't'),
+            (f'hidden_size  : {getattr(sim, "hidden_size", "?")}   '
+             f'input_size: {getattr(sim, "input_size", "?")}', 't'),
+            (f'num_layers   : {CONFIG.get("n_layers", "?")}   '
+             f'num_heads: {CONFIG.get("num_heads", "?")}   '
+             f'model_scale: {CONFIG.get("model_scale", os.environ.get("CS_MODEL_SCALE", "tiny"))}', 't'),
+            (f'transformer  : {type(getattr(sim, "transformer", None)).__name__}   '
+             f'compiled: {bool(getattr(sim, "_compiled", False))}', 't'),
+            (f'embedding    : nn.Embedding[{getattr(sim, "vocab_size", "?")}, '
+             f'{getattr(sim, "hidden_size", "?")}]   lm_head tied: '
+             f'{getattr(getattr(sim, "lm_head", None), "weight", None) is getattr(getattr(sim, "embedding", None), "weight", None)}', 't'),
+            (f'global_workspace : {type(getattr(sim, "global_workspace", None)).__name__}', 't'),
+            (f'frontier_suite   : {"installed" if getattr(sim, "_frontier_suite", None) is not None else "not installed"}', 't'),
+        ]
+
+        L += self._sec('OPTIMIZER / SCHEDULER')
+        opt = getattr(sim, 'optimizer', None)
+        if opt is not None:
+            try:
+                lr = opt.param_groups[0].get('lr', '?')
+                wd = opt.param_groups[0].get('weight_decay', '?')
+                L += [
+                    (f'optimizer    : {type(opt).__name__}   '
+                     f'lr: {lr}   weight_decay: {wd}', 't'),
+                    (f'param_groups : {len(opt.param_groups)}   '
+                     f'betas: {opt.param_groups[0].get("betas", "?")}', 't'),
+                ]
+            except Exception:
+                L.append((f'optimizer    : {type(opt).__name__}', 't'))
+        else:
+            L.append(('optimizer    : none', 'd'))
+        sched = getattr(sim, 'scheduler', None)
+        if sched is not None:
+            L.append((f'scheduler    : {type(sched).__name__}   '
+                      f'last_epoch: {getattr(sched, "last_epoch", "?")}', 't'))
+
+        L += self._sec('TRAINING')
+        losses = list(getattr(sim, 'loss_history', []) or [])
+        phis = list(getattr(sim, 'phi_history', []) or [])
+        if losses:
+            tail = losses[-100:]
+            L += [
+                (f'training_step : {getattr(sim, "training_step", 0)}', 'g'),
+                (f'loss          : last {losses[-1]:.6f}   '
+                 f'min {min(losses):.6f}   '
+                 f'mean(last {len(tail)}) {sum(tail) / len(tail):.6f}   '
+                 f'first {losses[0]:.6f}', 't'),
+                (f'loss_history  : {len(losses)} samples   '
+                 f'improvement: {losses[0] - losses[-1]:+.6f}', 't'),
+            ]
+        else:
+            L.append(('no loss history yet', 'd'))
+        if phis:
+            L.append((f'phi_history   : {len(phis)} samples   '
+                      f'last {phis[-1]:.6f}   max {max(phis):.6f}', 't'))
+        L.append((f'consciousness_log : {len(getattr(sim, "consciousness_log", []) or [])} entries', 't'))
+
+        L += self._sec('NEURON GROUPS')
+        try:
+            groups = getattr(sim, 'neuron_groups', {}) or {}
+            if not groups:
+                L.append(('(none — use Add Neuron to assign)', 'd'))
+            for cat, grp in groups.items():
+                types = [type(n).__name__ for n in grp.neurons]
+                n_par = sum(p.numel() for p in grp.parameters())
+                L.append((f'{cat}: {len(grp.neurons)} neurons, {n_par:,} params   '
+                          f'{"  ->  ".join(types)}', 's'))
+        except Exception as e:
+            L.append((f'neuron groups unavailable: {e}', 'w'))
+
+        L += self._sec('WAVE 47 — GENERATION SUBSTRATE')
+        L += self._dump(_safe(lambda: sim.wave47_status(), {}), depth=1)
+        L += self._sec('WAVE 48 — PERSISTENCE / CHECKPOINTS')
+        L += self._dump(_safe(lambda: sim.wave48_checkpoint_status(), {}), depth=1)
+        self._fill_dossier(self._neural_text, L)
+
+    # ================================================================
+    #  TAB — SCALING (capacity + waves 46-52)
+    # ================================================================
+    def _build_scaling_tab(self):
+        """How big the system can get and how it decides: the wave-46
+        subconscious core, wave-49 retrieval/compute scaling, wave-50/51
+        capacity tiers, and wave-52 demand-driven settings."""
+        tab = tk.Frame(self.notebook, bg=BG)
+        self.notebook.add(tab, text=' Scaling ')
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+        self._scaling_text = self._dossier_widget(tab)
+        self._scaling_text.grid(row=0, column=0, sticky='nsew', padx=8, pady=8)
+
+    def _refresh_scaling(self):
+        sim = self.sim
+        L = []
+        for title, calls in (
+            ('WAVE 46 — SUBCONSCIOUS CORE & COGNITIVE CLOCK',
+             (('status', 'wave46_status'),)),
+            ('WAVE 49 — RETRIEVAL & TEST-TIME COMPUTE',
+             (('status', 'wave49_status'),)),
+            ('WAVE 50 — CAPACITY & AUTONOMOUS TRAINING',
+             (('status', 'wave50_status'), ('capacity', 'wave50_capacity'))),
+            ('WAVE 51 — UNBOUNDED SCALING',
+             (('status', 'wave51_status'), ('capacity', 'wave51_capacity'))),
+            ('WAVE 52 — DEMAND SCALING & OPERATOR SETTINGS',
+             (('status', 'wave52_status'), ('settings', 'wave52_settings'))),
+        ):
+            L += self._sec(title)
+            for label, api in calls:
+                fn = getattr(sim, api, None)
+                if not callable(fn):
+                    L.append((f'  {label}: {api} unavailable', 'd'))
+                    continue
+                st = _safe(fn, {})
+                if st in ({}, '—', None):
+                    L.append((f'  {label}: (no data — tier not initialised)', 'd'))
+                    continue
+                if len(calls) > 1:
+                    L.append((f'  ── {label} ──', 'h'))
+                    L += self._dump(st, depth=2)
+                else:
+                    L += self._dump(st, depth=1)
+        self._fill_dossier(self._scaling_text, L)
+
+    # ================================================================
+    #  TAB — GENESIS (origin proof + harmony + dimensional frame)
+    # ================================================================
+    def _build_genesis_tab(self):
+        """The founding formalism made visible: the GenesisEngine's live
+        growth state, the 11-assertion Symphony proof run against the live
+        engine, synphonetic harmony, and the 0D-6D construction."""
+        tab = tk.Frame(self.notebook, bg=BG)
+        self.notebook.add(tab, text=' Genesis ')
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+        self._genesis_text = self._dossier_widget(tab)
+        self._genesis_text.grid(row=0, column=0, sticky='nsew', padx=8, pady=8)
+        self._genesis_proof = None      # (timestamp, verify_all result)
+
+    def _refresh_genesis(self):
+        sim = self.sim
+        L = []
+        L += self._sec('GENESIS ENGINE — structure from the empty set')
+        L += self._dump(_safe(lambda: sim.genesis.get_status(), {}), depth=1)
+
+        L += self._sec('SYMPHONY OF SELF-DIFFERENTIATION — 11-step proof')
+        # The proof instantiates and runs its own bounded engine; cached
+        # for 30 s so the 3 s refresh cadence does not re-run it constantly.
+        now = time.time()
+        cached = getattr(self, '_genesis_proof', None)
+        if cached is None or now - cached[0] > 30:
+            res = _safe(lambda: SymphonyProofVerifier.verify_all(verbose=False), None)
+            self._genesis_proof = (now, res)
+            cached = self._genesis_proof
+        res = cached[1]
+        if not isinstance(res, dict):
+            L.append(('proof verifier unavailable', 'w'))
+        else:
+            for stp in res.get('steps', []):
+                mark = 'PASS' if stp.get('passed') else 'FAIL'
+                L.append((f'  [{mark}] [{stp.get("kind", ""):10}] '
+                          f'{stp.get("step", "")}',
+                          'g' if stp.get('passed') else 'b'))
+                L.append((f'         {stp.get("detail", "")}', 'd'))
+            L.append(('', 't'))
+            L.append((f'  overall: {"ALL STEPS PASSED" if res.get("all_passed") else "SOME STEPS FAILED"}',
+                      'g' if res.get('all_passed') else 'b'))
+
+        L += self._sec('SYNPHONETIC HARMONY — nested Ω-resonance')
+        L += self._dump(_safe(
+            lambda: sim.synergy_harmony.get_status(), {}), depth=1)
+
+        L += self._sec('DIMENSIONAL CONSTRUCTION — 0D to 6D')
+        for dim, spec in DIMENSIONAL_CONSTRUCTION.items():
+            L.append((f'  [{dim}D] {spec.get("name", "")}', 'h'))
+            L.append((f'       {spec.get("description", "")}', 't'))
+            L.append((f'       math   : {spec.get("math", "")}', 'd'))
+            L.append((f'       concept: {spec.get("concept", "")}', 'd'))
+            L.append((f'       symphony: {spec.get("symphony_mapping", "")}', 's'))
+
+        L += self._sec('TRANSLATION BUBBLE')
+        L += self._dump(TRANSLATION_BUBBLE, depth=1)
+
+        L += self._sec('EXPERIENTIAL ENGINES')
+        for label, attr in (('residual_imaging', 'residual_imaging'),
+                            ('computed_experience', 'computed_experience'),
+                            ('reality_matching', 'reality_matching'),
+                            ('perpetual_intelligence', 'perpetual_intelligence'),
+                            ('hurdle_bypass', 'hurdle_bypass')):
+            eng = getattr(sim, attr, None)
+            if eng is None:
+                continue
+            L.append((f'  ── {label} ──', 'h'))
+            st = _safe(lambda e=eng: e.get_status(), {}) \
+                if callable(getattr(eng, 'get_status', None)) else {}
+            if st:
+                L += self._dump(st, depth=2)
+            else:
+                L.append(('    (no status)', 'd'))
+        self._fill_dossier(self._genesis_text, L)
+
+    # ================================================================
+    #  TAB — SUBSTRATE (host hardware + real-world grounding)
+    # ================================================================
+    def _build_substrate_tab(self):
+        """What this host actually is: the probed hardware profile, the
+        hardware-coupled metrics, real entropy/power accounting, shared
+        memory, consequences, and the live sensory channel levels."""
+        tab = tk.Frame(self.notebook, bg=BG)
+        self.notebook.add(tab, text=' Substrate ')
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+        self._substrate_text = self._dossier_widget(tab)
+        self._substrate_text.grid(row=0, column=0, sticky='nsew', padx=8, pady=8)
+
+    def _refresh_substrate(self):
+        sim = self.sim
+        L = []
+        probe = getattr(sim, 'substrate', None)
+        L += self._sec('HOST PROFILE — what this machine provides')
+        prof = getattr(probe, 'profile', None) if probe else None
+        if prof:
+            L += self._dump(prof, depth=1)
+        else:
+            L.append(('(probe has not run yet)', 'd'))
+
+        L += self._sec('LIVE SENSORY CHANNELS')
+        live = set(probe.live_channels()) if probe and hasattr(probe, 'live_channels') else set()
+        channels = getattr(sim, '_last_sensory_channels', {}) or {}
+        for name in AutonomousThoughtStream.CHANNELS:
+            vec = channels.get(name)
+            try:
+                arr = np.asarray(vec, dtype=np.float64).flatten()
+                level = float(np.tanh(np.linalg.norm(arr) / (arr.size ** 0.5 + 1e-6))) \
+                    if arr.size else 0.0
+                active = arr.size > 0 and float(np.abs(arr).max()) > 1e-9
+            except Exception:
+                level, active = 0.0, False
+            hinted = any(name in k for k in live)
+            tag = 'g' if active else ('d' if hinted else 'b')
+            state = 'active' if active else ('idle' if hinted else 'absent')
+            L.append((f'  {name:<14} level={level:.3f}  [{state}]', tag))
+
+        L += self._sec('HARDWARE COUPLING')
+        L += self._dump(_safe(lambda: sim.hardware_coupled.get_status(), {}), depth=1)
+        L += self._sec('REAL ENTROPY / POWER')
+        L += self._dump(_safe(lambda: sim.real_entropy.get_status(), {}), depth=1)
+        L += self._sec('ENTANGLED SHARED MEMORY')
+        L += self._dump(_safe(lambda: sim.entangled_memory.get_status(), {}), depth=1)
+        L += self._sec('CONSEQUENCE ENGINE')
+        L += self._dump(_safe(lambda: sim.consequence_engine.get_status(), {}), depth=1)
+        L += self._sec('EMBODIMENT')
+        L += self._dump(_safe(lambda: sim.embodiment.get_status(), {}), depth=1)
+        L += self._dump(_safe(lambda: sim.embodiment.get_ledger_summary(), {}), depth=1)
+
+        L += self._sec('VIRTUAL WORLD / SCREEN')
+        proc = getattr(sim, '_pygame_process', None)
+        if proc is not None:
+            L.append((f'pygame world process : pid {getattr(proc, "pid", "?")}   '
+                      f'alive: {_safe(lambda: proc.is_alive(), "?")}', 't'))
+        else:
+            L.append(('pygame world process : not running', 'd'))
+        wsf = getattr(sim, '_world_state_file', None)
+        if wsf and os.path.exists(wsf):
+            try:
+                st = os.stat(wsf)
+                L.append((f'world_state.json     : {st.st_size:,} bytes   '
+                          f'modified {time.strftime("%H:%M:%S", time.localtime(st.st_mtime))}', 't'))
+            except Exception:
+                pass
+        last_shot = getattr(sim, '_last_screenshot_ts', None)
+        if last_shot:
+            L.append((f'last screen capture  : {time.time() - last_shot:.0f}s ago', 't'))
+        self._fill_dossier(self._substrate_text, L)
 
     # ── Helpers ─────────────────────────────────────────────────────
     @staticmethod
@@ -16309,6 +17106,24 @@ class RelationalKnowledgeGraph:
 
     def reliable_edges(self):
         return {k: v for k, v in self.edges.items() if v['reliable']}
+
+    def correlation_index(self, target=10):
+        """Measured degree to which organized input has become correlated —
+        the 'Correlation' stage of the Void->...->Omega->Correlation grammar.
+
+        coverage x strength over reliable CROSS-INSTRUMENT edges only:
+        within-channel agreement is a feature-construction artifact, not
+        learned structure (see is_cross_channel). Returns 0.0 until the
+        system has actually measured durable couplings between its own
+        instruments -- a relation must survive >= min_evidence observations
+        with a stable estimate and |r| >= form_threshold before it counts.
+        """
+        cross = [abs(v['r']) for v in self.reliable_edges().values() if v.get('cross')]
+        if not cross:
+            return 0.0
+        coverage = min(1.0, len(cross) / max(1, target))
+        strength = sum(cross) / len(cross)
+        return float(coverage * strength)
 
     # ---------------- transitive logic over its own structure ----------------
     def infer_transitive(self, history, max_tests=3, corr=None):
@@ -19606,7 +20421,8 @@ class ConsciousnessSimulator(nn.Module):
         if self._layer_outputs_np_dirty:
             with torch.no_grad():
                 self._last_layer_outputs_np = [
-                    lo.cpu().numpy() for lo in self._last_layer_outputs
+                    lo.detach().float().cpu().numpy()
+                    for lo in self._last_layer_outputs
                 ]
             self._layer_outputs_np_dirty = False
         return self._last_layer_outputs_np
@@ -19869,6 +20685,70 @@ class ConsciousnessSimulator(nn.Module):
         if time.time() - self._last_perf_update > 10:  # Every 10 seconds
             self._update_performance_summary()
             self._last_perf_update = time.time()
+
+    def _mine_instruction_pairs(self, n_docs=64, max_pairs=48):
+        """Mine (prompt, response) instruction pairs from the LIVE retrieval
+        index — i.e. from data the system actually ingested (corpus files,
+        data_bank textbooks/extracts, learned documents), not from the
+        hard-coded seed banks.
+
+        Extraction is deliberately conservative: only sentences with a
+        definitional or factoid shape become pairs. Three forms:
+
+          "X is/are/was Y"          -> ("What is X?", sentence)
+          "X, a Y, ..."             -> ("Define X.", sentence)
+          declarative sentence      -> ("Complete the thought:", prefix->rest)
+
+        Returns a list of (prompt, response); empty when the index has no
+        usable documents yet — callers fall back to the seed set, which is
+        the correct behaviour at cold start rather than a defect.
+        """
+        pairs = []
+        try:
+            w49 = getattr(self, '_wave49', None)
+            docs = getattr(getattr(w49, 'retriever', None), 'index', None)
+            docs = getattr(docs, 'docs', None) if docs is not None else None
+            if not docs:
+                return pairs
+            sample = random.sample(list(docs), min(n_docs, len(docs)))
+            _def_re = re.compile(
+                r'^\s*([A-Z][A-Za-z0-9 _\-]{2,60}?)\s+(is|are|was|were|means|refers to)\s+(.{20,300})$')
+            for d in sample:
+                text = str(d.get('text', ''))
+                for sent in re.split(r'(?<=[.!?])\s+', text):
+                    sent = sent.strip()
+                    if len(sent) < 40 or len(sent) > 320:
+                        continue
+                    m = _def_re.match(sent)
+                    if m and len(m.group(1).split()) <= 8:
+                        term = m.group(1).strip().rstrip(',')
+                        pairs.append((f"What is {term}?", sent if sent.endswith('.') else sent + '.'))
+                    elif random.random() < 0.15:
+                        # Cloze-style: predict the tail of a real sentence —
+                        # teaches completion format on real data without
+                        # needing a question to exist in the source text.
+                        words = sent.split()
+                        if len(words) >= 12:
+                            cut = random.randint(max(4, len(words) // 3),
+                                                 max(5, 2 * len(words) // 3))
+                            pairs.append(("Complete the passage: " +
+                                          ' '.join(words[:cut]),
+                                          ' '.join(words[cut:])))
+                    if len(pairs) >= max_pairs:
+                        return pairs
+        except Exception:
+            pass
+        return pairs
+
+    def _sample_instruction_pair(self):
+        """Prefer a data-mined instruction pair; seed set only as fallback."""
+        mined = getattr(self, '_mined_instruction_cache', None)
+        if not mined or random.random() < 0.1:  # re-mine periodically
+            mined = self._mine_instruction_pairs()
+            self._mined_instruction_cache = mined
+        if mined:
+            return random.choice(mined)
+        return random.choice(INSTRUCTION_PAIRS)
 
     def train_on_instruction_pair(self, prompt, response, task_category='instruction'):
         """Supervised instruction-tuning step: train the model to produce
@@ -20484,6 +21364,13 @@ class ConsciousnessSimulator(nn.Module):
                 ignition_rate=ignition_rate,
                 epistemic_value=epistemic_val,
                 memory_coherence=mem_coherence,
+                genesis_emergence=getattr(self.genesis, 'emergence_index', None),
+                # Correlation stage of the grammar, measured on the system's
+                # own instruments (RelationalKnowledgeGraph): the end-note
+                # condition "symphony only after organized input correlates".
+                input_correlation=(self.relational_graph.correlation_index()
+                                   if getattr(self, 'relational_graph', None) is not None
+                                   else None),
             )
 
             # Feed emotional residue to dream engine
@@ -20499,7 +21386,11 @@ class ConsciousnessSimulator(nn.Module):
                 self.self_entity.perform_action(good=True, magnitude=phi * 0.05)
             self.consciousness_log.append({
                 'step': self.training_step, 'phi': round(phi, 6),
-                'C': round(self.last_C, 6), 'karma': round(self.self_entity.karma, 4),
+                'C': round(self.last_C, 6),
+                'honest_C': round(self.self_entity.honest_C, 6),
+                'symphony_index': round(self.self_entity.symphony_index, 6),
+                'input_correlation': round(self.self_entity.input_correlation, 6),
+                'karma': round(self.self_entity.karma, 4),
                 'coherence': round(self.self_entity.coherence, 4),
                 'awareness': round(self.self_entity.awareness_growth, 4),
                 'ignition_rate': round(ignition_rate, 4),
@@ -20579,6 +21470,19 @@ class ConsciousnessSimulator(nn.Module):
                     "score": score, "category": "auto"
                 }
                 self.memory.sync()
+                # Learned knowledge becomes retrievable context immediately:
+                # every verified memory is also a document in the Wave-49
+                # index, so what the system retains is what it can cite.
+                try:
+                    w49 = getattr(self, '_wave49', None)
+                    if w49 is not None and getattr(w49, 'retriever', None) is not None:
+                        doc_text = str(data)
+                        if len(doc_text) >= CONFIG.get('w49_learned_min_chars', 40):
+                            w49.retriever.add_document(
+                                doc_text, {'source': 'learned',
+                                           'score': round(float(score), 3)})
+                except Exception:
+                    pass
                 words = [w for w in str(data).split()[:10] if len(w) > 2]
                 for word in words:
                     if word not in self.symbols:
@@ -21063,6 +21967,10 @@ class ConsciousnessSimulator(nn.Module):
                         self_awareness=self.self_entity.self_awareness_level,
                         epistemic_value=self.self_entity.epistemic_drive,
                         memory_coherence=self.self_entity.memory_coherence,
+                        genesis_emergence=getattr(self.genesis, 'emergence_index', None),
+                        input_correlation=(self.relational_graph.correlation_index()
+                                           if getattr(self, 'relational_graph', None) is not None
+                                           else None),
                     )
                     if cycle % max(3, int(5 * period_scale)) == 0:
                         self.last_omega = self.omega.compute_omega()
@@ -21785,7 +22693,10 @@ class ConsciousnessSimulator(nn.Module):
                     # it. When phi is low, skip to let the core LM recover.
                     if cycle % max(5, int(10 * period_scale)) == 0:
                         try:
-                            prompt, response = random.choice(INSTRUCTION_PAIRS)
+                            # Mined from the live data index first — pairs
+                            # derived from what the system actually ingested,
+                            # seed set only when the index is still empty.
+                            prompt, response = self._sample_instruction_pair()
                             self.train_on_instruction_pair(prompt, response)
                         except Exception as e:
                             print(f"  [ERR] instruction_pair c{cycle}: {e}")
@@ -22659,6 +23570,17 @@ class ConsciousnessSimulator(nn.Module):
                     result = self.download_pdf(link, self.textbook_dir)
                     if result:
                         self._learning_progress[subject]['successes'] += 1
+                        # New knowledge becomes retrievable immediately —
+                        # a downloaded textbook is data the system can now
+                        # answer from, not just a file on disk.
+                        try:
+                            w49 = getattr(self, '_wave49', None)
+                            if w49 is not None and getattr(w49, 'retriever', None) is not None:
+                                n = w49.retriever.index_file(result)
+                                if n:
+                                    print(f"  [LEARN] indexed {n} passages from {os.path.basename(result)}")
+                        except Exception:
+                            pass
             except Exception as e:
                 print(f"Learning parse error: {e}")
             for filename in os.listdir(self.textbook_dir):
@@ -22954,11 +23876,24 @@ class ConsciousnessSimulator(nn.Module):
         # bag-of-words match, not semantic search, but it is honest and
         # bounded. A real semantic retriever would need embeddings this
         # project does not yet train.
+        # Question-form words ("what", "is", "the") overlap between EVERY
+        # "What is X?" prompt and EVERY canned question — scored naively they
+        # outrank a true physics/math law match, which is exactly the false
+        # positive this lookup exists to avoid. Score content words only.
+        qf_stop = generic_words | {
+            'what', 'is', 'are', 'was', 'were', 'the', 'a', 'an', 'of', 'in',
+            'on', 'for', 'to', 'and', 'or', 'how', 'why', 'who', 'when',
+            'where', 'which', 'does', 'do', 'did', 'can', 'could', 'should',
+            'would', 'it', 'its', 'that', 'this', 'there', 'their', 'by',
+            'at', 'as', 'be', 'been', 'with', 'from', 'we', 'you', 'i',
+            'they', 'them', 'us', 'mean', 'means', 'define', 'describe',
+            'explain', 'tell', 'about', 'many', 'much'}
+        prompt_content = prompt_words - qf_stop
         best_kn_idx, best_kn_score = None, 0
         for idx, (question, _answer) in enumerate(KNOWLEDGE_LIBRARY):
-            q_words = set(question.lower().translate(
-                str.maketrans('', '', _string.punctuation)).split()) - generic_words
-            score = len(q_words & prompt_words)
+            q_content = set(question.lower().translate(
+                str.maketrans('', '', _string.punctuation)).split()) - qf_stop
+            score = len(q_content & prompt_content)
             if score > best_kn_score:
                 best_kn_idx, best_kn_score = idx, score
         # Pick the best source. Physics/math require a core (non-generic)
@@ -22987,10 +23922,16 @@ class ConsciousnessSimulator(nn.Module):
             }
         elif src == 'math':
             eq = MATH_EQUATIONS[ident]
+            # Later .update() blocks add raw string entries
+            # ('heisenberg': 'sigma_x sigma_p >= ...') alongside the dict
+            # entries — normalise before reading .desc/.formula or the lookup
+            # crashes on exactly the keys it should answer.
+            if isinstance(eq, str):
+                eq = {'formula': eq, 'desc': eq}
             result = {
                 'law': ident,
-                'description': eq['desc'],
-                'formula': str(eq['formula']),
+                'description': str(eq.get('desc', eq.get('formula', ''))),
+                'formula': str(eq.get('formula', '')),
                 'source': 'math_lookup',
             }
         else:  # knowledge
@@ -23054,6 +23995,10 @@ class ConsciousnessSimulator(nn.Module):
         """
         stripped = prompt.strip()
         lower = stripped.lower()
+        # task_category is a router hint (e.g. injected by the Wave-34
+        # symbolic-router patch), not a generate_text kwarg — passing it
+        # through would raise TypeError on every downstream generation call.
+        task_category = generate_kwargs.pop('task_category', None)
         if lower.startswith('/creative'):
             seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
             return self.generate_creative(seed, max_tokens=max(240, max_tokens), neural=True, **generate_kwargs)
@@ -23107,27 +24052,73 @@ class ConsciousnessSimulator(nn.Module):
             seed = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ''
             return self.generate_creative(seed, max_tokens=max(360, max_tokens), mode='brainstorming', **generate_kwargs)
         sym = self.symbolic_query(prompt)
-        if sym is not None:
-            out = {'text': sym['description'], 'source': 'symbolic',
-                   'law': sym['law'], 'formula': sym['formula']}
-            # If the prompt supplies numbers for the law's own symbols,
-            # actually SOLVE it rather than only reciting the description.
-            # `evaluate_physics_formula` existed and was never called from
-            # anywhere — the project held a working symbolic evaluator and
-            # never used it to answer anything.
+        # Only the physics/math formula tables count as TOOLS (a matched
+        # expression that can be solved). A 'knowledge_lookup' hit is a
+        # canned Q&A bank entry — exactly the hard-coded answer source this
+        # path was rebuilt to remove — so it never short-circuits the
+        # learned path.
+        if sym is not None and sym.get('source') in ('symbolic_lookup', 'math_lookup'):
+            # The formula table is a TOOL, not the answer source: it is used
+            # when it can compute something real (numbers supplied -> solve)
+            # or when the user explicitly asks for a named law/formula. Open
+            # questions route to the learned path below — retrieval-grounded
+            # generation over data the system actually ingested.
             try:
                 vals = self._extract_formula_values(prompt, sym['law'])
-                if vals:
-                    computed = self.evaluate_physics_formula(sym['law'], vals)
-                    if computed is not None:
-                        out['computed'] = computed
-                        out['substituted'] = vals
-                        out['text'] = (f"{sym['description']} "
-                                       f"With {', '.join(f'{k}={v}' for k, v in vals.items())}, "
-                                       f"this evaluates to {computed:g}.")
-            except Exception as e:
-                print(f"  [ERR] formula_evaluate: {e}")
-            return out
+            except Exception:
+                vals = {}
+            _explicit_law_ask = bool(re.search(
+                r'\b(law|formula|equation|theorem|principle)\b', lower))
+            if vals or _explicit_law_ask:
+                out = {'text': sym['description'], 'source': 'symbolic',
+                       'law': sym['law'], 'formula': sym['formula']}
+                try:
+                    if vals:
+                        computed = self.evaluate_physics_formula(sym['law'], vals)
+                        if computed is not None:
+                            out['computed'] = computed
+                            out['substituted'] = vals
+                            out['text'] = (f"{sym['description']} "
+                                           f"With {', '.join(f'{k}={v}' for k, v in vals.items())}, "
+                                           f"this evaluates to {computed:g}.")
+                except Exception as e:
+                    print(f"  [ERR] formula_evaluate: {e}")
+                return out
+            # Otherwise: keep the formula as grounding context for the
+            # learned answer rather than reciting the data-bank description.
+            _sym_grounding = (f"{sym['law'].replace('_', ' ')}: {sym['formula']}"
+                              if sym.get('formula') else None)
+        else:
+            _sym_grounding = None
+
+        # --- Question-shaped queries: the strongest learned inference path ---
+        # wave49_answer retrieval-grounds the question over the data index,
+        # samples the trained model as many times as measured difficulty
+        # warrants, votes for consensus, and cross-checks with the verifier.
+        # Multiple-choice prompts still route to the elimination analyser in
+        # multi_capability_generate, which is the better tool for that shape.
+        _is_open_question = (
+            stripped.endswith('?') and not re.search(r'\b[A-D]\)', stripped)) or bool(
+            re.match(r'(?i)^(what|why|how|who|when|where|which|explain|'
+                     r'define|describe|is|are|does|do|can|could|should|would)\b',
+                     stripped))
+        if _is_open_question:
+            try:
+                ans = self.wave49_answer(stripped, kind='auto',
+                                         max_tokens=max(96, min(max_tokens, 512)))
+            except Exception:
+                ans = None
+            if ans and (ans.get('text') or ans.get('answer')):
+                return {'text': ans.get('text') or ans.get('answer'),
+                        'answer': ans.get('answer'),
+                        'source': 'wave49_learned_rag',
+                        'confidence': ans.get('confidence'),
+                        'agreement': ans.get('agreement'),
+                        'grounded': ans.get('grounded'),
+                        'sources': ans.get('sources'),
+                        'samples_used': ans.get('samples_used')}
+            # Wave49 not ready or returned nothing: fall through to the
+            # retrieval-grounded category path below.
 
         # --- Auto-route: detect query type and dispatch to the best capability ---
         lower_stripped = stripped.lower()
@@ -23174,8 +24165,29 @@ class ConsciousnessSimulator(nn.Module):
             except Exception:
                 pass  # fall through to neural
 
-        text = self.generate_text(prompt, max_tokens=max_tokens, **generate_kwargs)
-        return {'text': text, 'source': 'neural'}
+        # --- Grounded learned fallback -------------------------------------
+        # The prompt carries whatever real context the system holds —
+        # retrieved data-bank passages and any matched formula — and the
+        # TRAINED model writes the answer (force_tokens bypasses the
+        # code-only internal stream). Capability here comes from learned
+        # weights over real data, not from canned text.
+        grounded_prompt = prompt
+        try:
+            ctx_parts = []
+            if _sym_grounding:
+                ctx_parts.append(f"Relevant formula: {_sym_grounding}")
+            hits = self.wave49_retrieve(stripped, top_k=4)
+            for h in hits:
+                ctx_parts.append(h.get('text', '')[:300])
+            if ctx_parts:
+                grounded_prompt = ("Reference material:\n" +
+                                   "\n".join(f"- {c}" for c in ctx_parts if c) +
+                                   f"\n\nPrompt: {prompt}")
+        except Exception:
+            pass
+        text = self.generate_text(grounded_prompt, max_tokens=max_tokens,
+                                  force_tokens=True, **generate_kwargs)
+        return {'text': text, 'source': 'neural_grounded'}
 
     def _iq_correlation_snapshot(self, top_n=5, text=True):
         """Live snapshot of the internal IQ correlation matrices.
@@ -24442,6 +25454,12 @@ class ConsciousnessSimulator(nn.Module):
         stripped = str(prompt).strip()
         lower = stripped.lower()
 
+        # The learned model writes every answer this path produces. The
+        # structured scaffolds below (fact lists, plans, eliminations) are
+        # grounding CONTEXT for generation, not the answer itself — so the
+        # code-only internal stream is bypassed for user-facing output.
+        generate_kwargs.setdefault('force_tokens', True)
+
         # Normalize common aliases so the requested category names always route.
         _CATEGORY_ALIASES = {
             'reasoning': {'reason', 'reasoning', 'multi-step', 'multi_step',
@@ -24466,11 +25484,13 @@ class ConsciousnessSimulator(nn.Module):
             corr = {}
 
         def _fact_gather(q):
-            """Pull only relevant, non-filler facts from real knowledge bases.
+            """Pull only relevant, non-filler facts from REAL ingested data.
 
-            Critical common-sense is imported only when it overlaps the query.
-            High-importance super-intelligence context and short Q&A anchors
-            are ranked by word overlap, deduplicated, and capped to avoid filler.
+            The only sources are the Wave-49 retrieval index — the corpus
+            files, everything under data_bank/ (downloaded textbooks, saved
+            extracts), and documents the system learned at runtime — plus the
+            system's own measured internal correlations. No canned library
+            text: if the data was never ingested, there is no fact to gather.
             """
             facts = []
             qlower = q.lower()
@@ -24482,54 +25502,23 @@ class ConsciousnessSimulator(nn.Module):
                 t = str(text).lower()
                 return len(qwords.intersection(set(re.findall(r"\b[a-z]{4,}\b", t))))
 
-            # 1. critical common-sense — only if it actually overlaps
+            # 1. retrieved passages over the real data index (BM25 + rerank)
             try:
-                for rule, desc in COMMON_SENSE.items():
-                    score = _overlap(rule + ' ' + desc)
-                    if score:
-                        facts.append((score, f"{rule}: {desc}"))
-            except Exception:
-                pass
-            # 2. meaningful super-intelligence context (high importance)
-            try:
-                for key, entry in SUPER_INTELLIGENCE_LIBRARY.items():
-                    if entry.get('importance', 3) < 4:
+                hits = self.wave49_retrieve(q, top_k=8)
+                for h in hits:
+                    body = str(h.get('text', '')).strip()
+                    if not body:
                         continue
-                    score = _overlap(key + ' ' + entry.get('def', ''))
-                    if score:
-                        d = entry.get('def', '')[:240].strip()
-                        if d:
-                            facts.append((score + 1, f"{key}: {d}"))
-                        if len(facts) >= 12:
-                            break
+                    score = float(h.get('rerank_score', h.get('score', 1.0)))
+                    src = h.get('meta', {}).get('source', 'data')
+                    facts.append((score + 2, f"[{src}] {body[:300]}"))
             except Exception:
                 pass
-            # 3. short Q&A domain knowledge anchors
-            try:
-                for qst, ans in KNOWLEDGE_LIBRARY:
-                    score = _overlap(qst + ' ' + ans)
-                    if score:
-                        facts.append((score, f"{qst} {ans}"))
-                        if len(facts) >= 15:
-                            break
-            except Exception:
-                pass
-            # 4. live IQ correlations — the internal cross-domain threads
+            # 2. live IQ correlations — the internal cross-domain threads
             try:
                 iq = self._iq_correlation_snapshot(top_n=8, text=False)
                 for p in iq.get('top_pairs', [])[:8]:
                     facts.append((2, f"internal correlation {p['pair']} r={p['r']} from {p['source']}"))
-            except Exception:
-                pass
-            # 5. symbolic physics/math
-            sym = self.symbolic_query(q)
-            if sym is not None:
-                facts.append((4, sym.get('description', '')))
-            # 6. table of contents on-demand lookup
-            try:
-                toc = _toc_lookup(q)
-                if toc:
-                    facts.append((2, str(toc)[:400]))
             except Exception:
                 pass
             # rank by relevance, dedupe, cap, drop empties
@@ -26122,13 +27111,15 @@ class ConsciousnessSimulator(nn.Module):
         except Exception as e:
             print(f"Search error after retries: {e}")
             # Fall back to the newest cached entry for ANY query, if one
-            # exists, before resorting to labeled mock data — stale real
-            # data beats no data when the internet is genuinely down.
+            # exists. When nothing real was ever fetched, return EMPTY —
+            # never fabricated text: the old "Mock data" fallback was
+            # invented content that then flowed into training input and
+            # long-term memory as if it were observed fact.
             if self.web_cache:
                 newest_key = max(self.web_cache, key=lambda k: self.web_cache[k][0])
                 _, stale_data = self.web_cache[newest_key]
                 return f"[STALE CACHE — offline] {stale_data}"
-            return f"Mock data for \'{query}\' as of {datetime.now().date()}."
+            return ""
 
 
     def analyze_youtube(self, url):
@@ -26152,7 +27143,15 @@ class ConsciousnessSimulator(nn.Module):
     def execute_task(self, task_query, category='general', max_tokens=512):
         tokens = self.simple_tokenizer(task_query)
         phi = self.process_input(tokens, category)
-        output_text = self.generate_text(task_query, max_tokens=max_tokens, speak=False)
+        try:
+            result = self.respond(task_query, max_tokens=max_tokens)
+            if isinstance(result, dict):
+                output_text = result.get('text') or result.get('answer') or str(result)
+            else:
+                output_text = str(result)
+        except Exception:
+            output_text = self.generate_text(task_query, max_tokens=max_tokens,
+                                             speak=False, force_tokens=True)
         print(f"Task output: {output_text[:200]}, Phi: {phi}")
         self.refine_data({"task": task_query, "output": output_text}, datetime.now().isoformat(), verify=True)
         return output_text
@@ -38238,6 +39237,29 @@ class CorpusGrowthEngine:
                             out.append(p)
                     except Exception:
                         pass
+        # The data bank is the system's own ingested corpus — downloaded
+        # textbooks and saved extracts are exactly the data it is meant to
+        # learn from, so they enter LM training here, not just retrieval.
+        bank = getattr(self._sim, 'data_bank_dir', None)
+        if bank:
+            if not os.path.isabs(bank):
+                bank = os.path.join(self._root, bank)
+            try:
+                for dirpath, _dirs, fns in os.walk(bank):
+                    for fn in sorted(fns):
+                        if fn in self._ingested:
+                            continue
+                        if not fn.lower().endswith(('.md', '.txt', '.json',
+                                                    '.jsonl', '.log', '.csv', '.pdf')):
+                            continue
+                        p = os.path.join(dirpath, fn)
+                        try:
+                            if os.path.getsize(p) < self._max_bytes:
+                                out.append(p)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
         return out
 
     def apply(self, sim, barrier):
@@ -38246,8 +39268,12 @@ class CorpusGrowthEngine:
             return False
         path = files[0]
         try:
-            with open(path, encoding='utf-8', errors='ignore') as f:
-                text = f.read(self._max_bytes)
+            if path.lower().endswith('.pdf'):
+                extract = getattr(sim, 'extract_pdf_text', None)
+                text = extract(path, max_pages=60) if callable(extract) else ''
+            else:
+                with open(path, encoding='utf-8', errors='ignore') as f:
+                    text = f.read(self._max_bytes)
         except Exception:
             return False
         # Feed into the training stream via the replay buffer + a direct
@@ -59882,7 +60908,7 @@ class SubconsciousCoreBridge:
             cur = out
             for _ in range(max(1, int(k))):
                 nxt = self.decoder(cur[:, -1, :])
-                preds.append(nxt[0].cpu().numpy())
+                preds.append(nxt[0].detach().float().cpu().numpy())
                 cur = self.core(self.norm(self.encoder(
                     torch.cat([x[:, 1:, :], nxt.unsqueeze(1)], dim=1))))
             return preds
@@ -64116,22 +65142,132 @@ class KnowledgeRetriever:
         self.sources['corpus'] += added
         return added
 
-    def build(self, globals_dict=None, corpus_files=None, verbose=False):
-        """Index every library present in the module globals, plus corpora."""
+    def _add_pdf_file(self, path, max_pages=None):
+        """Index a downloaded textbook/paper PDF via PyMuPDF extraction.
+
+        Paragraph-level chunking, same as corpus files. Capped so a single
+        800-page textbook cannot displace the rest of the index — retrieval
+        coverage matters more than depth on one source.
+        """
+        g = globals()
+        if not g.get('HAS_FITZ') or g.get('fitz') is None:
+            return 0
+        added = 0
+        try:
+            doc = g['fitz'].open(path)
+            buf = []
+            limit = max_pages or 200
+            for page_num in range(min(limit, len(doc))):
+                try:
+                    page_text = doc[page_num].get_text()
+                except Exception:
+                    continue
+                for para in re.split(r'\n\s*\n|\r\n\s*\r\n', page_text):
+                    chunk = ' '.join(para.split())
+                    if len(chunk) < self.chunk_min_chars:
+                        continue
+                    if self.index.add(chunk, {'source': 'textbook',
+                                              'file': os.path.basename(path),
+                                              'page': page_num}) is not None:
+                        added += 1
+                    if added >= self.max_corpus_chunks:
+                        break
+                if added >= self.max_corpus_chunks:
+                    break
+            doc.close()
+        except Exception:
+            pass
+        self.sources['textbook'] += added
+        return added
+
+    _TEXT_EXTS = ('.txt', '.md', '.rst', '.json', '.jsonl', '.log', '.csv', '.html')
+
+    def index_file(self, path, max_pdf_pages=None):
+        """Public: index one file by type. Text formats chunk by paragraph;
+        PDFs go through _add_pdf_file. Safe to call on arbitrary paths —
+        unknown extensions and unreadable files return 0, never raise."""
+        if not path or not os.path.isfile(path):
+            return 0
+        lower = str(path).lower()
+        if lower.endswith('.pdf'):
+            return self._add_pdf_file(path, max_pages=max_pdf_pages)
+        if lower.endswith(self._TEXT_EXTS):
+            return self._add_corpus_file(path)
+        return 0
+
+    def index_directory(self, root, exts=None, max_files=None, max_pdf_pages=None):
+        """Recursively index every retrievable file under `root`.
+
+        This is the data-driven half of the retriever: everything the system
+        has actually ingested — downloaded textbooks, extracted text, saved
+        notes, logs — becomes answerable context. Bounded by max_files and
+        max_corpus_chunks so an unbounded data_bank cannot starve startup.
+        """
+        if not root or not os.path.isdir(root):
+            return 0
+        added = files_seen = 0
+        cap = max_files or 500
+        try:
+            for dirpath, _dirnames, filenames in os.walk(root):
+                for fn in sorted(filenames):
+                    if files_seen >= cap or added >= self.max_corpus_chunks:
+                        break
+                    lower = fn.lower()
+                    if not lower.endswith(('.pdf',) + tuple(exts or self._TEXT_EXTS)):
+                        continue
+                    files_seen += 1
+                    added += self.index_file(os.path.join(dirpath, fn),
+                                             max_pdf_pages=max_pdf_pages)
+        except Exception:
+            pass
+        self.sources['data_bank'] += added
+        return added
+
+    def add_document(self, text, meta=None):
+        """Public: add one learned document to the live index.
+
+        BM25Index.add() marks the index not-built and search() re-finalizes,
+        so incremental additions are cheap and immediately retrievable — this
+        is how knowledge the system learns at runtime (refine_data stores,
+        new downloads, distilled insights) becomes part of what it can cite.
+        """
+        text = str(text or '').strip()
+        if len(text) < 20:
+            return None
+        doc_id = self.index.add(text, meta or {'source': 'learned'})
+        if doc_id is not None:
+            self.sources[(meta or {}).get('source', 'learned')] += 1
+        return doc_id
+
+    def build(self, globals_dict=None, corpus_files=None, verbose=False,
+              extra_dirs=None, index_dict_libraries=None, max_pdf_pages=None):
+        """Index real ingested data first; hard-coded dict banks only if asked.
+
+        `index_dict_libraries` defaults to CONFIG['w49_index_dict_libraries']
+        (False): the project's contract is that answers come from data the
+        system ingested and learned, not from canned libraries compiled into
+        the source. Set the flag True to re-enable legacy dict indexing.
+        """
         t0 = time.time()
         g = globals_dict if globals_dict is not None else globals()
-        # Discovered by shape rather than by a hardcoded list, so a library
-        # added to this file later is indexed automatically instead of being
-        # silently omitted until someone remembers to update a list.
-        for name, obj in list(g.items()):
-            if not name.isupper() or not isinstance(obj, dict) or len(obj) < 3:
-                continue
-            if any(k in name for k in ('CONFIG', 'KEY_CODES', 'HOTKEY', 'CACHE')):
-                continue
-            self._add_dict_library(name, obj)
+        cfg = g.get('CONFIG', {}) if isinstance(g, dict) else {}
+        if index_dict_libraries is None:
+            index_dict_libraries = bool(cfg.get('w49_index_dict_libraries', False))
+        if index_dict_libraries:
+            # Discovered by shape rather than by a hardcoded list, so a library
+            # added to this file later is indexed automatically instead of being
+            # silently omitted until someone remembers to update a list.
+            for name, obj in list(g.items()):
+                if not name.isupper() or not isinstance(obj, dict) or len(obj) < 3:
+                    continue
+                if any(k in name for k in ('CONFIG', 'KEY_CODES', 'HOTKEY', 'CACHE')):
+                    continue
+                self._add_dict_library(name, obj)
         root = os.path.dirname(os.path.abspath(__file__))
         for fname in (corpus_files or ('Infornmational.md',)):
             self._add_corpus_file(os.path.join(root, fname))
+        for d in (extra_dirs or ()):
+            self.index_directory(d, max_pdf_pages=max_pdf_pages)
         self.index.finalize()
         self.built = True
         self.build_seconds = time.time() - t0
@@ -64539,12 +65675,12 @@ class TestTimeComputeScaler:
         verdict = self.voter.vote(samples, kind=kind)
         chosen = verdict.get('exemplar')
         best = None
+        vctx = dict(ctx or {})
+        if retrieval and retrieval.get('hits'):
+            # Give the grounding checker the retrieved passages as the
+            # facts an answer should be consistent with.
+            vctx.setdefault('facts', [h['text'][:120] for h in retrieval['hits'][:3]])
         if verify and len(samples) > 1:
-            vctx = dict(ctx or {})
-            if retrieval and retrieval.get('hits'):
-                # Give the grounding checker the retrieved passages as the
-                # facts an answer should be consistent with.
-                vctx.setdefault('facts', [h['text'][:120] for h in retrieval['hits'][:3]])
             best = self.selector.select(samples, ctx=vctx)
             # Trust the verifier over the vote only when it actually
             # discriminated AND the vote was not a strong consensus.
@@ -64562,6 +65698,11 @@ class TestTimeComputeScaler:
             'distribution': verdict.get('distribution'),
             'verifier': ({k: best[k] for k in ('score', 'score_spread', 'discriminated')}
                          if best else None),
+            # Raw samples + the grounded prompt + retrieved facts, exposed so
+            # callers (GRPO training, logging) can reuse the group this run
+            # already paid to generate instead of re-sampling.
+            'samples': samples, 'prompt': prompt,
+            'grounding_facts': vctx.get('facts'),
         }
         self.history.append({k: result[k] for k in
                              ('samples_used', 'confidence', 'agreement', 'grounded')})
@@ -64651,7 +65792,17 @@ class Wave49InferenceStack:
 
     def _build_index(self):
         try:
-            n = self.retriever.build(globals_dict=globals(), verbose=True)
+            extra_dirs = []
+            if CONFIG.get('w49_index_data_bank', True):
+                bank = getattr(self.sim, 'data_bank_dir', 'data_bank')
+                if not os.path.isabs(bank):
+                    bank = os.path.join(os.path.dirname(os.path.abspath(__file__)), bank)
+                extra_dirs.append(bank)
+            n = self.retriever.build(
+                globals_dict=globals(), verbose=True,
+                extra_dirs=extra_dirs,
+                index_dict_libraries=CONFIG.get('w49_index_dict_libraries', False),
+                max_pdf_pages=CONFIG.get('w49_max_pdf_pages', 200))
             print(f"  [WAVE49] retrieval ready: {n} documents indexed "
                   f"({', '.join(f'{k}={v}' for k, v in list(self.retriever.sources.items())[:4])})")
         except Exception as e:
@@ -64746,7 +65897,59 @@ def _wave49_answer(self, query, kind='auto', max_tokens=96, neural=True, ctx=Non
         except Exception as e:
             return ''
 
-    return w.scaler.run(query, generate_fn, kind=kind, ctx=ctx)
+    result = w.scaler.run(query, generate_fn, kind=kind, ctx=ctx)
+
+    # ---- GRPO: this answered question is also a real RL update ----------
+    # The run just paid to generate a GROUP of samples for one prompt — the
+    # exact input GRPO consumes (verifiable rewards -> group-relative
+    # advantages -> clipped policy gradient with a frozen-KL leash). Until
+    # now the entire RL stack (GroupRelativePolicyOptimizer,
+    # SequenceLogProbScorer, Wave47TrainingSubstrate.grpo_update) existed
+    # and was never invoked: nothing called it. This hook closes the loop
+    # so every answered question trains the policy a little, which is the
+    # only mechanism in the file that improves behaviour on REAL reward
+    # signals rather than just next-token likelihood.
+    if CONFIG.get('w49_grpo_train', True):
+        try:
+            w47 = getattr(self, '_wave47', None)
+            grpo = getattr(getattr(self, '_wave46', None), 'grpo', None)
+            samples = [s for s in (result.get('samples') or []) if str(s).strip()]
+            if w47 is not None and grpo is not None and len(samples) >= 2:
+                dev = getattr(self, 'device', 'cpu')
+                ptok = self.simple_tokenizer(result.get('prompt') or query)
+                plen = int(ptok.reshape(-1).shape[0])
+                rctx = dict(ctx or {})
+                if result.get('grounding_facts'):
+                    rctx['facts'] = result['grounding_facts']
+                seqs, rewards = [], []
+                cap = int(CONFIG.get('input_size', 4096))
+                for s in samples:
+                    ctok = self.simple_tokenizer(str(s)).reshape(-1)
+                    seq = torch.cat([ptok.reshape(-1), ctok])[-cap:].to(dev)
+                    if seq.numel() <= plen:
+                        continue
+                    seqs.append(seq)
+                    r, _ = grpo.rewards.score(str(s), rctx)
+                    rewards.append(float(r))
+                if len(seqs) >= 2:
+                    # Dedicated RL optimizer at grpo.lr (1e-5): the LM's own
+                    # 3e-4 would take unbounded RL steps. Separate optimizer,
+                    # same parameters — GRPO contributes a small nudge on top
+                    # of supervised LM training, never replacing it.
+                    gopt = getattr(grpo, '_rl_optimizer', None)
+                    if gopt is None:
+                        gopt = torch.optim.AdamW(
+                            self.parameters(), lr=float(grpo.lr),
+                            weight_decay=0.0)
+                        grpo._rl_optimizer = gopt
+                    info = w47.grpo_update(grpo, ptok, seqs, rewards,
+                                           optimizer=gopt)
+                    if info:
+                        result['grpo'] = info
+        except Exception:
+            pass
+
+    return result
 
 
 def _wave49_vote(self, samples, kind='auto'):
@@ -67810,6 +69013,4944 @@ def _pwa_v52_init(self, sim):
 ProcessWiringAuditor.__init__ = _pwa_v52_init
 
 
+# =============================================================================
+# WAVE 53 - LEARNED CORRELATION LAYER
+# =============================================================================
+# The last layer. Everything below is computed from data the system actually
+# ingested — no canned answer banks sit on this path.
+#
+#   CorpusCorrelationGraph — a real correlation matrix over LEARNED content.
+#       Term<->term co-occurrence edges scored by normalised pointwise
+#       mutual information (NPMI) with document evidence counts, computed
+#       lazily from the retrieval index's own postings and refreshed as the
+#       index grows. Multi-hop inference reuses the RelationalKnowledgeGraph
+#       idiom (strong a~x and x~b edges predict a~b, then the prediction is
+#       CHECKED against real co-occurrence) — applied to knowledge instead
+#       of instrument channels.
+#
+#   Retrieval expansion — KnowledgeRetriever.retrieve is wrapped so query
+#       terms pull their strongest learned correlates into a second
+#       candidate pass. A document that answers the question in different
+#       vocabulary gets seen by the reranker at all — the recall gain pure
+#       BM25 cannot produce on its own.
+#
+#   LearnedAnswerPath — extractive QA: the strongest evidence sentences in
+#       the ingested corpus, returned verbatim with provenance. When the
+#       data holds nothing it says so instead of reciting anything canned.
+#       For a corpus-grounded question this strictly dominates sampling an
+#       undertrained model — the answer IS the data.
+#
+#   Learned-only routing — FrontierGenerationSuite.answer_qa /
+#       multi_step_reason / generate_code now prefer: formula tools that
+#       compute -> learned retrieval -> learned correlation inference ->
+#       neural. The canned banks (KNOWLEDGE_LIBRARY, COMMON_SENSE,
+#       _toc_query, code templates) survive only behind explicit flags
+#       (w53_canned_fallback / w53_canned_code, default False) — the same
+#       gate convention as w49_index_dict_libraries.
+#
+#   Loop closure — refine_data's accepted facts also feed the Wave-50
+#       subconscious trainer; the instruction miner gains correlation
+#       pairs so SFT teaches the system its own learned structure; the BPE
+#       tokenizer corpus now includes data_bank; wave53_learn() is the
+#       single call that teaches anything: text, a file, or a directory.
+# =============================================================================
+
+for _k, _v in (('w53_expand_retrieval', True),
+               ('w53_expand_terms', 6),
+               ('w53_expand_score', 0.8),
+               ('w53_min_evidence', 2),
+               ('w53_min_df', 2),
+               ('w53_max_scan_docs', 2500),
+               ('w53_neighbors', 16),
+               ('w53_answer_min_conf', 0.55),
+               ('w53_extractive_confidence', 0.55),
+               ('w53_extractive_first', True),
+               ('w53_canned_fallback', False),
+               ('w53_canned_code', False),
+               ('w53_learn_train_lines', 24),
+               ('w53_infer_max_hops', 3),
+               ('w53_corr_pairs_per_mine', 10)):
+    CONFIG.setdefault(_k, _v)
+del _k, _v
+
+
+class CorpusCorrelationGraph:
+    """A real correlation matrix over LEARNED knowledge.
+
+    RelationalKnowledgeGraph correlates internal instrument channels; this
+    does the same thing for content the system ingested. Edges are learned
+    term<->term co-occurrence relations scored by normalised pointwise
+    mutual information (NPMI): terms that reliably travel together in the
+    data get strong edges. Nothing is authored — every edge is evidence
+    counted out of the live retrieval index.
+
+    The matrix is computed lazily per query term from the BM25 postings
+    themselves, so building it costs nothing at startup, it is always as
+    fresh as the index, and learned documents added at runtime are
+    correlated automatically.
+    """
+
+    def __init__(self, index, min_evidence=2, max_scan_docs=2500,
+                 max_neighbors=16, min_df=2):
+        self.index = index                    # BM25Index
+        self.min_evidence = int(min_evidence)  # min shared docs to form an edge
+        self.max_scan_docs = int(max_scan_docs)
+        self.max_neighbors = int(max_neighbors)
+        # terms seen in fewer than min_df documents can't anchor an edge —
+        # a hapax gets npmi=1.0 by construction and would crowd every real
+        # correlate out of the top-k neighbor lists.
+        self.min_df = int(min_df)
+        self._doc_terms = {}      # doc_id -> frozenset(tokens); lazy, append-only
+        self._nbr_cache = {}      # term -> (doc_count_at_compute, [(t, w, n)])
+        self._queries = 0
+        self._inferences = 0
+        self._confirmed = 0
+        self._ruptures = 0
+
+    # ---- internals ---------------------------------------------------------
+    def _terms_of(self, doc_id):
+        t = self._doc_terms.get(doc_id)
+        if t is None:
+            try:
+                text = self.index.docs[doc_id].get('text', '')
+            except Exception:
+                return frozenset()
+            try:
+                t = frozenset(self.index.vec.tokenize(text))
+            except Exception:
+                t = frozenset(re.findall(r"[a-z0-9][a-z0-9_\-']*",
+                                         str(text).lower()))
+            if len(self._doc_terms) < 60000:
+                self._doc_terms[doc_id] = t
+        return t
+
+    def _df(self, term):
+        p = getattr(self.index, 'postings', {}).get(term)
+        return len(p) if p else 0
+
+    # ---- the correlation matrix --------------------------------------------
+    def neighbors(self, term, k=None):
+        """Top learned correlates of `term` as [(term, npmi, shared_docs)].
+        Computed on demand from postings; cached until the doc count moves."""
+        self._queries += 1
+        k = int(k or self.max_neighbors)
+        try:
+            n_docs = len(self.index.docs)
+        except Exception:
+            return []
+        if n_docs < 2:
+            return []
+        term = str(term).strip().lower()
+        cached = self._nbr_cache.get(term)
+        if cached is not None and cached[0] == n_docs:
+            return list(cached[1][:k])
+        postings = self.index.postings.get(term)
+        if not postings:
+            self._nbr_cache[term] = (n_docs, [])
+            return []
+        df_t = len(postings)
+        scan = postings if df_t <= self.max_scan_docs \
+            else postings[:self.max_scan_docs]
+        co = Counter()
+        for doc_id, _tf in scan:
+            for u in self._terms_of(doc_id):
+                if u != term:
+                    co[u] += 1
+        # Postings truncated to max_scan_docs undercount co-occurrence; scale
+        # the observed counts back to the full df so NPMI stays honest.
+        scale = df_t / float(len(scan)) if scan else 1.0
+        out = []
+        for u, cab in co.items():
+            est_ab = cab * scale
+            if est_ab < self.min_evidence:
+                continue
+            df_u = self._df(u)
+            if df_u < self.min_df:
+                continue
+            p_ab = min(est_ab, min(df_t, df_u)) / n_docs
+            if p_ab <= 0.0:
+                continue
+            p_a = df_t / n_docs
+            p_b = df_u / n_docs
+            pmi = math.log(p_ab / (p_a * p_b))
+            npmi = pmi / (-math.log(p_ab)) if p_ab < 1.0 else 1.0
+            if npmi > 0.05:
+                out.append((u, round(float(npmi), 4), int(round(est_ab))))
+        out.sort(key=lambda x: -x[1])
+        if len(self._nbr_cache) > 8000:
+            self._nbr_cache.clear()
+        self._nbr_cache[term] = (n_docs, out)
+        return list(out[:k])
+
+    def expand(self, query, k=None):
+        """Strongest learned correlates of the query's terms, minus the query
+        terms themselves — the vocabulary bridge for retrieval expansion."""
+        k = int(k or CONFIG.get('w53_expand_terms', 6))
+        try:
+            toks = self.index.vec.tokenize(query)
+        except Exception:
+            return []
+        if not toks:
+            return []
+        qset = set(toks)
+        cand = {}
+        for t in qset:
+            for u, w, _n in self.neighbors(t, k=self.max_neighbors):
+                if u not in qset:
+                    cand[u] = max(cand.get(u, 0.0), w)
+        ranked = sorted(cand.items(), key=lambda kv: -kv[1])
+        return [t for t, _w in ranked[:k]]
+
+    def correlate(self, a, b):
+        """Symmetric learned correlation between two terms, 0..1."""
+        na = {t: w for t, w, _n in self.neighbors(a, k=48)}
+        nb = {t: w for t, w, _n in self.neighbors(b, k=48)}
+        vals = [v for v in (na.get(b), nb.get(a)) if v]
+        return float(sum(vals) / len(vals)) if vals else 0.0
+
+    def shared_docs(self, a, b, cap=400):
+        """Doc ids containing BOTH terms — the direct co-occurrence evidence."""
+        pa = self.index.postings.get(a) or []
+        pb = self.index.postings.get(b) or []
+        if not pa or not pb:
+            return []
+        if len(pb) > len(pa):
+            pa, pb = pb, pa
+        bset = {d for d, _ in pb[:cap]}
+        return [d for d, _ in pa[:cap] if d in bset]
+
+    def infer(self, a, b, max_hops=None):
+        """Multi-hop inference over learned correlations.
+
+        Same transitive pattern RelationalKnowledgeGraph uses on instrument
+        channels: strong a~x and x~b edges predict an a~b relation, then the
+        prediction is CHECKED against real co-occurrence. Chains use
+        bottleneck confidence — a derived relation is only as strong as its
+        weakest learned edge — and every result is labelled 'observed in
+        data' or 'derived ... (unverified)'.
+        """
+        self._inferences += 1
+        max_hops = int(max_hops or CONFIG.get('w53_infer_max_hops', 3))
+        a, b = str(a).strip().lower(), str(b).strip().lower()
+        if not a or not b or a == b:
+            return None
+        shared = self.shared_docs(a, b)
+        direct = self.correlate(a, b)
+        if direct > 0.0:
+            return {'a': a, 'b': b, 'kind': 'direct', 'weight': direct,
+                    'shared_docs': len(shared), 'verified': True,
+                    'path': [a, b], 'note': 'observed in data'}
+        if not self.neighbors(a, k=1):
+            return None
+        # best-first search over learned edges, bottleneck semantics
+        best = {a: (1.0, (a,))}
+        frontier = [(1.0, a, (a,))]
+        found = None
+        explored = 0
+        while frontier and found is None and explored < 300:
+            frontier.sort(key=lambda x: -x[0])
+            conf, node, path = frontier.pop(0)
+            explored += 1
+            if len(path) - 1 >= max_hops:
+                continue
+            for u, w, _n in self.neighbors(node, k=self.max_neighbors):
+                if u in path:
+                    continue
+                nconf = min(conf, w)
+                if u == b:
+                    found = (nconf, path + (u,))
+                    break
+                cur = best.get(u)
+                if cur is None or nconf > cur[0]:
+                    best[u] = (nconf, path + (u,))
+                    frontier.append((nconf, u, path + (u,)))
+        if found is None:
+            return None
+        verified = len(shared) > 0
+        if verified:
+            self._confirmed += 1
+        else:
+            self._ruptures += 1
+        return {'a': a, 'b': b, 'kind': 'inferred', 'path': list(found[1]),
+                'confidence': round(float(found[0]), 4),
+                'hops': len(found[1]) - 1,
+                'shared_docs': len(shared), 'verified': verified,
+                'note': ('observed in data' if verified else
+                         'derived from learned correlations (unverified)')}
+
+    def correlation_index(self, sample=48):
+        """0..1: how richly the learned corpus is interconnected — mean
+        top-edge strength over a deterministic term sample times coverage.
+        The learned-content analogue of G_in."""
+        try:
+            n_docs = len(self.index.docs)
+        except Exception:
+            return 0.0
+        if n_docs < 8:
+            return 0.0
+        terms = [t for t, p in self.index.postings.items()
+                 if self.min_evidence <= len(p) <= max(4, n_docs // 2)]
+        if not terms:
+            return 0.0
+        rng = random.Random(0)
+        rng.shuffle(terms)
+        terms = terms[:sample]
+        vals, covered = [], 0
+        for t in terms:
+            nb = self.neighbors(t, k=1)
+            if nb:
+                covered += 1
+                vals.append(nb[0][1])
+        if not vals:
+            return 0.0
+        return round(float(sum(vals) / len(vals))
+                     * (covered / float(len(terms))), 4)
+
+    def get_status(self):
+        return {'docs_seen': len(self._doc_terms),
+                'cached_terms': len(self._nbr_cache),
+                'queries': self._queries,
+                'inferences': self._inferences,
+                'confirmed': self._confirmed,
+                'ruptures': self._ruptures,
+                'correlation_index': self.correlation_index()}
+
+
+class LearnedAnswerPath:
+    """Extractive QA over learned data.
+
+    The answer is a sentence from the corpus itself — verbatim, cited with
+    provenance. For anything the system actually learned, this is strictly
+    better than a sample from an undertrained model; for anything it did
+    not learn, it says so instead of reciting a canned bank entry.
+    """
+
+    _SENT_SPLIT = re.compile(r'(?<=[.!?])\s+')
+
+    def __init__(self, sim):
+        self.sim = sim
+        self.answers = 0
+        self.misses = 0
+
+    def _retriever(self):
+        w49 = getattr(self.sim, '_wave49', None)
+        return getattr(w49, 'retriever', None) if w49 is not None else None
+
+    def answer(self, query, top_k=6, max_sents=2):
+        r = self._retriever()
+        if r is None:
+            return None
+        try:
+            if not getattr(r.index, 'docs', None):
+                return None
+            hits = r.retrieve(query, top_k=top_k)
+        except Exception:
+            return None
+        if not hits:
+            self.misses += 1
+            return None
+        try:
+            qt_all = set(r.index.vec.tokenize(query))
+        except Exception:
+            qt_all = set(re.findall(r'[a-z]{3,}', str(query).lower()))
+        qt_uni = {t for t in qt_all if '_' not in t} or qt_all
+        qt_bi = qt_all - qt_uni
+        try:
+            g = getattr(r, '_corr_graph', None)
+            exp = set(g.expand(query)) if g is not None else set()
+        except Exception:
+            exp = set()
+        scored = []
+        for h in hits:
+            base = float(h.get('rerank_score', h.get('score', 0.0)) or 0.0)
+            for sent in self._SENT_SPLIT.split(str(h.get('text', ''))):
+                sent = sent.strip()
+                if len(sent) < 24:
+                    continue
+                try:
+                    st = set(r.index.vec.tokenize(sent))
+                except Exception:
+                    st = set(re.findall(r'[a-z]{3,}', sent.lower()))
+                if not st:
+                    continue
+                cov = len(qt_uni & st) / max(1, len(qt_uni))
+                exp_hit = len(exp & st)
+                bi = len(qt_bi & st)
+                if cov < 0.2 and exp_hit == 0 and bi == 0:
+                    continue
+                score = (base * 0.45 + cov * 0.40
+                         + min(0.15, exp_hit * 0.05) + min(0.10, bi * 0.05))
+                scored.append((score, sent, h))
+        if not scored:
+            self.misses += 1
+            return None
+        scored.sort(key=lambda x: -x[0])
+        best_score = scored[0][0]
+        picked, seen_docs = [], set()
+        for sc, sent, h in scored:
+            if sc < best_score * 0.7 or len(picked) >= max_sents:
+                continue
+            if h.get('doc_id') in seen_docs:
+                continue
+            picked.append((sc, sent, h))
+            seen_docs.add(h.get('doc_id'))
+        if not picked:
+            self.misses += 1
+            return None
+        self.answers += 1
+        return {'answer': ' '.join(s for _sc, s, _h in picked),
+                'source': 'learned_data',
+                'confidence': round(min(0.95, picked[0][0]), 3),
+                'provenance': dict(picked[0][2].get('meta') or {}),
+                'evidence': [{'doc_id': h.get('doc_id'),
+                              'meta': dict(h.get('meta') or {})}
+                             for _sc, _s, h in picked],
+                'expansions': sorted(exp)[:8]}
+
+
+class Wave53Integration:
+    """Owns the learned correlation layer and binds it to the simulator."""
+
+    def __init__(self, sim=None):
+        self.sim = sim
+        self.graph = None
+        self.answer_path = None
+        self.errors = defaultdict(int)
+        self._bound = False
+
+    def bind(self, sim):
+        self.sim = sim
+        w49 = getattr(sim, '_wave49', None)
+        retriever = getattr(w49, 'retriever', None) if w49 is not None else None
+        if retriever is not None:
+            try:
+                self.graph = CorpusCorrelationGraph(
+                    retriever.index,
+                    min_evidence=CONFIG.get('w53_min_evidence', 2),
+                    max_scan_docs=CONFIG.get('w53_max_scan_docs', 2500),
+                    max_neighbors=CONFIG.get('w53_neighbors', 16),
+                    min_df=CONFIG.get('w53_min_df', 2))
+                retriever._corr_graph = self.graph
+            except Exception:
+                self.errors['graph'] += 1
+                self.graph = None
+        self.answer_path = LearnedAnswerPath(sim)
+        self._bound = True
+        return self.graph is not None
+
+    def infer_relation(self, question, max_hops=None):
+        """Pick the two most informative (rarest) content terms in the
+        question and infer their learned relation, trying a few pairs."""
+        if self.graph is None:
+            return None
+        try:
+            toks = [t for t in self.graph.index.vec.tokenize(question)
+                    if '_' not in t]
+        except Exception:
+            return None
+        ranked = sorted(set(toks), key=lambda t: self.graph._df(t))
+        if len(ranked) < 2:
+            return None
+        best = None
+        cand = ranked[:4]
+        for i in range(len(cand)):
+            for j in range(i + 1, len(cand)):
+                try:
+                    inf = self.graph.infer(cand[i], cand[j], max_hops=max_hops)
+                except Exception:
+                    inf = None
+                if inf and inf.get('path'):
+                    c = inf.get('confidence', inf.get('weight', 0.0))
+                    if best is None or c > best.get(
+                            'confidence', best.get('weight', 0.0)):
+                        best = inf
+        return best
+
+    def get_status(self):
+        return {'bound': self._bound,
+                'errors': dict(self.errors),
+                'graph': self.graph.get_status() if self.graph else None,
+                'answers_given': getattr(self.answer_path, 'answers', 0),
+                'answers_missed': getattr(self.answer_path, 'misses', 0),
+                'expand_enabled': bool(CONFIG.get('w53_expand_retrieval', True)),
+                'canned_fallback': bool(CONFIG.get('w53_canned_fallback', False))}
+
+    def report(self):
+        s = self.get_status()
+        g = s['graph'] or {}
+        return '\n'.join([
+            "=" * 68,
+            "WAVE 53 - LEARNED CORRELATION LAYER",
+            "=" * 68,
+            f"  bound      : {s['bound']}  "
+            f"(graph {'online' if g else 'waiting for index'})",
+            f"  docs seen  : {g.get('docs_seen', 0)}   "
+            f"cached terms : {g.get('cached_terms', 0)}",
+            f"  corr index : {g.get('correlation_index', 0.0)}",
+            f"  inferences : {g.get('inferences', 0)}   "
+            f"confirmed={g.get('confirmed', 0)}   "
+            f"ruptured={g.get('ruptures', 0)}",
+            f"  answers    : {s['answers_given']} given, "
+            f"{s['answers_missed']} missed",
+            f"  expansion  : {'ON' if s['expand_enabled'] else 'off'}   "
+            f"canned banks : {'ON' if s['canned_fallback'] else 'OFF'}",
+            "=" * 68,
+        ])
+
+
+# ---- retrieval expansion ----------------------------------------------------
+# Wrapped at class level so EVERY retrieval consumer gains it automatically:
+# wave49_answer, _fact_gather, respond()'s grounded fallback, the miner.
+_pre_v53_retrieve = KnowledgeRetriever.retrieve
+
+
+def _wave53_retrieve(self, query, top_k=5, shortlist=24, rerank=True):
+    hits = _pre_v53_retrieve(self, query, top_k=shortlist, rerank=False)
+    graph = getattr(self, '_corr_graph', None)
+    if graph is not None and CONFIG.get('w53_expand_retrieval', True):
+        try:
+            extra = graph.expand(query)
+        except Exception:
+            extra = []
+        if extra:
+            eq = str(query) + ' ' + ' '.join(extra)
+            more = _pre_v53_retrieve(self, eq, top_k=shortlist, rerank=False)
+            seen = {h['doc_id'] for h in hits}
+            discount = float(CONFIG.get('w53_expand_score', 0.8))
+            for h in more:
+                if h['doc_id'] in seen:
+                    continue
+                hh = dict(h)          # never mutate shared hit/meta dicts
+                hh['score'] = float(h.get('score', 0.0)) * discount
+                meta = dict(h.get('meta') or {})
+                meta['expanded'] = True
+                hh['meta'] = meta
+                hits.append(hh)
+    if rerank and hits:
+        return self.reranker.rerank(query, hits, top_k=top_k)
+    return hits[:top_k]
+
+
+KnowledgeRetriever.retrieve = _wave53_retrieve
+
+
+# ---- learned-first answer routing --------------------------------------------
+_pre_v53_wave49_answer = ConsciousnessSimulator.wave49_answer
+
+
+def _v53_wave49_answer(self, query, kind='auto', max_tokens=96,
+                      neural=True, ctx=None):
+    """Extractive learned answer first: when the corpus literally contains
+    the answer, quoting it (with provenance) beats sampling an undertrained
+    model. Otherwise the full retrieve -> sample -> vote -> verify -> GRPO
+    pipeline runs as before, now with expanded recall."""
+    w53 = getattr(self, '_wave53', None)
+    res = None
+    if (w53 is not None and w53.answer_path is not None
+            and CONFIG.get('w53_extractive_first', True)):
+        try:
+            res = w53.answer_path.answer(query)
+        except Exception:
+            res = None
+        if (res is not None and float(res.get('confidence', 0.0)) >=
+                float(CONFIG.get('w53_extractive_confidence', 0.55))):
+            return {'answer': res['answer'], 'text': res['answer'],
+                    'confidence': res['confidence'], 'agreement': 1.0,
+                    'grounded': True, 'grounding_status': 'learned_extractive',
+                    'sources': ['learned_data'],
+                    'evidence': res.get('evidence'),
+                    'expansions': res.get('expansions'),
+                    'provenance': res.get('provenance'),
+                    'samples': [], 'strategy': 'learned_extractive',
+                    'extractive': True}
+    out = _pre_v53_wave49_answer(self, query, kind=kind,
+                                max_tokens=max_tokens, neural=neural, ctx=ctx)
+    if isinstance(out, dict) and res is not None:
+        out.setdefault('learned_evidence', res)
+    return out
+
+
+ConsciousnessSimulator.wave49_answer = _v53_wave49_answer
+
+
+_W53_Q_RE = re.compile(
+    r'(?i)^\s*(what|why|how|who|when|where|which|explain|define|describe|'
+    r'is|are|does|do|can|could|should|would|relate|difference between)\b')
+
+_pre_v53_respond = ConsciousnessSimulator.respond
+
+
+def _v53_respond(self, prompt, max_tokens=60, **generate_kwargs):
+    """Question-shaped prompts try the extractive learned path first.
+    Everything else — slash commands, symbolic formula asks, conversation —
+    falls through to the normal cascade unchanged."""
+    try:
+        stripped = str(prompt).strip()
+    except Exception:
+        stripped = ''
+    if (stripped and not stripped.startswith('/')
+            and (stripped.endswith('?') or _W53_Q_RE.match(stripped))):
+        w53 = getattr(self, '_wave53', None)
+        if w53 is not None and w53.answer_path is not None:
+            try:
+                res = w53.answer_path.answer(stripped)
+            except Exception:
+                res = None
+            if (res is not None and float(res.get('confidence', 0.0))
+                    >= float(CONFIG.get('w53_answer_min_conf', 0.55))):
+                return {'text': res['answer'], 'answer': res['answer'],
+                        'source': 'wave53_learned_data',
+                        'confidence': res.get('confidence'),
+                        'provenance': res.get('provenance'),
+                        'expansions': res.get('expansions')}
+    return _pre_v53_respond(self, prompt, max_tokens=max_tokens,
+                            **generate_kwargs)
+
+
+ConsciousnessSimulator.respond = _v53_respond
+
+
+_fgs_v53_answer_qa = FrontierGenerationSuite.answer_qa
+_fgs_v53_reason = FrontierGenerationSuite.multi_step_reason
+_fgs_v53_code = FrontierGenerationSuite.generate_code
+
+
+def _v53_answer_qa(self, question, max_tokens=240, neural=False):
+    """Learned-data-first QA. The canned banks this used to consult
+    (KNOWLEDGE_LIBRARY, COMMON_SENSE, _toc_query) only run when
+    w53_canned_fallback is explicitly set."""
+    q = str(question).lower().strip().strip('?')
+    if q in self._qa_cache:
+        return self._qa_cache[q]
+    # 1. formula tools — computed answers, not stored text
+    if hasattr(self.sim, 'symbolic_query'):
+        try:
+            sym = self.sim.symbolic_query(question)
+        except Exception:
+            sym = None
+        if sym and sym.get('source') in ('symbolic_lookup', 'math_lookup'):
+            ans = sym.get('description') or sym.get('formula') or str(sym)
+            self._qa_cache[q] = {'answer': ans, 'source': sym['source'],
+                                 'confidence': 0.95}
+            return self._qa_cache[q]
+    # 2. learned extractive answer — a real sentence from ingested data
+    try:
+        w53 = getattr(self.sim, '_wave53', None)
+        if w53 is not None and w53.answer_path is not None:
+            res = w53.answer_path.answer(question)
+            if res is not None:
+                out = {'answer': res['answer'], 'source': 'learned_data',
+                       'confidence': res.get('confidence', 0.6),
+                       'provenance': res.get('provenance'),
+                       'expansions': res.get('expansions')}
+                self._qa_cache[q] = out
+                return out
+    except Exception:
+        pass
+    # 3. generative learned path — grounded samples, vote, verify, RL update
+    try:
+        if hasattr(self.sim, 'wave49_answer'):
+            res = self.sim.wave49_answer(question, kind='auto',
+                                         max_tokens=min(int(max_tokens), 96))
+            if isinstance(res, dict) and res.get('answer'):
+                out = {'answer': res['answer'],
+                       'source': 'wave49_learned_rag',
+                       'confidence': res.get('confidence', 0.5)}
+                self._qa_cache[q] = out
+                return out
+    except Exception:
+        pass
+    # 4. neural when explicitly allowed
+    if neural and CONFIG.get('allow_token_generation', False):
+        try:
+            ans = self.sim.generate_text(
+                'Answer this in one sentence: ' + str(question),
+                max_tokens=max_tokens, force_tokens=True)
+            self._qa_cache[q] = {'answer': ans, 'source': 'neural',
+                                 'confidence': 0.6}
+            return self._qa_cache[q]
+        except Exception as e:
+            return {'answer': '[QA error: ' + str(e) + ']',
+                    'source': 'neural_error', 'confidence': 0.0}
+    # 5. canned banks — opt-in only
+    if CONFIG.get('w53_canned_fallback', False):
+        return _fgs_v53_answer_qa(self, question, max_tokens=max_tokens,
+                                  neural=neural)
+    self._qa_cache[q] = {
+        'answer': 'I have not learned data that answers this yet. '
+                  'Ingest a source with wave53_learn() and ask again.',
+        'source': 'no_learned_data', 'confidence': 0.0}
+    return self._qa_cache[q]
+
+
+def _v53_multi_step_reason(self, question):
+    """Step-wise reasoning where every fact comes from learned data or from
+    tools that compute. Canned fact banks are gated behind the same flag."""
+    q = str(question).lower().strip().strip('?')
+    if q in self._reason_cache:
+        return self._reason_cache[q]
+    steps = []
+    fact, source, confidence = None, 'unknown', 0.5
+    # 1. formula tools — computed answers only
+    sym = None
+    if hasattr(self.sim, 'symbolic_query'):
+        try:
+            sym = self.sim.symbolic_query(question)
+        except Exception:
+            sym = None
+    if sym and sym.get('source') in ('symbolic_lookup', 'math_lookup'):
+        fact = sym.get('description') or sym.get('formula') or str(sym)
+        source, confidence = 'symbolic', 0.95
+        steps.append({'step': 1, 'kind': 'symbolic', 'data': fact})
+    # 2. learned retrieval — real ingested evidence
+    if not fact:
+        try:
+            hits = self.sim.wave49_retrieve(question, top_k=4)
+            if hits:
+                fact = str(hits[0].get('text', ''))[:400]
+                source, confidence = 'learned_retrieval', 0.85
+                steps.append({'step': 1, 'kind': 'learned_retrieval',
+                              'data': fact})
+        except Exception:
+            pass
+    # 3. learned correlation inference — a derived relation over the data
+    try:
+        w53 = getattr(self.sim, '_wave53', None)
+        if w53 is not None:
+            inf = w53.infer_relation(question)
+            if inf and inf.get('path'):
+                data = ('learned relation ' + ' -> '.join(inf['path']) +
+                        (' (observed in data)' if inf.get('verified')
+                         else ' (inferred from correlations)'))
+                steps.append({'step': len(steps) + 1,
+                              'kind': 'correlation', 'data': data})
+                if not fact:
+                    fact = data
+                    source, confidence = 'learned_correlation', 0.7
+    except Exception:
+        pass
+    # reasoning rules — logic scaffolding, not stored answers
+    nums = [float(n) for n in
+            re.findall(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', str(question))]
+    if any(k in q for k in ('compare', 'difference', 'vs', 'versus', 'than')):
+        reason_kind, rule = 'comparative', 'Compare entities along shared dimensions'
+    elif any(k in q for k in ('why', 'cause', 'because', 'reason')):
+        reason_kind, rule = 'causal', 'Identify mechanism -> intermediate -> outcome'
+    elif any(k in q for k in ('how many', 'calculate', 'compute', 'solve')):
+        reason_kind, rule = 'quantitative', 'Extract quantities -> identify relation -> compute'
+    else:
+        reason_kind, rule = 'structural', 'Decompose -> relate -> synthesize'
+    steps.append({'step': len(steps) + 1, 'kind': 'rule',
+                  'data': f'{reason_kind}: {rule}'})
+    computed, op = None, None
+    if len(nums) >= 2:
+        a, b = nums[0], nums[1]
+        if 'percent' in q or '%' in question:
+            computed, op = a * b / 100.0, f'{a} * {b} / 100'
+        elif '+' in question or 'sum' in q or 'total' in q:
+            computed, op = a + b, f'{a} + {b}'
+        elif '*' in question or 'times' in q or 'product' in q:
+            computed, op = a * b, f'{a} * {b}'
+        elif 'difference' in q or 'minus' in q or '-' in question:
+            computed, op = a - b, f'{a} - {b}'
+        elif '/' in question or 'divide' in q or 'ratio' in q:
+            computed, op = (a / b if b else None), f'{a} / {b}'
+        if computed is not None and (not fact or reason_kind == 'quantitative'):
+            fact = f'Computed: {op} = {computed}'
+            source, confidence = 'arithmetic', 0.95
+            steps.append({'step': len(steps) + 1, 'kind': 'arithmetic',
+                          'data': fact})
+    # 4. canned banks — opt-in only
+    if not fact and CONFIG.get('w53_canned_fallback', False):
+        return _fgs_v53_reason(self, question)
+    conclusion = fact if fact else (
+        'I have not learned data that answers this; '
+        'the question falls outside the learned corpus.')
+    if not fact:
+        confidence = 0.25
+    steps.append({'step': len(steps) + 1, 'kind': 'synthesis',
+                  'data': conclusion})
+    out = {'question': question, 'steps': steps, 'conclusion': conclusion,
+           'reasoning_chain': [s['data'] for s in steps],
+           'source': source, 'confidence': confidence}
+    self._reason_cache[q] = out
+    return out
+
+
+def _v53_generate_code(self, request, language='python', neural=False):
+    """Code generation that prefers tools that compute (the engineering
+    toolkit), then learned context, then the neural model. Canned code
+    templates only run under w53_canned_code."""
+    try:
+        eng = _try_engineering_query(request)
+        if eng:
+            return eng
+    except Exception:
+        pass
+    try:
+        tk = _get_cs_ref_toolkit()
+        eng2 = getattr(tk, 'engineering', None) if tk else None
+        if eng2 is not None and hasattr(eng2, 'design_for_need'):
+            raw = eng2.design_for_need(request)
+            if isinstance(raw, str) and ('def ' in raw or 'class ' in raw):
+                return raw
+    except Exception:
+        pass
+    ctx_lines = []
+    try:
+        hits = self.sim.wave49_retrieve('code ' + str(request), top_k=3)
+        for h in hits or []:
+            t = str(h.get('text', ''))[:160].replace('\n', ' ')
+            if t:
+                ctx_lines.append('# ' + t)
+    except Exception:
+        pass
+    if neural and CONFIG.get('allow_token_generation', False):
+        try:
+            prompt = ('Write a short ' + str(language) +
+                      ' function that does this: ' + str(request) +
+                      '\nContext:\n' + '\n'.join(ctx_lines))
+            return self.sim.generate_text(prompt, max_tokens=240,
+                                          force_tokens=True)
+        except Exception as e:
+            return '# Neural code error: ' + str(e)
+    if CONFIG.get('w53_canned_code', False):
+        return _fgs_v53_code(self, request, language=language, neural=neural)
+    name = 'solution'
+    for word in str(request).lower().split():
+        w = ''.join(ch for ch in word if ch.isalnum() or ch == '_')
+        if len(w) > 2 and w not in {'the', 'and', 'for', 'that', 'this',
+                                    'with', 'function', 'code', 'write',
+                                    'def', 'class', 'make', 'create',
+                                    'program', 'python', 'file', 'files'}:
+            name = w
+            break
+    lines = ['# Code request: ' + str(request),
+             '# Learned generation unavailable — scaffold only.']
+    lines += ctx_lines[:4]
+    lines.append('def ' + name + '(*args, **kwargs):')
+    lines.append('    # TODO: implement ' + str(request)[:80])
+    lines.append('    raise NotImplementedError')
+    return '\n'.join(lines)
+
+
+FrontierGenerationSuite.answer_qa = _v53_answer_qa
+FrontierGenerationSuite.multi_step_reason = _v53_multi_step_reason
+FrontierGenerationSuite.generate_code = _v53_generate_code
+
+
+# ---- loop closure -------------------------------------------------------------
+_pre_v53_refine = ConsciousnessSimulator.refine_data
+
+
+def _v53_refine_data(self, data, timestamp, verify=True):
+    """Verified learned facts now also enter the subconscious training
+    stream (the retrieval index already received them via add_document)."""
+    out = _pre_v53_refine(self, data, timestamp, verify=verify)
+    try:
+        score = out[0] if isinstance(out, tuple) else out
+        if score and float(score) > 0.55:
+            try:
+                self.wave50_feed(str(data))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return out
+
+
+ConsciousnessSimulator.refine_data = _v53_refine_data
+
+_pre_v53_mine = ConsciousnessSimulator._mine_instruction_pairs
+
+
+def _v53_mine_instruction_pairs(self, n_docs=64, max_pairs=48):
+    """Mined document pairs + learned-correlation pairs, so supervised
+    training teaches the system its own learned structure."""
+    pairs = _pre_v53_mine(self, n_docs=n_docs, max_pairs=max_pairs)
+    try:
+        w53 = getattr(self, '_wave53', None)
+        g = w53.graph if w53 is not None else None
+        if g is not None:
+            docs = list(getattr(g.index, 'docs', None) or [])
+            cap = int(CONFIG.get('w53_corr_pairs_per_mine', 10))
+            seen = set()
+            for d in random.sample(docs, min(12, len(docs))):
+                toks = [t for t in g.index.vec.tokenize(d.get('text', ''))
+                        if '_' not in t and len(t) > 3]
+                random.shuffle(toks)
+                for t in toks[:3]:
+                    nb = g.neighbors(t, k=1)
+                    if not nb:
+                        continue
+                    u, wgt, n = nb[0]
+                    if '_' in u or (t, u) in seen or (u, t) in seen:
+                        continue
+                    seen.add((t, u))
+                    pairs.append((
+                        f'What does {t} relate to?',
+                        f'In learned data, {t} correlates with {u} '
+                        f'(association strength {wgt}, {n} shared passages).'))
+                    if len(pairs) >= max_pairs or len(seen) >= cap:
+                        return pairs[:max_pairs]
+    except Exception:
+        pass
+    return pairs
+
+
+ConsciousnessSimulator._mine_instruction_pairs = _v53_mine_instruction_pairs
+
+_at_v53_corpus = AlienTokenizer._build_tokenizer_corpus
+
+
+def _v53_tokenizer_corpus(self):
+    """BPE merges should be learned from the data the system actually
+    ingested — data_bank text now joins the tokenizer training corpus."""
+    corpus = _at_v53_corpus(self)
+    try:
+        root = os.path.dirname(os.path.abspath(__file__))
+        bank = os.path.join(root, 'data_bank')
+        if os.path.isdir(bank):
+            added = 0
+            for dirpath, _dd, fns in os.walk(bank):
+                for fn in sorted(fns):
+                    if not fn.lower().endswith(('.txt', '.md', '.rst',
+                                                '.json', '.jsonl', '.log',
+                                                '.csv')):
+                        continue
+                    try:
+                        with open(os.path.join(dirpath, fn),
+                                  encoding='utf-8', errors='ignore') as f:
+                            for ln in f:
+                                ln = ln.strip()
+                                if len(ln) > 3:
+                                    corpus.append(ln)
+                                    added += 1
+                                    if added >= 25000:
+                                        return corpus
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    return corpus
+
+
+AlienTokenizer._build_tokenizer_corpus = _v53_tokenizer_corpus
+
+
+# ---- public API ---------------------------------------------------------------
+def _wave53_answer(self, query, max_tokens=96):
+    """Public: extractive answer from learned data (verbatim evidence +
+    provenance), or an honest 'not learned' result."""
+    w = getattr(self, '_wave53', None)
+    if w is None or w.answer_path is None:
+        return {'answer': None, 'reason': 'wave53 not initialised'}
+    res = w.answer_path.answer(query)
+    return res or {'answer': None, 'reason': 'no learned data answers this'}
+
+
+def _wave53_expand(self, query, k=None):
+    """Public: learned correlates of the query's terms."""
+    w = getattr(self, '_wave53', None)
+    if w is None or w.graph is None:
+        return []
+    return w.graph.expand(query, k=k)
+
+
+def _wave53_infer(self, a, b=None, max_hops=None):
+    """Public: learned multi-hop inference. wave53_infer('a','b') infers the
+    relation between two terms; wave53_infer('question') picks the two most
+    informative terms itself."""
+    w = getattr(self, '_wave53', None)
+    if w is None or w.graph is None:
+        return None
+    if b is None:
+        return w.infer_relation(str(a), max_hops=max_hops)
+    return w.graph.infer(str(a), str(b), max_hops=max_hops)
+
+
+def _wave53_correlations(self, term, k=8):
+    """Public: the learned correlates of one term [(term, npmi, n_docs)]."""
+    w = getattr(self, '_wave53', None)
+    if w is None or w.graph is None:
+        return []
+    return w.graph.neighbors(str(term), k=k)
+
+
+def _wave53_learn(self, source, max_train_lines=None):
+    """Public: teach the system something — a text string, a file, or a
+    directory. Material goes to the retrieval index (and so the correlation
+    graph), a bounded LM training pass, and the subconscious trainer."""
+    out = {'indexed': 0, 'trained': 0, 'fed': 0, 'ok': False}
+    w49 = getattr(self, '_wave49', None)
+    r = getattr(w49, 'retriever', None) if w49 is not None else None
+    cap = int(max_train_lines if max_train_lines is not None
+              else CONFIG.get('w53_learn_train_lines', 24))
+    try:
+        texts = []
+        if isinstance(source, str) and os.path.exists(source):
+            if os.path.isdir(source):
+                if r is not None:
+                    out['indexed'] = r.index_directory(source)
+                for dp, _dd, fns in os.walk(source):
+                    for fn in sorted(fns):
+                        if fn.lower().endswith(('.txt', '.md', '.rst',
+                                                '.json', '.jsonl', '.log',
+                                                '.csv')):
+                            try:
+                                with open(os.path.join(dp, fn),
+                                          encoding='utf-8',
+                                          errors='ignore') as f:
+                                    texts += [ln.strip() for ln in f
+                                              if len(ln.strip()) > 24]
+                            except Exception:
+                                continue
+            else:
+                if r is not None:
+                    out['indexed'] = r.index_file(source)
+                try:
+                    with open(source, encoding='utf-8',
+                              errors='ignore') as f:
+                        texts = [ln.strip() for ln in f
+                                 if len(ln.strip()) > 24]
+                except Exception:
+                    texts = []
+        elif isinstance(source, str):
+            if r is not None and len(source.strip()) >= 40:
+                added = r.add_document(source.strip(),
+                                       meta={'source': 'wave53_learn'})
+                out['indexed'] = 1 if added is not None else 0
+            texts = [ln.strip() for ln in source.split('\n')
+                     if len(ln.strip()) > 24]
+        else:
+            out['reason'] = 'source must be text or a path'
+            return out
+        if r is not None:
+            try:
+                r.index.finalize()
+                r.built = True
+            except Exception:
+                pass
+        random.shuffle(texts)
+        for ln in texts[:cap]:
+            try:
+                self.process_input(self.simple_tokenizer(ln),
+                                   task_category='wave53_learn',
+                                   raw_text=ln)
+                out['trained'] += 1
+            except Exception:
+                break
+        for ln in texts[cap:cap + 12]:
+            try:
+                if self.wave50_feed(ln[:2000]):
+                    out['fed'] += 1
+            except Exception:
+                break
+        out['ok'] = True
+    except Exception as e:
+        out['error'] = str(e)
+    return out
+
+
+def _wave53_status(self):
+    w = getattr(self, '_wave53', None)
+    return w.get_status() if w is not None else {'bound': False}
+
+
+def _wave53_report(self):
+    w = getattr(self, '_wave53', None)
+    return w.report() if w is not None else 'wave53 not initialised'
+
+
+ConsciousnessSimulator.wave53_answer = _wave53_answer
+ConsciousnessSimulator.wave53_expand = _wave53_expand
+ConsciousnessSimulator.wave53_infer = _wave53_infer
+ConsciousnessSimulator.wave53_correlations = _wave53_correlations
+ConsciousnessSimulator.wave53_learn = _wave53_learn
+ConsciousnessSimulator.wave53_status = _wave53_status
+ConsciousnessSimulator.wave53_report = _wave53_report
+
+
+# ---- registration -------------------------------------------------------------
+_pre_v53_init = ConsciousnessSimulator.__init__
+
+
+def _wave53_cs_init(self, *args, **kwargs):
+    _pre_v53_init(self, *args, **kwargs)
+    if getattr(self, '_wave53', None) is not None:
+        return
+    try:
+        self._wave53 = Wave53Integration(sim=self)
+        ok = self._wave53.bind(self)
+        print(f"  [WAVE53] learned correlation layer "
+              f"{'online' if ok else 'waiting for retrieval index'}")
+    except Exception as e:
+        print(f"  [WARN] wave53 init: {e}")
+        self._wave53 = None
+
+
+ConsciousnessSimulator.__init__ = _wave53_cs_init
+
+_so_v53 = SovereignOrchestrator.__init__
+
+
+def _so_v53_init(self, sim):
+    _so_v53(self, sim)
+    self._sub_engines = self._sub_engines + ('_wave53',)
+
+
+SovereignOrchestrator.__init__ = _so_v53_init
+
+_pwa_v53 = ProcessWiringAuditor.__init__
+
+
+def _pwa_v53_init(self, sim):
+    _pwa_v53(self, sim)
+    self._expected = self._expected + ('_wave53',)
+
+
+ProcessWiringAuditor.__init__ = _pwa_v53_init
+
+
+# =============================================================================
+# WAVE 54 - LEARNED LOGIC LAYER
+# =============================================================================
+# Wave 53 learned WHERE terms co-occur (an undirected correlation matrix).
+# Wave 54 learns WHAT the relation IS and reasons over it. Everything below
+# is still extracted from ingested data only — patterns are fixed logic, but
+# every relation, quantity, path, and verdict they produce is counted out of
+# the live corpus with document evidence behind it.
+#
+#   LearnedRelationExtractor — typed directed edges mined from the corpus's
+#       own sentences: is_a / part_of / located_in / causes / produces /
+#       prevents / uses / has / made_of / measures / used_for / defined_as,
+#       plus numeric quantity edges. Positive and NEGATED evidence are
+#       counted separately per edge, per document — a claim and its
+#       contradiction are both kept, which is what lets the logic layer
+#       refute instead of only support.
+#
+#   LearnedLogicEngine — forward-chaining inference over typed edges:
+#       transitive chains (is_a/part_of/located_in/causes), a composition
+#       table (is_a ∘ has ⇒ has — property inheritance — and friends),
+#       inverse relations, support/refute verdicts with noisy-or pooling,
+#       and auditable proof paths so every derived answer can show its work.
+#
+#   CorrelationAnalogy — a:b :: c:? solved by sparse arithmetic over the
+#       Wave-53 NPMI neighbor vectors themselves: v_b − v_a + v_c scored
+#       cosine-wise over the correlated candidate pool, with a typed-edge
+#       bonus when a learned relation mirrors the (a,b) relation.
+#
+#   KnowledgeGapMap — the epistemic counterpart: every missed extractive
+#       answer is recorded by term, ranked by how thin the learned evidence
+#       is, and reported as ingest pressure to the Wave-52 demand scaler, so
+#       the system's next meal is aimed at what it demonstrably lacks.
+#
+#   Routing — relational questions ("does X cause Y", "what is X made of",
+#       "X vs Y", "how heavy is X") now answer through the logic layer first
+#       in respond / wave49_answer / answer_qa / multi_step_reason, before
+#       extractive QA, retrieval voting, or any neural fallback.
+# =============================================================================
+
+for _k, _v in (('w54_relation_extraction', True),
+               ('w54_rel_scan_docs', 900),
+               ('w54_rel_phrase_max', 4),
+               ('w54_infer_max_hops', 4),
+               ('w54_infer_hop_decay', 0.9),
+               ('w54_answer_min_conf', 0.5),
+               ('w54_analogy_neighbors', 48),
+               ('w54_gap_miss_decay', 0.95),
+               ('w54_gap_pressure_at', 0.35),
+               ('w54_corr_pairs_per_mine', 8),
+               ('w54_logic_routing', True)):
+    CONFIG.setdefault(_k, _v)
+del _k, _v
+
+
+_W54_W = r"[a-z][a-z0-9'\-]*"
+# Words that terminate a noun phrase: auxiliaries, connectors, and the
+# predicate vocabulary itself. Without this, a greedy phrase capture swallows
+# the verb ("chlorophyll is green pigment absorbs light" -> one phrase).
+_W54_BOUND = (
+    r"is|are|was|were|be|been|being|has|have|had|having|do|does|did|done|"
+    r"can|could|will|would|shall|should|may|might|must|and|or|but|so|yet|"
+    r"nor|for|to|of|in|on|at|by|with|from|into|onto|upon|that|which|who|"
+    r"whom|whose|when|where|why|how|than|then|thus|therefore|hence|however|"
+    r"because|since|although|though|if|unless|until|while|as|not|no|also|"
+    r"the|a|an|my|your|our|his|her|their|inside|outside|through|throughout|"
+    r"across|along|around|about|against|toward|towards|behind|beneath|"
+    r"beside|besides|beyond|despite|except|including|regarding|concerning|"
+    r"near|off|vs|versus|eg|ie|etc|"
+    r"very|more|most|less|least|such|like|via|per|its|it|this|these|those|"
+    r"there|here|what|all|any|some|each|both|either|neither|between|among|"
+    r"within|without|during|after|before|over|under|again|once|causes?|"
+    r"produces?|generates?|creates?|makes?|uses?|utili[sz]es?|requires?|"
+    r"needs?|consumes?|absorbs?|emits?|releases?|yields?|secretes?|forms?|"
+    r"prevents?|inhibits?|blocks?|suppresses?|stops?|reduces?|slows?|limits?|"
+    r"impairs?|weakens?|destroys?|kills?|counteracts?|neutrali[sz]es?|"
+    r"contains?|includes?|holds?|possesses?|consists?|comprises?|carries|"
+    r"stores?|houses?|located|found|situated|resides?|embedded|implanted|"
+    r"measures?|quantifies?|indicates?|determines?|controls?|regulates?|"
+    r"governs?|encodes?|monitors?|senses?|defined|described|referred|"
+    r"denotes?|means?|equals?|weighs?|costs?|takes|took|lasts|reaches|"
+    r"extends|spans|becomes?|became|remains?|seems?|appears?|looks?|sounds?|"
+    r"feels?|acts?|works?|functions?|helps?|gets?|got|puts?|goes|went|comes?|"
+    r"came|says?|said|shows?|shown|gives?|gave|sees?|saw|knows?|knew|wants?|"
+    r"keeps?|kept|lets?|let|begins?|began|tries?|tried|leaves?|left|calls?|"
+    r"called|leads?|led|results?|resulted|brings?|brought|drives?|drove|"
+    r"enables?|allows?|permits?|contributes?|depends?|relies|made|composed|"
+    r"comprised|built|constructed|formed|designed|meant|intended|employed|"
+    r"applied|responsible|triggered?|induces?|induced|forces?")
+_W54_NP = ("(" + _W54_W +
+           r"(?:\s+(?!(?:" + _W54_BOUND + r")\b)" + _W54_W + r"){0,3}?)")
+_W54_NP_GREEDY = ("(" + _W54_W +
+                  r"(?:\s+(?!(?:" + _W54_BOUND + r")\b)" + _W54_W + r"){0,3})")
+_W54_NEG = (r"((?:not|never|no|hardly|scarcely|does\s+not|do\s+not|did\s+not|"
+            r"cannot|can\s+not|won't|will\s+not|isn't|aren't|wasn't|weren't|"
+            r"don't|doesn't|didn't|without|fails?\s+to)\s+)?")
+
+# relation -> [(predicate regex, extraction reliability), ...]
+# Reliability discounts the pattern's known noise before evidence counting;
+# it is a fixed property of the PATTERN, never of the data.
+_W54_PREDS = {
+    'is_a': [
+        (r"(?:is|are|was|were|remains?)\s+(?:a\s+|an\s+|the\s+)?"
+         r"(?:type|kind|form|sort|class|species|example|instance|part|"
+         r"member|subset|variant|category)\s+of", 0.92),
+        (r"(?:is|are|was|were)\s+(?:a|an|the)\b", 0.6),
+    ],
+    'part_of': [
+        (r"(?:is|are|was|were)\s+(?:a\s+|an\s+|the\s+)?"
+         r"(?:part|component|element|portion|piece|member|subsection|"
+         r"stage|phase|constituent|ingredient)\s+of", 0.9),
+    ],
+    'located_in': [
+        (r"(?:is|are|was|were)\s+(?:found|located|situated|stored|"
+         r"contained|produced|manufactured|housed|synthesi[sz]ed)\s+"
+         r"(?:in|within|inside|at|on|near)\b", 0.85),
+        (r"(?:found|located|situated|resides?|residing|embedded|"
+         r"implanted|concentrated)\s+(?:in|within|inside|at|on|near)\b", 0.78),
+    ],
+    'causes': [
+        (r"(?:causes?|caused|causing|leads?\s+to|led\s+to|results?\s+in|"
+         r"resulted\s+in|brings?\s+about|brought\s+about|gives?\s+rise\s+to|"
+         r"gave\s+rise\s+to|triggers?|induces?|induced|drives?|drove|"
+         r"enables?|allows?|permits?|contributes?\s+to|fuels?)", 0.85),
+    ],
+    'produces': [
+        (r"(?:produces?|produced|producing|generates?|generated|generating|"
+         r"creates?|created|synthesi[sz]es?|emits?|emitted|releases?|"
+         r"released|yields?|yielded|secretes?|secreted|excretes?)", 0.8),
+    ],
+    'prevents': [
+        (r"(?:prevents?|prevented|inhibits?|inhibited|blocks?|blocked|"
+         r"suppresses?|suppressed|stops?|stopped|reduces?|reduced|slows?|"
+         r"slowed|limits?|limited|impairs?|impaired|weakens?|weakened|"
+         r"destroys?|destroyed|kills?|killed|counteracts?|"
+         r"neutrali[sz]es?)", 0.8),
+    ],
+    'uses': [
+        (r"(?:uses?|utili[sz]es?|utili[sz]ed|requires?|required|needs?|"
+         r"needed|consumes?|consumed|absorbs?|absorbed|depends?\s+on|"
+         r"depended\s+on|relies\s+on|relied\s+on|takes?\s+in|took\s+in)", 0.78),
+    ],
+    'has': [
+        (r"(?:has|have|had|contains?|contained|includes?|included|holds?|"
+         r"held|possesses?|consists?\s+of|consisted\s+of|comprises?|"
+         r"carries|carried|houses?|housed|features?|featured)", 0.72),
+    ],
+    'made_of': [
+        (r"(?:is|are|was|were)\s+(?:made|composed|comprised|built|"
+         r"constructed|formed)\s+(?:of|from|out\s+of)\b", 0.85),
+        (r"(?:made|composed|comprised|built|constructed|formed)\s+"
+         r"(?:of|from|out\s+of)\b", 0.78),
+    ],
+    'measures': [
+        (r"(?:measures?|measured|quantifies?|quantified|indicates?|"
+         r"indicated|determines?|determined|controls?|controlled|"
+         r"regulates?|regulated|governs?|governed|encodes?|encoded|"
+         r"monitors?|monitored|senses?|sensed|detects?|detected)", 0.66),
+    ],
+    'used_for': [
+        (r"(?:is|are|was|were)\s+(?:used|employed|applied|designed|built|"
+         r"meant|intended)\s+(?:for|to|in|as)\b", 0.78),
+    ],
+    'defined_as': [
+        (r"(?:is|are)\s+(?:defined|described|known|referred\s+to)\s+as\b",
+         0.85),
+        (r"(?:refers?\s+to|denotes?)\b", 0.72),
+    ],
+}
+# Hearst-style flipped patterns: "animals such as dogs" -> dogs is_a animals.
+_W54_FLIP_PREDS = {
+    'is_a': [
+        (r"(?:such\s+as|including|especially|like|e\.?g\.?:?)\b", 0.72),
+    ],
+}
+
+# "X is N units" — learned quantities, so numeric QA answers from data.
+_W54_QTY_RE = re.compile(
+    r"(?i)\b" + _W54_NP_GREEDY + r"\s+" + _W54_NEG +
+    r"(?:is|are|was|were|equals?|is\s+equal\s+to|has|have|measures?|"
+    r"weighs?|costs?|lasts|spans|reaches|extends|totals?)\s+"
+    r"(?:about|around|approximately|approx\.?|roughly|nearly|almost|"
+    r"over|under|up\s+to|at\s+least|at\s+most|only|just)?\s*"
+    r"(-?[\d,]+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*"
+    r"([a-zA-Zµ°Ω/%$£€][\wµ°Ω/%·^\-\.]*(?:\s*/\s*\w+)?)?")
+
+_W54_LEAD = frozenset(
+    'the a an of in at on for to and or with by from as into onto upon its '
+    'his her their our your my this that these those such some any each '
+    'both no not very more most less least all every none'.split())
+# Bare head nouns of "X of Y" constructions — 'chlorophyll is a type (of
+# pigment)' leaking through the loose is-a pattern produces a meaningless
+# is_a(chlorophyll, 'type') edge. These words only carry meaning WITH their
+# complement, so alone they are never a valid relation endpoint.
+_W54_JUNK = frozenset(
+    'type kind sort form class species example instance part member subset '
+    'variant category component element portion piece stage phase '
+    'constituent ingredient way thing something anything stuff lot ones '
+    'one group set number series amount degree level sense respect'.split())
+_W54_SENT = re.compile(r'(?<=[.!?;])\s+|[\r\n]+')
+_W54_DIGIT = re.compile(r'\d')
+
+
+class LearnedRelationExtractor:
+    """Typed directed edges mined from the corpus's own sentences.
+
+    Wave 53's graph knows that two terms travel together; this extractor
+    knows HOW: chlorophyll is_a pigment, photosynthesis produces glucose,
+    ATP located_in mitochondria. Patterns are fixed logic — the relations
+    themselves are learned: every edge carries the documents it was read
+    from, positive and negated evidence counted separately, so a later
+    passage that contradicts an earlier one weakens the edge instead of
+    being invisible to it.
+
+    Extraction is lazy per query term (only the term's own posting docs are
+    scanned) and idempotent (a doc is extracted once, globally), so the edge
+    store stays exact and cheap as the index grows.
+    """
+
+    def __init__(self, index, max_scan_docs=None, max_phrase=None,
+                 min_conf=0.05):
+        self.index = index
+        self.max_scan = int(max_scan_docs or CONFIG.get(
+            'w54_rel_scan_docs', 900))
+        self.max_phrase = int(max_phrase or CONFIG.get(
+            'w54_rel_phrase_max', 4))
+        self.min_conf = float(min_conf)
+        # Combined alternation: ONE compiled regex per direction replaces
+        # one compiled regex per predicate — ~24 finditer passes per
+        # sentence become 2. Every predicate gets its own capture group so
+        # the winning alternative still reports (rel, weight, flip) exactly.
+        # 'is <verb/type> <prep>' relations are ordered BEFORE is_a so
+        # 'is a part of' yields part_of, not is_a's generic 'is a X of'
+        # (regex alternation is first-match, and per-pred independent scans
+        # used to emit BOTH — the is_a edge was the spurious one).
+        def _specs(table):
+            out = []
+            for rel, preds in table.items():
+                for pred, w in preds:
+                    out.append((rel, pred, float(w)))
+            return out
+        _first = ('part_of', 'located_in', 'made_of', 'used_for',
+                  'defined_as')
+        norm = [s for r in _first if r in _W54_PREDS
+                for s in _specs({r: _W54_PREDS[r]})]
+        norm += [s for rel, preds in _W54_PREDS.items()
+                 if rel not in _first for s in _specs({rel: preds})]
+        flip = _specs(_W54_FLIP_PREDS)
+        self._rx_pairs = []
+        for specs, is_flip in ((norm, False), (flip, True)):
+            if not specs:
+                continue
+            grp = [(rel, w) for rel, _p, w in specs]
+            rx = re.compile(
+                r"(?i)\b" + _W54_NP + r"\s+" + _W54_NEG + r"(?:" +
+                '|'.join('(' + p + ')' for _r, p, _w in specs) +
+                r")\s+" + _W54_NP_GREEDY)
+            self._rx_pairs.append((rx, grp, is_flip))
+        self._canon_cache = {}           # raw NP -> canonical phrase
+        self._edges = {}                     # (a, rel, b) -> edge record
+        self._adj = defaultdict(set)         # a -> {(rel, b)}
+        self._adj_in = defaultdict(set)      # b -> {(rel, a)}
+        self._phrase_index = defaultdict(set)  # token -> phrases containing it
+        self._quantities = defaultdict(list)  # phrase -> [quantity rec]
+        self._done = set()                   # doc_ids already extracted
+        self._scanned = {}                   # term -> n_docs at last scan
+        self._scans = 0
+
+    # ---- phrase handling ----------------------------------------------------
+    def _canon(self, raw):
+        """Normalise a matched noun phrase: lowercase, drop stop/boundary
+        words, cap length. 'the green pigment' and 'a green pigment' must
+        land on the SAME node or the graph fragments by article."""
+        toks = re.findall(r"[a-z0-9][a-z0-9_\-']*", str(raw).lower())
+        toks = [t for t in toks
+                if t not in _W54_LEAD and t not in HashingVectorizer._STOP
+                and len(t) > 1]
+        if not toks:
+            return None
+        return ' '.join(toks[:self.max_phrase])
+
+    def _resolve(self, term):
+        """The set of canonical phrases a term can stand for: itself plus
+        every learned phrase that contains it ('electron' -> 'electron
+        transport chain'). Resolving ensures the term's own documents have
+        been mined, so edges materialize before anything asks for them."""
+        self._ensure(term)
+        base = self._canon(term) or str(term).strip().lower()
+        phrases = {base} if base else set()
+        for t in str(term).lower().split():
+            phrases |= self._phrase_index.get(t, set())
+        return phrases
+
+    # ---- extraction ---------------------------------------------------------
+    def extract_pairs(self, text):
+        """Pure pass: all typed relations + quantities in a text, no store.
+
+        Two combined-alternation scans per sentence (normal + flipped)
+        replace ~24 per-predicate scans — the winning capture group names
+        the relation, so output edges are identical while the regex engine
+        crosses the sentence twice instead of once per predicate."""
+        edges, qty = [], []
+        canon, ccache = self._canon, self._canon_cache
+        for sent in _W54_SENT.split(str(text)):
+            sent = sent.strip()
+            if len(sent) < 12:
+                continue
+            sl = sent.lower()
+            for rx, grp, flip in self._rx_pairs:
+                for m in rx.finditer(sl):
+                    gs = m.groups()
+                    rel = w = None
+                    for i, gv in enumerate(gs[2:-1]):
+                        if gv is not None:
+                            rel, w = grp[i]
+                            break
+                    if rel is None:
+                        continue
+                    a_raw, b_raw = gs[0], gs[-1]
+                    a = ccache.get(a_raw, 0)
+                    if a == 0:
+                        a = canon(a_raw)
+                        if len(ccache) < 16384:
+                            ccache[a_raw] = a
+                    b = ccache.get(b_raw, 0)
+                    if b == 0:
+                        b = canon(b_raw)
+                        if len(ccache) < 16384:
+                            ccache[b_raw] = b
+                    if (not a or not b or a == b
+                            or a in _W54_JUNK or b in _W54_JUNK):
+                        continue
+                    neg = bool(m.group(2))
+                    if not neg:
+                        # 'No reptile has fur' — the negation leads the
+                        # subject, where the in-predicate NEG slot can't
+                        # see it. 'X has no fur' puts it inside the
+                        # captured object instead. Either way the edge
+                        # is NEGATIVE evidence or the store inverts
+                        # real-world polarity.
+                        a_first = str(a_raw).lower().split()[:1]
+                        if a_first and a_first[0] in (
+                                'no', 'none', 'not', 'nothing'):
+                            neg = True
+                        elif re.match(
+                                r'(?i)^\s*(?:no|not|none|without|'
+                                r'nothing|zero)\s+', str(b_raw)):
+                            neg = True
+                    if flip:
+                        a, b = b, a
+                    edges.append((a, rel, b, neg, w))
+            if _W54_DIGIT.search(sl):
+                for m in _W54_QTY_RE.finditer(sl):
+                    a = self._canon(m.group(1))
+                    if not a:
+                        continue
+                    try:
+                        val = float(m.group(3).replace(',', ''))
+                    except Exception:
+                        continue
+                    unit = (m.group(4) or '').strip().rstrip('.,;:')
+                    qty.append((a, val, unit, bool(m.group(2)), sent.strip()))
+        return edges, qty
+
+    def _add_edge(self, a, rel, b, doc_id, negated, w):
+        key = (a, rel, b)
+        e = self._edges.get(key)
+        if e is None:
+            e = self._edges[key] = {'pos': set(), 'neg': set(), 'w': w}
+            self._adj[a].add((rel, b))
+            self._adj_in[b].add((rel, a))
+            for t in a.split():
+                self._phrase_index[t].add(a)
+            for t in b.split():
+                self._phrase_index[t].add(b)
+        # Idempotent per document: a doc can only ever add one positive and
+        # one negated observation, so rescans and overlapping term scans
+        # never recount it.
+        if negated:
+            if len(e['neg']) < 128:
+                e['neg'].add(doc_id)
+        else:
+            if len(e['pos']) < 128:
+                e['pos'].add(doc_id)
+
+    def _extract_doc(self, doc_id):
+        try:
+            text = self.index.docs[doc_id].get('text', '')
+        except Exception:
+            return
+        edges, qty = self.extract_pairs(text)
+        for a, rel, b, neg, w in edges:
+            self._add_edge(a, rel, b, doc_id, neg, w)
+        for a, val, unit, neg, sent in qty:
+            recs = self._quantities[a]
+            if not any(r['value'] == val and r['unit'] == unit
+                       and r['doc'] == doc_id for r in recs):
+                recs.append({'value': val, 'unit': unit, 'neg': neg,
+                             'doc': doc_id, 'sent': sent[:200]})
+                for t in a.split():
+                    self._phrase_index[t].add(a)
+
+    def _ensure(self, term):
+        """Scan every posting doc for `term` that has not been extracted
+        yet. Idempotent: docs are extracted once, globally, so overlapping
+        term scans share the work instead of repeating it. Multi-word
+        phrases intersect their token postings — a doc carrying the phrase
+        must carry every token, and scattered-token false positives simply
+        yield no phrase edges."""
+        try:
+            nd = len(self.index.docs)
+        except Exception:
+            return
+        if self._scanned.get(term) == nd:
+            return
+        toks = str(term).split()
+        if len(toks) > 1:
+            sets = []
+            for t in toks:
+                p = self.index.postings.get(t)
+                if not p:
+                    break
+                sets.append({d for d, _tf in p})
+            if len(sets) == len(toks):
+                cand = set.intersection(*sets)
+                doc_ids = sorted(cand)[:self.max_scan]
+            else:
+                doc_ids = []
+        else:
+            doc_ids = [d for d, _tf in
+                       (self.index.postings.get(term) or
+                        [])[:self.max_scan]]
+        for doc_id in doc_ids:
+            if doc_id in self._done:
+                continue
+            self._done.add(doc_id)
+            self._scans += 1
+            self._extract_doc(doc_id)
+        self._scanned[term] = nd
+
+    # ---- queries ------------------------------------------------------------
+    @staticmethod
+    def _conf(e, negated=False):
+        """Edge confidence: pattern reliability x evidence saturation.
+        n/(n+1): one passage supports, several confirm, and a contested
+        edge's positive side is discounted by its negated side elsewhere."""
+        s = e['neg'] if negated else e['pos']
+        n = len(s)
+        if n == 0:
+            return 0.0
+        c = e['w'] * n / (n + 1.0)
+        if not negated:
+            c *= max(0.0, 1.0 - e['w'] * len(e['neg']) / (len(e['neg']) + 1.0))
+        return min(0.95, c)
+
+    def _fmt(self, a, rel, b, e):
+        return {'a': a, 'rel': rel, 'b': b,
+                'n': len(e['pos']), 'neg': len(e['neg']),
+                'conf': round(self._conf(e), 4),
+                'neg_conf': round(self._conf(e, negated=True), 4),
+                'docs': sorted(e['pos'])[:6]}
+
+    def edges_for(self, term, rel=None, direction='both', k=24):
+        """All learned typed edges touching `term` (or a learned phrase
+        containing it), both directions, confidence-sorted."""
+        self._ensure(term)
+        out, seen = [], set()
+        for p in self._resolve(term):
+            if direction in ('out', 'both'):
+                for r, b in self._adj.get(p, ()):
+                    if rel and r != rel:
+                        continue
+                    key = (p, r, b)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    out.append(self._fmt(p, r, b, self._edges[key]))
+            if direction in ('in', 'both'):
+                for r, a in self._adj_in.get(p, ()):
+                    if rel and r != rel:
+                        continue
+                    key = (a, r, p)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    out.append(self._fmt(a, r, p, self._edges[key]))
+        out.sort(key=lambda x: -x['conf'])
+        return out[:k]
+
+    def quantities_for(self, term, k=6):
+        self._ensure(term)
+        out = []
+        for p in self._resolve(term):
+            out += self._quantities.get(p, [])
+        out.sort(key=lambda r: -len(str(r['sent'])))
+        return out[:k]
+
+    def get_status(self):
+        rel_counts = Counter(k[1] for k in self._edges)
+        return {'edges': len(self._edges), 'by_relation': dict(rel_counts),
+                'phrases': len(self._phrase_index),
+                'docs_extracted': len(self._done),
+                'quantified_entities': len(self._quantities),
+                'term_scans': len(self._scanned),
+                'doc_extractions': self._scans}
+
+
+class LearnedLogicEngine:
+    """Forward-chaining inference over the learned typed edges.
+
+    Rules, not answers: transitivity (a part_of b, b part_of c => a part_of
+    c), a small composition table (is_a o has => has — inherited properties;
+    is_a o causes => causes — inherited effects), inverse relations, and a
+    conflict table so 'prevents' evidence refutes a 'causes' question.
+    Every result carries its proof path — the exact edges walked — so an
+    inference is auditable back to the documents it came from.
+    """
+
+    TRANSITIVE = frozenset(('is_a', 'part_of', 'located_in', 'causes',
+                            'produces'))
+    INVERSE = {'is_a': 'instance_of', 'part_of': 'has_part',
+               'has': 'belongs_to', 'causes': 'caused_by',
+               'produces': 'produced_by', 'prevents': 'prevented_by',
+               'uses': 'used_by', 'made_of': 'material_of',
+               'located_in': 'contains', 'measures': 'measured_by',
+               'used_for': 'used_by', 'defined_as': 'defines',
+               'instance_of': 'is_a', 'has_part': 'part_of',
+               'belongs_to': 'has', 'caused_by': 'causes',
+               'produced_by': 'produces', 'prevented_by': 'prevents',
+               'used_by': 'uses', 'material_of': 'made_of',
+               'contains': 'located_in', 'measured_by': 'measures',
+               'defines': 'defined_as'}
+    # (left rel, right rel) -> composed rel, read as a -r1-> m -r2-> b.
+    COMPOSE = {('is_a', 'is_a'): 'is_a',
+               ('is_a', 'part_of'): 'part_of',
+               ('is_a', 'located_in'): 'located_in',
+               ('is_a', 'has'): 'has',
+               ('is_a', 'uses'): 'uses',
+               ('is_a', 'causes'): 'causes',
+               ('is_a', 'made_of'): 'made_of',
+               ('is_a', 'used_for'): 'used_for',
+               ('part_of', 'part_of'): 'part_of',
+               ('part_of', 'located_in'): 'located_in',
+               ('located_in', 'part_of'): 'located_in',
+               ('located_in', 'located_in'): 'located_in',
+               ('causes', 'causes'): 'causes',
+               ('causes', 'produces'): 'produces',
+               ('produces', 'causes'): 'causes',
+               ('has', 'is_a'): 'has',
+               ('has', 'part_of'): 'has',
+               ('made_of', 'is_a'): 'made_of',
+               ('uses', 'is_a'): 'uses'}
+    # Evidence of the LEFT relation refutes a question about the RIGHT.
+    REFUTES = {'causes': frozenset(('prevents',)),
+               'produces': frozenset(('prevents',)),
+               'prevents': frozenset(('causes',)),
+               'enables': frozenset(('prevents',))}
+
+    def __init__(self, extractor, graph=None, max_hops=None, hop_decay=None):
+        self.ex = extractor
+        self.graph = graph
+        self.max_hops = int(max_hops or CONFIG.get('w54_infer_max_hops', 4))
+        self.hop_decay = float(hop_decay if hop_decay is not None
+                               else CONFIG.get('w54_infer_hop_decay', 0.9))
+        self._checks = 0
+        self._derivations = 0
+
+    def _resolve(self, term):
+        return self.ex._resolve(term)
+
+    def chain(self, term, rel, direction='out', max_hops=None, k=12):
+        """Same-relation transitive walk. direction='in' walks backward —
+        'what causes b' is a chain on incoming causes edges. Confidence is a
+        product of edge confidences with a per-hop decay: a derived link is
+        never stronger than the weakest learned edge it stands on."""
+        self._derivations += 1
+        max_hops = int(max_hops or self.max_hops)
+        # Walks are memoised on the extraction stamp — abduce() pools one
+        # chain per relation and repeat questions were re-walking the same
+        # graph. Edges arriving invalidate by stamp, never silently.
+        try:
+            mstamp = (self.ex._scans, len(self.ex._edges))
+        except Exception:
+            mstamp = None
+        cache = getattr(self, '_walk_cache', None)
+        if cache is None:
+            cache = self._walk_cache = {}
+        ck = ('c', term, rel, direction, max_hops, k)
+        ent = cache.get(ck) if mstamp is not None else None
+        if ent is not None and ent[0] == mstamp:
+            return list(ent[1])
+        adj = self.ex._adj if direction == 'out' else self.ex._adj_in
+        # Extraction budget per walk: without it a cold chain over a wide
+        # frontier could trigger postings scans for dozens of unseen terms.
+        # Warm graph = zero cost; cold path degrades to already-read edges.
+        scans0 = self.ex._scans
+        ensure_budget = int(CONFIG.get('w56_ensure_docs', 512))
+        best = {}
+        for start in self._resolve(term):
+            frontier = [(start, 1.0, [])]
+            seen = {start}
+            for _hop in range(max_hops):
+                nxt = []
+                for node, conf, path in frontier:
+                    if self.ex._scans - scans0 < ensure_budget:
+                        self.ex._ensure(node)
+                    for r, other in adj.get(node, ()):
+                        if r != rel:
+                            continue
+                        ekey = ((node, r, other) if direction == 'out'
+                                else (other, r, node))
+                        e = self.ex._edges.get(ekey)
+                        c = LearnedRelationExtractor._conf(e) if e else 0.0
+                        if c <= self.ex.min_conf:
+                            continue
+                        nc = conf * c * (self.hop_decay if path else 1.0)
+                        rec = (nc, path + [ekey])
+                        if nc > best.get(other, (0.0, None))[0]:
+                            best[other] = rec
+                        if other not in seen:
+                            seen.add(other)
+                            nxt.append((other, nc, rec[1]))
+                frontier = nxt
+        out = [{'term': n, 'rel': rel, 'conf': round(c, 4),
+                'hops': len(p), 'path': list(p),
+                'derived': len(p) > 1}
+               for n, (c, p) in best.items()]
+        out.sort(key=lambda x: -x['conf'])
+        out = out[:k]
+        if mstamp is not None:
+            if len(cache) >= int(CONFIG.get('w56_walk_cache', 512)):
+                cache.clear()
+            cache[ck] = (mstamp, out)
+        return out
+
+    def derive(self, term, rel=None, max_hops=None, k=16):
+        """Full forward-chaining closure from `term`: every reachable
+        (b, rel) via direct edges and the composition table. Returns the
+        best-confidence proof per (b, rel)."""
+        self._derivations += 1
+        max_hops = int(max_hops or self.max_hops)
+        scans0 = self.ex._scans
+        ensure_budget = int(CONFIG.get('w56_ensure_docs', 512))
+        best = {}
+        for start in self._resolve(term):
+            frontier = [(start, None, 1.0, [])]
+            seen_states = {(start, None)}
+            hops = 0
+            while frontier and hops < max_hops:
+                hops += 1
+                nxt = []
+                for node, acc_rel, conf, path in frontier:
+                    if self.ex._scans - scans0 < ensure_budget:
+                        self.ex._ensure(node)
+                    for r2, other in self.ex._adj.get(node, ()):
+                        e = self.ex._edges.get((node, r2, other))
+                        c = LearnedRelationExtractor._conf(e) if e else 0.0
+                        if c <= self.ex.min_conf:
+                            continue
+                        new_rel = (r2 if acc_rel is None
+                                   else self.COMPOSE.get((acc_rel, r2)))
+                        if new_rel is None:
+                            continue
+                        nc = conf * c * (self.hop_decay if path else 1.0)
+                        key = (other, new_rel)
+                        if nc > best.get(key, (0.0, None))[0]:
+                            best[key] = (nc, path + [(node, r2, other)])
+                        st = (other, new_rel)
+                        if st not in seen_states and hops < max_hops:
+                            seen_states.add(st)
+                            nxt.append((other, new_rel, nc,
+                                        path + [(node, r2, other)]))
+                frontier = nxt
+        out = [{'term': n, 'rel': r, 'conf': round(c, 4),
+                'hops': len(p), 'path': list(p), 'derived': len(p) > 1}
+               for (n, r), (c, p) in best.items()
+               if rel is None or r == rel]
+        out.sort(key=lambda x: -x['conf'])
+        return out[:k]
+
+    def check(self, a, rel, b, k=8):
+        """Verdict on a learned claim with proof both ways.
+
+        support: direct a -rel-> b edges (positive), inverse direct edges,
+        and derived chains of the same relation.
+        refute:  negated direct evidence plus edges/chains of relations
+                 that conflict with the asked one (prevents vs causes).
+        verdict: supported | refuted | conflicted | unknown — never silent.
+        """
+        self._checks += 1
+        pa, pb = self._resolve(a), self._resolve(b)
+        supports, refutes = [], []
+
+        def _add(lst, conf, path):
+            if conf > 0.03:
+                lst.append((conf, path))
+
+        # direct + inverse direct evidence
+        for x in pa:
+            for r2, y in self.ex._adj.get(x, ()):
+                if y not in pb:
+                    continue
+                e = self.ex._edges.get((x, r2, y))
+                if not e:
+                    continue
+                pc = LearnedRelationExtractor._conf(e)
+                nc = LearnedRelationExtractor._conf(e, negated=True)
+                if r2 == rel:
+                    _add(supports, pc, [(x, r2, y)])
+                    _add(refutes, nc, [(x, 'not_' + r2, y)])
+                elif r2 in self.REFUTES.get(rel, ()):
+                    _add(refutes, pc, [(x, r2, y)])
+        for y in pb:
+            for r2, x in self.ex._adj.get(y, ()):
+                if x not in pa:
+                    continue
+                e = self.ex._edges.get((y, r2, x))
+                if not e:
+                    continue
+                if self.INVERSE.get(r2) == rel:
+                    _add(supports, LearnedRelationExtractor._conf(e),
+                         [(x, rel, y)])
+                elif r2 in self.REFUTES.get(rel, ()):
+                    _add(refutes, LearnedRelationExtractor._conf(e),
+                         [(x, r2, y)])
+        # derived chains of the asked relation, and of conflicting ones —
+        # via derive() so composition rules (inherited properties/effects)
+        # count as evidence, not just same-relation walks.
+        for hit in self.derive(a, rel, k=24):
+            if hit['derived'] and hit['term'] in pb:
+                _add(supports, hit['conf'], hit['path'])
+        for crel in self.REFUTES.get(rel, ()):
+            for hit in self.derive(a, crel, k=16):
+                if hit['derived'] and hit['term'] in pb:
+                    _add(refutes, hit['conf'], hit['path'])
+
+        def _pool(lst):
+            p = 1.0
+            for c, _p in sorted(lst, key=lambda t: -t[0])[:4]:
+                p *= (1.0 - c)
+            return 1.0 - p if lst else 0.0
+
+        support, refute = _pool(supports), _pool(refutes)
+        if support - refute >= 0.1 and support >= 0.15:
+            verdict = 'supported'
+        elif refute - support >= 0.1 and refute >= 0.15:
+            verdict = 'refuted'
+        elif support >= 0.2 and refute >= 0.2:
+            verdict = 'conflicted'
+        else:
+            verdict = 'unknown'
+        return {'a': a, 'rel': rel, 'b': b, 'verdict': verdict,
+                'support': round(support, 4), 'refute': round(refute, 4),
+                'proofs': [p for _c, p in
+                           sorted(supports, key=lambda t: -t[0])[:3]],
+                'refutations': [p for _c, p in
+                                sorted(refutes, key=lambda t: -t[0])[:3]]}
+
+    def relate(self, a, b):
+        """How does a relate to b? Direct edges both ways, then a shared
+        chain search, then the Wave-53 NPMI inference as associative
+        fallback — typed logic first, correlation behind it."""
+        pa, pb = self._resolve(a), self._resolve(b)
+        direct = []
+        for x in pa:
+            for r, y in self.ex._adj.get(x, ()):
+                if y in pb:
+                    e = self.ex._edges[(x, r, y)]
+                    direct.append(self.ex._fmt(x, r, y, e))
+        for y in pb:
+            for r, x in self.ex._adj.get(y, ()):
+                if x in pa:
+                    e = self.ex._edges[(y, r, x)]
+                    direct.append(self.ex._fmt(y, r, x, e))
+        shared = []
+        for hit in self.derive(a, k=24):
+            if hit['term'] in pb:
+                shared.append(hit)
+        assoc = None
+        if self.graph is not None:
+            try:
+                w = self.graph.correlate(a, b)
+                inf = self.graph.infer(a, b)
+                assoc = {'npmi': w, 'infer': inf}
+            except Exception:
+                assoc = None
+        return {'a': a, 'b': b, 'direct': direct, 'derived': shared[:6],
+                'association': assoc}
+
+    def get_status(self):
+        return {'checks': self._checks, 'derivations': self._derivations,
+                'rules': {'transitive': sorted(self.TRANSITIVE),
+                          'composed': len(self.COMPOSE),
+                          'inverses': len(self.INVERSE)}}
+
+
+class CorrelationAnalogy:
+    """a:b :: c:? over the learned correlation matrix.
+
+    The NPMI neighbor lists ARE the term vectors — sparse, learned, and
+    already normalised as association strengths. Analogy is vector
+    arithmetic on them: target = v_b - v_a + v_c, then cosine over the
+    candidate pool built from the vectors' own neighborhoods. A learned
+    typed edge that mirrors (a -r-> b) as (c -r-> d) adds evidence on top.
+    """
+
+    def __init__(self, graph, extractor=None, logic=None):
+        self.graph = graph
+        self.ex = extractor
+        self.logic = logic
+
+    def _vec(self, t):
+        if self.graph is None:
+            return {}
+        n = int(CONFIG.get('w54_analogy_neighbors', 48))
+        v = {u: w for u, w, _n in self.graph.neighbors(t, k=n)}
+        norm = math.sqrt(sum(w * w for w in v.values()))
+        if norm > 0:
+            v = {u: w / norm for u, w in v.items()}
+        return v
+
+    def solve(self, a, b, c, k=5):
+        va, vb, vc = self._vec(a), self._vec(b), self._vec(c)
+        if not vb or not vc:
+            return []
+        target = defaultdict(float)
+        for t, w in vc.items():
+            target[t] += w
+        for t, w in vb.items():
+            target[t] += w
+        for t, w in va.items():
+            target[t] -= w
+        target = {t: w for t, w in target.items() if w > 0.02}
+        if not target:
+            return []
+        tn = math.sqrt(sum(w * w for w in target.values())) or 1.0
+        # candidate pool: the neighborhoods the target itself points into
+        pool = set()
+        for t in list(target)[:24]:
+            for u, _w, _n in (self.graph.neighbors(t, k=12)
+                              if self.graph else []):
+                pool.add(u)
+        pool -= {a, b, c}
+        rel_bonus = {}
+        if self.ex is not None:
+            try:
+                a_rels = {(e['rel']) for e in self.ex.edges_for(a)
+                          if e['b'] == b or e['a'] == b}
+                if a_rels:
+                    for e in self.ex.edges_for(c):
+                        if e['rel'] in a_rels and e['b'] != c:
+                            rel_bonus[e['b']] = 0.15
+            except Exception:
+                pass
+        scored = []
+        for d in pool:
+            vd = self._vec(d)
+            if not vd:
+                continue
+            dot = sum(target.get(t, 0.0) * vd.get(t, 0.0)
+                      for t in list(target)[:64])
+            dn = math.sqrt(sum(w * w for w in vd.values())) or 1.0
+            s = dot / (tn * dn) + rel_bonus.get(d, 0.0)
+            if s > 0.05:
+                scored.append((d, round(float(s), 4)))
+        scored.sort(key=lambda x: -x[1])
+        return [{'d': d, 'score': s,
+                 'how': 'v(' + str(b) + ') - v(' + str(a) + ') + v(' +
+                        str(c) + ') over learned NPMI vectors'}
+                for d, s in scored[:k]]
+
+
+class KnowledgeGapMap:
+    """What the system does NOT know, measured.
+
+    Every extractive-answer miss is recorded by term; each term is ranked
+    by misses weighted against how thin its learned evidence is (document
+    frequency, NPMI neighbors, typed relations). The result is a directed
+    learning target list — ingest aimed where the model demonstrably lacks
+    structure — and a pressure signal for the Wave-52 demand scaler's
+    'ingest' dimension, so persistent ignorance grows capacity to learn.
+    """
+
+    def __init__(self, index, graph=None, extractor=None):
+        self.index = index
+        self.graph = graph
+        self.ex = extractor
+        self.misses = Counter()
+        self.miss_queries = deque(maxlen=200)
+        self.asked = 0
+        self.missed = 0
+
+    def _terms(self, query):
+        try:
+            return [t for t in self.index.vec.tokenize(str(query))
+                    if '_' not in t]
+        except Exception:
+            return re.findall(r'[a-z]{3,}', str(query).lower())
+
+    def note_query(self, query, answered):
+        self.asked += 1
+        if answered:
+            return
+        self.missed += 1
+        self.miss_queries.append(str(query)[:160])
+        for t in set(self._terms(query)):
+            self.misses[t] += 1
+
+    def note_ingest(self):
+        """Fresh data decays every recorded miss — the gap may now be
+        covered, and it will be re-recorded on the next miss if not."""
+        d = float(CONFIG.get('w54_gap_miss_decay', 0.95))
+        for t in list(self.misses):
+            self.misses[t] *= d
+            if self.misses[t] < 0.5:
+                del self.misses[t]
+
+    def gaps(self, k=12):
+        out = []
+        for t, n in self.misses.items():
+            p = self.index.postings.get(t) or []
+            df = len(p)
+            n_nb = len(self.graph.neighbors(t, k=8)) if self.graph else 0
+            n_rel = len(self.ex.edges_for(t)) if self.ex else 0
+            score = n * (1.0 + 0.1 * min(df, 10)) / (1.0 + 0.25 * n_nb
+                                                   + 0.3 * n_rel)
+            if df == 0:
+                reason = 'never learned — absent from corpus'
+            elif n_rel == 0 and n_nb <= 1:
+                reason = 'mentioned but unstructured — thin evidence'
+            else:
+                reason = 'partial structure — needs more data'
+            out.append({'term': t, 'misses': round(n, 2), 'df': df,
+                        'neighbors': n_nb, 'relations': n_rel,
+                        'priority': round(float(score), 3),
+                        'reason': reason})
+        out.sort(key=lambda x: -x['priority'])
+        return out[:k]
+
+    def pressure(self):
+        if not self.misses:
+            return 0.0
+        return min(1.0, sum(self.misses.values()) / 10.0)
+
+    def get_status(self):
+        return {'asked': self.asked, 'missed': self.missed,
+                'miss_rate': round(self.missed / max(1, self.asked), 3),
+                'tracked_terms': len(self.misses),
+                'pressure': round(self.pressure(), 3),
+                'top_gaps': [g['term'] for g in self.gaps(k=5)]}
+
+
+class Wave54Integration:
+    """Owns the learned logic layer: relation extraction, inference,
+    analogy, gap tracking, and the question parser that routes them."""
+
+    _QP = None
+
+    @classmethod
+    def _patterns(cls):
+        if cls._QP is not None:
+            return cls._QP
+        N = r"(.+?)"
+        cls._QP = [
+            (re.compile(r"(?i)^(?:is|are|was|were)\s+" + N +
+                        r"\s+(?:a\s+|an\s+|the\s+)?(?:type|kind|sort|form|"
+                        r"class|species|example|instance)\s+of\s+" + N +
+                        r"\s*$"), ('check', 'is_a')),
+            (re.compile(r"(?i)^(?:is|are|was|were)\s+" + N +
+                        r"\s+(?:a\s+|an\s+|the\s+)?part\s+of\s+" + N +
+                        r"\s*$"), ('check', 'part_of')),
+            (re.compile(r"(?i)^(?:is|are|was|were)\s+" + N +
+                        r"\s+(?:a|an)\s+" + N + r"\s*$"),
+             ('check', 'is_a')),
+            (re.compile(r"(?i)^(?:does|do|did|can|could|would|will|how\s+does)\s+" + N +
+                        r"\s+(?:cause|lead\s+to|result\s+in|bring\s+about|"
+                        r"trigger|induce|give\s+rise\s+to)\s+" + N +
+                        r"\s*$"), ('check', 'causes')),
+            (re.compile(r"(?i)^(?:does|do|did|can|could)\s+" + N +
+                        r"\s+(?:produce|generate|create|make|emit|release|"
+                        r"yield|synthesi[sz]e)\s+" + N + r"\s*$"),
+             ('check', 'produces')),
+            (re.compile(r"(?i)^(?:does|do|did|can|could)\s+" + N +
+                        r"\s+(?:prevent|inhibit|block|stop|reduce|slow|"
+                        r"limit|destroy|kill|suppress|impair)\s+" + N +
+                        r"\s*$"), ('check', 'prevents')),
+            (re.compile(r"(?i)^what\s+(?:causes?|produces?|leads?\s+to|"
+                        r"results?\s+in|brings?\s+about|triggers?|drives?|"
+                        r"enables?|makes?)\s+" + N + r"\s*$"),
+             ('derive_in', 'causes')),
+            (re.compile(r"(?i)^why\s+(?:does|do|did|is|are|was|were)\s+" + N +
+                        r"\s+(?:happen|occur|increase|decrease|fail|form|"
+                        r"exist|rise|fall|change|work|grow)\s*$"),
+             ('derive_in', 'causes')),
+            (re.compile(r"(?i)^what\s+(?:does|do|did)\s+" + N +
+                        r"\s+(?:cause|produce|lead\s+to|result\s+in|"
+                        r"trigger|create|generate|prevent|inhibit|affect|"
+                        r"influence|do|enable|allow|drive)\s*$"),
+             ('derive_out', 'effects')),
+            (re.compile(r"(?i)^what\s+(?:is|are)\s+" + N +
+                        r"\s+(?:made|composed|comprised|built|constructed|"
+                        r"formed)\s+(?:of|from|out\s+of)\s*$"),
+             ('derive_out', 'made_of')),
+            (re.compile(r"(?i)^where\s+(?:is|are|was|were)\s+" + N +
+                        r"\s+(?:found|located|stored|produced|made|"
+                        r"manufactured|housed|situated|synthesi[sz]ed)\s*$"),
+             ('derive_out', 'located_in')),
+            (re.compile(r"(?i)^what\s+(?:does|do|did)\s+" + N +
+                        r"\s+(?:use|need|require|consume|absorb|depend\s+on|"
+                        r"rely\s+on|take\s+in)\s*$"),
+             ('derive_out', 'uses')),
+            (re.compile(r"(?i)^what\s+(?:is|are|was|were)\s+" + N +
+                        r"\s+(?:used|employed|applied|needed|required|"
+                        r"designed|meant|intended)\s+for\s*$"),
+             ('derive_out', 'used_for')),
+            (re.compile(r"(?i)^what\s+(?:is|are)\s+" + N +
+                        r"\s+part\s+of\s*$"), ('derive_out', 'part_of')),
+            (re.compile(r"(?i)^what\s+(?:does|do)\s+" + N +
+                        r"\s+(?:have|has|contain|include|consist\s+of|"
+                        r"comprise)\s*$"), ('derive_out', 'has')),
+            (re.compile(r"(?i)^how\s+(?:much|many|heavy|hot|cold|fast|big|"
+                        r"large|long|far|tall|wide|deep|strong|powerful|"
+                        r"old)\s+(?:is|are|was|were|does|do|did)\s+" + N +
+                        r"\s*$"), ('quantity', None)),
+            (re.compile(r"(?i)^what\s+is\s+the\s+(?:value|size|mass|weight|"
+                        r"length|speed|velocity|temperature|energy|power|"
+                        r"frequency|wavelength|charge|density|pressure|"
+                        r"cost|price|age|number|amount)\s+of\s+" + N +
+                        r"\s*$"), ('quantity', None)),
+            (re.compile(r"(?i)^(?:what(?:'s|\s+is)\s+the\s+)?"
+                        r"difference\s+between\s+" + N + r"\s+and\s+" + N +
+                        r"\s*$"), ('compare', None)),
+            (re.compile(r"(?i)^(.+?)\s+(?:vs\.?|versus)\s+(.+?)\s*$"),
+             ('compare', None)),
+            (re.compile(r"(?i)^how\s+(?:does|do|did)\s+" + N +
+                        r"\s+(?:relate\s+to|affect|influence|impact|"
+                        r"interact\s+with|connect\s+to|contribute\s+to|"
+                        r"lead\s+to|cause)\s*" + N + r"\s*$"),
+             ('relate', None)),
+            (re.compile(r"(?i)^(?:are|is|were|was|how\s+are|how\s+is)\s+" +
+                        N + r"\s+(?:and|to|related\s+to)\s+" + N +
+                        r"\s*(?:related|connected|linked)?\s*$"),
+             ('relate', None)),
+        ]
+        return cls._QP
+
+    def __init__(self, sim=None):
+        self.sim = sim
+        self.extractor = None
+        self.logic = None
+        self.analogy = None
+        self.gaps = None
+        self.errors = defaultdict(int)
+        self._bound = False
+        self.routed = 0
+        self.answered = 0
+
+    def bind(self, sim):
+        self.sim = sim
+        w49 = getattr(sim, '_wave49', None)
+        retriever = getattr(w49, 'retriever', None) if w49 is not None else None
+        w53 = getattr(sim, '_wave53', None)
+        graph = getattr(w53, 'graph', None) if w53 is not None else None
+        if retriever is not None:
+            try:
+                self.extractor = LearnedRelationExtractor(retriever.index)
+                self.logic = LearnedLogicEngine(self.extractor, graph)
+                self.analogy = CorrelationAnalogy(graph, self.extractor,
+                                                  self.logic)
+                self.gaps = KnowledgeGapMap(retriever.index, graph,
+                                            self.extractor)
+            except Exception:
+                self.errors['init'] += 1
+        self._bound = self.extractor is not None
+        return self._bound
+
+    # ---- question parsing ----------------------------------------------------
+    def _canon(self, raw):
+        return self.extractor._canon(raw) if self.extractor else None
+
+    def parse(self, question):
+        """Question -> ('check'|'derive_in'|'derive_out'|'quantity'|
+        'compare'|'relate', args) or None. Only strongly-shaped questions
+        parse; anything ambiguous returns None and normal routing runs."""
+        if self.extractor is None:
+            return None
+        q = re.sub(r'\s+', ' ', str(question).strip().rstrip('?').strip())
+        if not q:
+            return None
+        for rx, spec in self._patterns():
+            m = rx.match(q)
+            if not m:
+                continue
+            op, rel = spec
+            groups = [self._canon(x) for x in m.groups()]
+            if not all(groups) or None in groups:
+                return None
+            if op in ('check', 'relate', 'compare') and groups[0] == groups[1]:
+                return None
+            return (op, rel) + tuple(groups)
+        return None
+
+    # ---- handlers -------------------------------------------------------------
+    def _docs_meta(self, doc_ids):
+        srcs = []
+        for d in doc_ids or []:
+            try:
+                srcs.append(self.extractor.index.docs[d].get('meta', {})
+                            .get('source', 'learned'))
+            except Exception:
+                continue
+        return sorted(set(srcs))[:6]
+
+    def _check_answer(self, a, rel, b):
+        res = self.logic.check(a, rel, b)
+        verdict = res['verdict']
+        rel_word = rel.replace('_', ' ')
+        if verdict == 'unknown':
+            return None
+        proofs = res['proofs'] + res['refutations']
+        docs = set()
+        for p in proofs:
+            for ekey in p:
+                e = self.extractor._edges.get(ekey)
+                if e:
+                    docs |= e['pos']
+        if not docs:
+            for e in self.extractor.edges_for(a, k=8):
+                docs |= set(e['docs'])
+        if verdict == 'supported':
+            path = res['proofs'][0] if res['proofs'] else [(a, rel, b)]
+            chain = ' -> '.join([path[0][0]] + [e[2] for e in path])
+            text = (f"Yes — learned data supports it: {chain} "
+                    f"({rel_word}, confidence {res['support']:.2f}).")
+            conf = res['support']
+        elif verdict == 'refuted':
+            path = res['refutations'][0]
+            chain = ' -> '.join([path[0][0]] + [e[2] for e in path])
+            text = (f"No — learned data contradicts it: {chain} "
+                    f"(refuting evidence, strength {res['refute']:.2f}).")
+            conf = res['refute']
+        else:
+            text = (f"Learned evidence is mixed on whether {a} "
+                    f"{rel_word} {b}: support {res['support']:.2f}, "
+                    f"refutation {res['refute']:.2f}.")
+            conf = max(res['support'], res['refute']) * 0.7
+        return {'answer': text, 'confidence': round(conf, 3),
+                'kind': 'check', 'details': res,
+                'provenance': {'sources': self._docs_meta(docs)}}
+
+    def _derive_answer(self, term, rel, direction, question):
+        if rel == 'effects':
+            hits = []
+            for r in ('causes', 'produces', 'prevents'):
+                hits += self.logic.chain(term, r, direction, k=6)
+            hits.sort(key=lambda x: -x['conf'])
+        else:
+            hits = self.logic.chain(term, rel, direction, k=8)
+        if not hits:
+            return None
+        rel_word = (rel if rel != 'effects' else 'affects').replace('_', ' ')
+        parts, docs = [], []
+        for h in hits[:5]:
+            via = (' (via ' + ' -> '.join(e[0] for e in h['path'][1:])
+                   + ')' if h['derived'] else '')
+            parts.append(f"{h['term']}{via} [{h['conf']:.2f}]")
+            for _x, _r, _y in h['path']:
+                edge = self.extractor._edges.get((_x, _r, _y))
+                if edge:
+                    docs += list(edge['pos'])[:2]
+        if direction == 'in':
+            text = (f"Learned {rel_word} of {term}: " + '; '.join(parts) +
+                    " — from ingested data.")
+        else:
+            text = (f"Learned data: {term} {rel_word} "
+                    + '; '.join(parts) + ".")
+        return {'answer': text, 'confidence': round(hits[0]['conf'], 3),
+                'kind': 'derive', 'details': hits[:5],
+                'provenance': {'sources': self._docs_meta(sorted(set(docs)))}}
+
+    def _quantity_answer(self, term):
+        recs = self.extractor.quantities_for(term)
+        recs = [r for r in recs if not r['neg']]
+        if not recs:
+            return None
+        r = recs[0]
+        unit = (' ' + r['unit']) if r['unit'] else ''
+        text = f"Learned data: {term} is {r['value']:g}{unit}."
+        if len(recs) > 1:
+            alts = {f"{x['value']:g} {x['unit']}".strip() for x in recs}
+            if len(alts) > 1:
+                text += (f" (other learned values: "
+                         f"{'; '.join(sorted(alts)[1:4])})")
+        return {'answer': text, 'confidence': 0.8, 'kind': 'quantity',
+                'details': recs[:4],
+                'provenance': {'sources': self._docs_meta([r['doc']])}}
+
+    def _compare_answer(self, a, b):
+        g = self.logic.graph
+        na = {t: w for t, w, _n in (g.neighbors(a, k=32) if g else [])}
+        nb = {t: w for t, w, _n in (g.neighbors(b, k=32) if g else [])}
+        shared = sorted(((t, min(na[t], nb[t])) for t in na.keys() & nb.keys()),
+                        key=lambda kv: -kv[1])[:5]
+        a_only = sorted(((t, w) for t, w in na.items() if t not in nb),
+                        key=lambda kv: -kv[1])[:5]
+        b_only = sorted(((t, w) for t, w in nb.items() if t not in na),
+                        key=lambda kv: -kv[1])[:5]
+        ea = {e['b'] for e in self.extractor.edges_for(a, rel='is_a')}
+        eb = {e['b'] for e in self.extractor.edges_for(b, rel='is_a')}
+        if not shared and not a_only and not b_only and not ea and not eb:
+            return None
+        seg = []
+        if ea | eb:
+            seg.append(f"{a} is a {', '.join(sorted(ea)[:3]) or '?'} while "
+                       f"{b} is a {', '.join(sorted(eb)[:3]) or '?'}")
+        if shared:
+            seg.append("shared correlates: "
+                       + ', '.join(t for t, _w in shared))
+        if a_only:
+            seg.append(f"distinctive to {a}: "
+                       + ', '.join(t for t, _w in a_only))
+        if b_only:
+            seg.append(f"distinctive to {b}: "
+                       + ', '.join(t for t, _w in b_only))
+        return {'answer': '. '.join(seg) + '.',
+                'confidence': 0.62, 'kind': 'compare',
+                'details': {'shared': shared, 'a_only': a_only,
+                            'b_only': b_only, 'is_a': [sorted(ea)[:4],
+                                                      sorted(eb)[:4]]},
+                'provenance': {'sources': ['learned_correlations']}}
+
+    def _relate_answer(self, a, b):
+        res = self.logic.relate(a, b)
+        seg = []
+        for e in res['direct'][:3]:
+            seg.append(f"{e['a']} --{e['rel']}--> {e['b']} "
+                       f"({e['n']} passages, {e['conf']:.2f})")
+        for h in res['derived'][:2]:
+            chain = ' -> '.join([h['path'][0][0]] +
+                                [e[2] for e in h['path']])
+            seg.append(f"derived: {chain} ({h['conf']:.2f})")
+        assoc = res.get('association') or {}
+        if not seg:
+            inf = assoc.get('infer')
+            if inf and inf.get('path'):
+                seg.append(' -> '.join(inf['path']) +
+                           (f" ({inf['note']})"))
+            elif assoc.get('npmi'):
+                seg.append(f"correlated (npmi {assoc['npmi']:.2f}) "
+                           f"with no learned typed relation")
+        if not seg:
+            return None
+        conf = max([e['conf'] for e in res['direct'][:3]] +
+                   [h['conf'] for h in res['derived'][:2]] +
+                   [float(assoc.get('npmi') or 0.0) * 0.6] + [0.4])
+        return {'answer': f"{a} and {b}: " + '; '.join(seg) + '.',
+                'confidence': round(min(0.95, conf), 3),
+                'kind': 'relate', 'details': res,
+                'provenance': {'sources': ['learned_relations']}}
+
+    # ---- the router ------------------------------------------------------------
+    def relate(self, question):
+        """The logic-first entry point. Parse the question, run the right
+        inference, return an answer dict or None so callers can fall through
+        to extractive/retrieval/neural paths."""
+        if not CONFIG.get('w54_logic_routing', True):
+            return None
+        if self.logic is None:
+            return None
+        parsed = self.parse(question)
+        if parsed is None:
+            return None
+        self.routed += 1
+        op = parsed[0]
+        try:
+            if op == 'check':
+                out = self._check_answer(parsed[2], parsed[1], parsed[3])
+            elif op == 'derive_in':
+                out = self._derive_answer(parsed[2], parsed[1], 'in',
+                                          question)
+            elif op == 'derive_out':
+                out = self._derive_answer(parsed[2], parsed[1], 'out',
+                                          question)
+            elif op == 'quantity':
+                out = self._quantity_answer(parsed[2])
+            elif op == 'compare':
+                out = self._compare_answer(parsed[2], parsed[3])
+            elif op == 'relate':
+                out = self._relate_answer(parsed[2], parsed[3])
+            else:
+                out = None
+        except Exception:
+            self.errors[op] += 1
+            out = None
+        if out is not None:
+            self.answered += 1
+        return out
+
+    def explain(self, a, b):
+        res = self.logic.relate(a, b)
+        lines = [f'learned relation: {a} <-> {b}']
+        for e in res['direct'][:4]:
+            lines.append(f"  direct  {e['a']} -{e['rel']}-> {e['b']} "
+                         f"(n={e['n']}, neg={e['neg']}, conf={e['conf']})")
+        for h in res['derived'][:4]:
+            lines.append(f"  derived {h['term']} via " +
+                         ' -> '.join(f"({x}-{_r}-{y})"
+                                    for x, _r, y in h['path']) +
+                         f" conf={h['conf']}")
+        assoc = res.get('association') or {}
+        if assoc.get('infer') and assoc['infer'].get('path'):
+            lines.append('  assoc   ' + ' -> '.join(assoc['infer']['path']) +
+                         f" ({assoc['infer'].get('note', '')})")
+        elif assoc.get('npmi'):
+            lines.append(f"  assoc   npmi={assoc['npmi']}")
+        if len(lines) == 1:
+            lines.append('  no learned relation in corpus')
+        return '\n'.join(lines)
+
+    def get_status(self):
+        return {'bound': self._bound,
+                'errors': dict(self.errors),
+                'routed': self.routed, 'answered': self.answered,
+                'extractor': (self.extractor.get_status()
+                              if self.extractor else None),
+                'logic': (self.logic.get_status()
+                          if self.logic else None),
+                'gaps': (self.gaps.get_status() if self.gaps else None),
+                'routing': bool(CONFIG.get('w54_logic_routing', True))}
+
+    def report(self):
+        s = self.get_status()
+        e = s['extractor'] or {}
+        g = s['gaps'] or {}
+        return '\n'.join([
+            "=" * 68,
+            "WAVE 54 - LEARNED LOGIC LAYER",
+            "=" * 68,
+            f"  bound      : {s['bound']}   routing: "
+            f"{'ON' if s['routing'] else 'off'}",
+            f"  edges      : {e.get('edges', 0)} typed   "
+            f"phrases: {e.get('phrases', 0)}   "
+            f"quantities: {e.get('quantified_entities', 0)}",
+            f"  relations  : {e.get('by_relation', {})}",
+            f"  inferred   : {self.logic._checks if self.logic else 0} checks"
+            f"  {self.logic._derivations if self.logic else 0} derivations   "
+            f"routed {s['routed']} answered {s['answered']}",
+            f"  gaps       : {g.get('tracked_terms', 0)} terms   "
+            f"miss rate {g.get('miss_rate', 0)}   "
+            f"pressure {g.get('pressure', 0)}",
+            f"  top gaps   : {g.get('top_gaps', [])}",
+            "=" * 68,
+        ])
+
+
+# ---- miss tracking on the extractive path --------------------------------------
+# Every LearnedAnswerPath miss is a measured knowledge gap.
+_pre_v54_lap_answer = LearnedAnswerPath.answer
+
+
+def _v54_lap_answer(self, query, top_k=6, max_sents=2):
+    res = _pre_v54_lap_answer(self, query, top_k=top_k, max_sents=max_sents)
+    try:
+        w54 = getattr(getattr(self, 'sim', None), '_wave54', None)
+        if w54 is not None and w54.gaps is not None:
+            w54.gaps.note_query(query, bool(res and res.get('answer')))
+    except Exception:
+        pass
+    return res
+
+
+LearnedAnswerPath.answer = _v54_lap_answer
+
+
+# ---- logic-first routing --------------------------------------------------------
+_pre_v54_answer_qa = FrontierGenerationSuite.answer_qa
+
+
+def _v54_answer_qa(self, question, max_tokens=240, neural=False):
+    """Relational questions answer from the learned logic layer first —
+    a supported/refuted verdict with a proof beats a quoted sentence, and a
+    quoted sentence beats a sampled token stream."""
+    try:
+        w54 = getattr(self.sim, '_wave54', None)
+        if w54 is not None:
+            res = w54.relate(question)
+            if (res is not None
+                    and float(res.get('confidence', 0.0))
+                    >= float(CONFIG.get('w54_answer_min_conf', 0.5))):
+                out = {'answer': res['answer'], 'source': 'learned_logic',
+                       'confidence': res['confidence'],
+                       'provenance': res.get('provenance'),
+                       'logic': res.get('details')}
+                try:
+                    self._qa_cache[str(question).lower().strip().strip('?')] = out
+                except Exception:
+                    pass
+                return out
+    except Exception:
+        pass
+    return _pre_v54_answer_qa(self, question, max_tokens=max_tokens,
+                              neural=neural)
+
+
+FrontierGenerationSuite.answer_qa = _v54_answer_qa
+
+_pre_v54_reason = FrontierGenerationSuite.multi_step_reason
+
+
+def _v54_multi_step_reason(self, question):
+    """The reasoning trace gains a real logic step: relation derivation and
+    verdict enter the step list before retrieval/NPMI steps. The prior
+    learned-data steps still run — logic sits in front, not instead."""
+    out = _pre_v54_reason(self, question)
+    try:
+        w54 = getattr(self.sim, '_wave54', None)
+        if w54 is not None and isinstance(out, dict):
+            res = w54.relate(question)
+            if res is not None:
+                step = {'step': 1, 'kind': 'learned_logic',
+                        'data': res['answer']}
+                steps = [step] + [
+                    dict(s, step=i + 2)
+                    for i, s in enumerate(out.get('steps') or [])]
+                out['steps'] = steps
+                out['reasoning_chain'] = [s['data'] for s in steps]
+                if (res.get('confidence', 0.0)
+                        > out.get('confidence', 0.0)):
+                    out['conclusion'] = res['answer']
+                    out['confidence'] = res['confidence']
+                    out['source'] = 'learned_logic'
+                out['logic'] = res.get('details')
+                try:
+                    self._reason_cache[
+                        str(question).lower().strip().strip('?')] = out
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return out
+
+
+FrontierGenerationSuite.multi_step_reason = _v54_multi_step_reason
+
+_pre_v54_wave49_answer = ConsciousnessSimulator.wave49_answer
+
+
+def _v54_wave49_answer(self, query, kind='auto', max_tokens=96,
+                      neural=True, ctx=None):
+    """Logic-derived answers join the front of the answer cascade — ahead
+    of extractive — for strongly-shaped relational questions."""
+    try:
+        w54 = getattr(self, '_wave54', None)
+        if w54 is not None:
+            res = w54.relate(query)
+            if (res is not None
+                    and float(res.get('confidence', 0.0))
+                    >= float(CONFIG.get('w54_answer_min_conf', 0.5))):
+                return {'answer': res['answer'], 'text': res['answer'],
+                        'confidence': res['confidence'], 'agreement': 1.0,
+                        'grounded': True,
+                        'grounding_status': 'learned_logic',
+                        'sources': ['learned_logic'],
+                        'provenance': res.get('provenance'),
+                        'logic': res.get('details'),
+                        'samples': [], 'strategy': 'learned_logic',
+                        'extractive': True}
+    except Exception:
+        pass
+    return _pre_v54_wave49_answer(self, query, kind=kind,
+                                 max_tokens=max_tokens, neural=neural,
+                                 ctx=ctx)
+
+
+ConsciousnessSimulator.wave49_answer = _v54_wave49_answer
+
+_pre_v54_respond = ConsciousnessSimulator.respond
+
+
+def _v54_respond(self, prompt, max_tokens=60, **generate_kwargs):
+    """Relational questions hit the learned logic layer before everything
+    else — including the extractive path Wave 53 installed."""
+    try:
+        stripped = str(prompt).strip()
+    except Exception:
+        stripped = ''
+    if (stripped and not stripped.startswith('/')
+            and CONFIG.get('w54_logic_routing', True)):
+        try:
+            w54 = getattr(self, '_wave54', None)
+            if w54 is not None:
+                res = w54.relate(stripped)
+                if (res is not None
+                        and float(res.get('confidence', 0.0))
+                        >= float(CONFIG.get('w54_answer_min_conf', 0.5))):
+                    return {'text': res['answer'], 'answer': res['answer'],
+                            'source': 'wave54_learned_logic',
+                            'confidence': res.get('confidence'),
+                            'provenance': res.get('provenance'),
+                            'logic': res.get('details')}
+        except Exception:
+            pass
+    return _pre_v54_respond(self, prompt, max_tokens=max_tokens,
+                            **generate_kwargs)
+
+
+ConsciousnessSimulator.respond = _v54_respond
+
+
+# ---- loop closure -------------------------------------------------------------
+_pre_v54_learn = ConsciousnessSimulator.wave53_learn
+
+
+def _v54_learn(self, source, max_train_lines=None):
+    """Learning decays recorded gaps — the new data may cover them, and the
+    gap map will find out on the next miss."""
+    out = _pre_v54_learn(self, source, max_train_lines=max_train_lines)
+    try:
+        w54 = getattr(self, '_wave54', None)
+        if w54 is not None and w54.gaps is not None and out.get('indexed'):
+            w54.gaps.note_ingest()
+    except Exception:
+        pass
+    return out
+
+
+ConsciousnessSimulator.wave53_learn = _v54_learn
+
+_pre_v54_mine = ConsciousnessSimulator._mine_instruction_pairs
+
+
+def _v54_mine_instruction_pairs(self, n_docs=64, max_pairs=48):
+    """Mined pairs now include learned relations: SFT teaches the system to
+    recite its own verified structure, not just its correlations."""
+    pairs = _pre_v54_mine(self, n_docs=n_docs, max_pairs=max_pairs)
+    try:
+        w54 = getattr(self, '_wave54', None)
+        ex = w54.extractor if w54 is not None else None
+        if ex is not None:
+            docs = list(getattr(ex.index, 'docs', None) or [])
+            cap = int(CONFIG.get('w54_corr_pairs_per_mine', 8))
+            seen = set()
+            for d in random.sample(docs, min(10, len(docs))):
+                edges, _qty = ex.extract_pairs(d.get('text', ''))
+                random.shuffle(edges)
+                for a, rel, b, neg, _w in edges:
+                    if neg or (a, rel, b) in seen or a == b:
+                        continue
+                    seen.add((a, rel, b))
+                    rel_word = rel.replace('_', ' ')
+                    if rel in ('causes', 'produces', 'prevents'):
+                        pairs.append((
+                            f'Does {a} {rel_word} {b}?',
+                            f'Learned data supports it: {a} {rel_word} {b}.'))
+                    elif rel == 'is_a':
+                        pairs.append((
+                            f'What is {a}?',
+                            f'Learned data: {a} is a {b}.'))
+                    elif rel in ('part_of', 'located_in', 'made_of'):
+                        pairs.append((
+                            f'Where is {a} / what is it part of?',
+                            f'Learned data: {a} is {rel_word} {b}.'))
+                    if len(pairs) >= max_pairs or len(seen) >= cap:
+                        return pairs[:max_pairs]
+    except Exception:
+        pass
+    return pairs
+
+
+ConsciousnessSimulator._mine_instruction_pairs = _v54_mine_instruction_pairs
+
+# Gap pressure feeds the demand scaler's ingest dimension on the cognitive
+# tick — sustained ignorance is measurable work the system should grow for.
+_pre_v54_step4245 = ConsciousnessSimulator._step_wave4245_engines
+
+
+def _v54_step4245(self):
+    out = _pre_v54_step4245(self)
+    try:
+        w54 = getattr(self, '_wave54', None)
+        w52 = getattr(self, '_wave52', None)
+        if w54 is not None and w54.gaps is not None and w52 is not None:
+            p = w54.gaps.pressure()
+            if p >= float(CONFIG.get('w54_gap_pressure_at', 0.35)):
+                w52.observe('ingest', magnitude=p, novelty=1.0,
+                            auto_check=False)
+    except Exception:
+        pass
+    return out
+
+
+ConsciousnessSimulator._step_wave4245_engines = _v54_step4245
+
+
+# ---- public API ---------------------------------------------------------------
+def _wave54_relate(self, query):
+    """Public: answer a relational question via the learned logic layer."""
+    w = getattr(self, '_wave54', None)
+    if w is None:
+        return {'answer': None, 'reason': 'wave54 not initialised'}
+    res = w.relate(query)
+    return res or {'answer': None,
+                   'reason': 'no learned logic for this question'}
+
+
+def _wave54_check(self, a, rel, b):
+    """Public: verdict on a learned claim — supported/refuted/conflicted/
+    unknown with proof paths."""
+    w = getattr(self, '_wave54', None)
+    if w is None or w.logic is None:
+        return {'verdict': 'unknown', 'reason': 'wave54 not initialised'}
+    return w.logic.check(str(a), str(rel).replace(' ', '_'), str(b))
+
+
+def _wave54_derive(self, term, rel=None, direction='out', k=16):
+    """Public: forward-chained derivations from a term."""
+    w = getattr(self, '_wave54', None)
+    if w is None or w.logic is None:
+        return []
+    if direction == 'in':
+        return w.logic.chain(str(term), str(rel or 'causes'), 'in', k=k)
+    return w.logic.derive(str(term), rel=rel, k=k)
+
+
+def _wave54_analogy(self, a, b, c, k=5):
+    """Public: a:b :: c:? solved by NPMI vector arithmetic + typed edges."""
+    w = getattr(self, '_wave54', None)
+    if w is None or w.analogy is None:
+        return []
+    return w.analogy.solve(str(a), str(b), str(c), k=k)
+
+
+def _wave54_compare(self, a, b):
+    """Public: shared vs distinctive learned correlates and relations."""
+    w = getattr(self, '_wave54', None)
+    if w is None or w.logic is None:
+        return {'answer': None, 'reason': 'wave54 not initialised'}
+    return w._compare_answer(str(a), str(b)) or {
+        'answer': None, 'reason': 'no learned contrast'}
+
+
+def _wave54_gaps(self, k=12):
+    """Public: ranked knowledge gaps — what to feed wave53_learn next."""
+    w = getattr(self, '_wave54', None)
+    if w is None or w.gaps is None:
+        return []
+    return w.gaps.gaps(k=k)
+
+
+def _wave54_explain(self, a, b):
+    """Public: the auditable learned relation between two terms."""
+    w = getattr(self, '_wave54', None)
+    if w is None or w.logic is None:
+        return 'wave54 not initialised'
+    return w.explain(str(a), str(b))
+
+
+def _wave54_status(self):
+    w = getattr(self, '_wave54', None)
+    return w.get_status() if w is not None else {'bound': False}
+
+
+def _wave54_report(self):
+    w = getattr(self, '_wave54', None)
+    return w.report() if w is not None else 'wave54 not initialised'
+
+
+ConsciousnessSimulator.wave54_relate = _wave54_relate
+ConsciousnessSimulator.wave54_check = _wave54_check
+ConsciousnessSimulator.wave54_derive = _wave54_derive
+ConsciousnessSimulator.wave54_analogy = _wave54_analogy
+ConsciousnessSimulator.wave54_compare = _wave54_compare
+ConsciousnessSimulator.wave54_gaps = _wave54_gaps
+ConsciousnessSimulator.wave54_explain = _wave54_explain
+ConsciousnessSimulator.wave54_status = _wave54_status
+ConsciousnessSimulator.wave54_report = _wave54_report
+
+
+# ---- registration -------------------------------------------------------------
+_pre_v54_init = ConsciousnessSimulator.__init__
+
+
+def _wave54_cs_init(self, *args, **kwargs):
+    _pre_v54_init(self, *args, **kwargs)
+    if getattr(self, '_wave54', None) is not None:
+        return
+    try:
+        self._wave54 = Wave54Integration(sim=self)
+        ok = self._wave54.bind(self)
+        print(f"  [WAVE54] learned logic layer "
+              f"{'online' if ok else 'waiting for retrieval index'}")
+    except Exception as e:
+        print(f"  [WARN] wave54 init: {e}")
+        self._wave54 = None
+
+
+ConsciousnessSimulator.__init__ = _wave54_cs_init
+
+_so_v54 = SovereignOrchestrator.__init__
+
+
+def _so_v54_init(self, sim):
+    _so_v54(self, sim)
+    self._sub_engines = self._sub_engines + ('_wave54',)
+
+
+SovereignOrchestrator.__init__ = _so_v54_init
+
+_pwa_v54 = ProcessWiringAuditor.__init__
+
+
+def _pwa_v54_init(self, sim):
+    _pwa_v54(self, sim)
+    self._expected = self._expected + ('_wave54',)
+
+
+ProcessWiringAuditor.__init__ = _pwa_v54_init
+
+
+# =============================================================================
+# WAVE 55 - AUTONOMOUS LEARNING LOOP
+# =============================================================================
+# Wave 53 learned correlations; Wave 54 learned relations and logic over
+# them. Three things were still missing for the loop to actually close:
+#
+#   LearnedMemoryStore — persistence. Checkpoints saved model weights and
+#       cognitive state but NEVER the learned corpus, typed edges, rules,
+#       or quantities: everything the system learned died at exit. The
+#       store serialises index docs + extractor state to a JSON memory
+#       file, dedupes on load by content hash, and remaps doc ids so edge
+#       provenance stays exact. Wired into wave48_save/load and tick
+#       autosave — learned structure now survives restarts.
+#
+#   Universal rules — quantification. Edges say "some evidence links a to
+#       b"; universals say "ALL a are b" / "NO a is b" — mined from
+#       'all/every/no/never/always' constructions on the same lazy document
+#       pass. check() folds them in as strong evidence, so "no reptile has
+#       fur" actively refutes where a single negated edge could only
+#       weaken.
+#
+#   GapDirectedAcquisition — the loop's actuator. Every extractive miss
+#       enqueues its terms (opt-in w55_auto_acquire); the cognitive tick
+#       drains the queue through Wikipedia extracts -> wave53_learn, so a
+#       question the system cannot answer becomes data it goes and gets.
+#       wave55_acquire(term) / wave55_auto(k) run it manually.
+#
+#   QuantityComparator — magnitude reasoning over learned quantities:
+#       "which is heavier, X or Y", "is X bigger than Y", "how much bigger"
+#       — with unit normalisation through convert_unit, and an honest
+#       'different units' verdict when the corpus gives incomparable
+#       measures.
+#
+#   All of it binds through one class-level wrap of Wave54Integration.
+#   relate, so every Wave-54 router — respond, wave49_answer, answer_qa,
+#   multi_step_reason — gains the new capabilities without re-patching.
+# =============================================================================
+
+for _k, _v in (('w55_persist', True),
+               ('w55_memory_file', 'learned_memory.json'),
+               ('w55_autosave_docs', 32),
+               ('w55_universal_rules', True),
+               ('w55_auto_acquire', False),
+               ('w55_acquire_chars', 8000),
+               ('w55_acquire_cooldown', 30.0),
+               ('w55_drain_per_tick', 1),
+               ('w55_qty_compare', True)):
+    CONFIG.setdefault(_k, _v)
+del _k, _v
+
+
+# ---- universal-rule patterns ---------------------------------------------------
+# 'all mammals have fur', 'no reptile has fur', 'a dog always has fur',
+# 'metal never rusts underwater' — quantified claims, stronger than edges.
+_U55_A = (r"(?P<a>" + _W54_W +
+          r"(?:\s+(?!(?:" + _W54_BOUND + r")\b)" + _W54_W + r"){0,3}?)")
+_U55_B = (r"(?P<b>" + _W54_W +
+          r"(?:\s+(?!(?:" + _W54_BOUND + r")\b)" + _W54_W + r"){0,3})")
+_U55_N = (r"(?P<neg>(?:not|never|cannot|can\s+not|can't|no|hardly)\s+)?")
+
+_U55_PREDS = {
+    'is_a': [(r"(?:are|is|were|was|remains?)\s*(?:a\s+|an\s+|the\s+)?",
+              0.9)],
+    'has': [(r"(?:have|has|had|contains?|contained|includes?|included|"
+             r"possess|possesses|carry|carries|bear|bears)\b", 0.8)],
+    'causes': [(r"(?:cause|causes|caused|leads?\s+to|led\s+to|results?\s+in|"
+                r"produces?|triggers?|induces?|drives?)\b", 0.85)],
+    'produces': [(r"(?:produce|produces|produced|generate|generates|"
+                  r"create|creates|emit|emits|release|releases|yield|"
+                  r"yields)\b", 0.8)],
+    'prevents': [(r"(?:prevent|prevents|prevented|inhibit|inhibits|block|"
+                  r"blocks|stop|stops|kill|kills|destroy|destroys|"
+                  r"suppress|suppresses)\b", 0.82)],
+    'uses': [(r"(?:use|uses|used|utili[sz]es?|requires?|needs?|consumes?|"
+              r"absorbs?)\b", 0.78)],
+    'made_of': [(r"(?:are|is|were|was)\s+(?:made|composed|comprised|built|"
+                 r"formed)\s+(?:of|from)\b", 0.85)],
+    'located_in': [(r"(?:are|is|were|was)\s+(?:found|located|situated|"
+                    r"stored|contained)\s+(?:in|within|inside|at|on)\b",
+                    0.8)],
+}
+
+_U55_COMPILED = defaultdict(list)
+for _rel, _preds in _U55_PREDS.items():
+    for _pred, _w in _preds:
+        _U55_COMPILED[_rel].append((re.compile(
+            r"(?i)\b(?:all|every|each|any)\s+" + _U55_A + r"\s+" + _U55_N +
+            _pred + r"\s+" + _U55_B), _w, 'univ'))
+        _U55_COMPILED[_rel].append((re.compile(
+            r"(?i)\b(?:no|none|not\s+a\s+single)\s+" + _U55_A + r"\s+" +
+            _U55_N + _pred + r"\s+" + _U55_B), _w, 'neg'))
+        _U55_COMPILED[_rel].append((re.compile(
+            r"(?i)\b" + _U55_A + r"\s+(?:always|invariably|typically|"
+            r"generally|usually|normally|necessarily)\s+" + _pred + r"\s+" +
+            _U55_B), _w, 'univ'))
+        _U55_COMPILED[_rel].append((re.compile(
+            r"(?i)\b" + _U55_A + r"\s+(?:never|cannot|can\s+not|can't|"
+            r"fails?\s+to|does\s+not|do\s+not|doesn't|don't)\s+" + _pred +
+            r"\s+" + _U55_B), _w, 'neg'))
+del _rel, _preds, _pred, _w
+
+
+def _u55_extract_rules(ex, doc_id, text):
+    """Mine universal claims from one document into ex._rules. Runs inside
+    the extractor's lazy doc pass, so rules cost no extra scan."""
+    if not hasattr(ex, '_rules'):
+        ex._rules = {}
+        ex._rule_pairs = defaultdict(list)
+    for sent in _W54_SENT.split(str(text)):
+        sl = sent.strip().lower()
+        if len(sl) < 10:
+            continue
+        for rel, compiled in _U55_COMPILED.items():
+            for rx, w, kind in compiled:
+                for m in rx.finditer(sl):
+                    a = ex._canon(m.group('a'))
+                    b = ex._canon(m.group('b'))
+                    if (not a or not b or a == b
+                            or a in _W54_JUNK or b in _W54_JUNK):
+                        continue
+                    neg = (kind == 'neg') or bool(m.group('neg'))
+                    key = (a, rel, b)
+                    e = ex._rules.get(key)
+                    if e is None:
+                        e = ex._rules[key] = {'pos': set(), 'neg': set(),
+                                              'w': w}
+                        ex._rule_pairs[(a, b)].append(rel)
+                        for t in a.split():
+                            ex._phrase_index[t].add(a)
+                        for t in b.split():
+                            ex._phrase_index[t].add(b)
+                    if len(e['pos']) + len(e['neg']) < 128:
+                        (e['neg'] if neg else e['pos']).add(doc_id)
+
+
+_pre_v55_extract_doc = LearnedRelationExtractor._extract_doc
+
+
+def _v55_extract_doc(self, doc_id):
+    """The same lazy document pass now also mines universal rules — one
+    scan, two learned products."""
+    _pre_v55_extract_doc(self, doc_id)
+    if CONFIG.get('w55_universal_rules', True):
+        try:
+            text = self.index.docs[doc_id].get('text', '')
+            _u55_extract_rules(self, doc_id, text)
+        except Exception:
+            pass
+
+
+LearnedRelationExtractor._extract_doc = _v55_extract_doc
+
+
+# ---- plural/singular phrase resolution ------------------------------------------
+# 'mammals' and 'mammal' must resolve to the same learned structure —
+# corpus text uses both freely.
+_pre_v55_resolve = LearnedRelationExtractor._resolve
+
+
+def _w55_variants(term):
+    toks = str(term).split()
+    out = {term}
+    for i, t in enumerate(toks):
+        alts = []
+        if t.endswith('ies') and len(t) > 4:
+            alts.append(t[:-3] + 'y')
+        if t.endswith('es') and len(t) > 3 and not t.endswith(('ss', 'us')):
+            alts += [t[:-2], t[:-1]]
+        elif t.endswith('s') and len(t) > 3 and not t.endswith('ss'):
+            alts.append(t[:-1])
+        if not t.endswith('s'):
+            if t.endswith(('x', 'z', 'ch', 'sh')):
+                alts.append(t + 'es')
+            else:
+                alts.append(t + 's')
+        for alt in alts:
+            out.add(' '.join(toks[:i] + [alt] + toks[i + 1:]))
+    return out
+
+
+def _v55_resolve(self, term):
+    self._ensure(term)
+    base = self._canon(term) or str(term).strip().lower()
+    phrases = set()
+    for cand in _w55_variants(base) if base else set():
+        phrases.add(cand)
+        self._ensure(cand)          # plural docs must be scanned too
+        for t in cand.split():
+            self._ensure(t)
+            phrases |= self._phrase_index.get(t, set())
+    return phrases
+
+
+LearnedRelationExtractor._resolve = _v55_resolve
+
+
+# ---- universal evidence in check() -----------------------------------------------
+_pre_v55_check = LearnedLogicEngine.check
+
+
+def _v55_check(self, a, rel, b, k=8):
+    """Universal rules join the verdict: 'all X are Y' is the strongest
+    support a corpus can give, and 'no X is Y' the strongest refutation."""
+    res = _pre_v55_check(self, a, rel, b, k=k)
+    rules = getattr(self.ex, '_rules', None)
+    pairs = getattr(self.ex, '_rule_pairs', None)
+    if not rules or not pairs:
+        return res
+    pa, pb = self._resolve(a), self._resolve(b)
+    s_extra, r_extra = [], []
+    for x in pa:
+        for y in pb:
+            for rr in pairs.get((x, y), ()):
+                e = rules.get((x, rr, y))
+                if not e:
+                    continue
+                w = e.get('w', 0.85)
+                pos_c = w * len(e['pos']) / (len(e['pos']) + 1.0)
+                neg_c = w * len(e['neg']) / (len(e['neg']) + 1.0)
+                if rr == rel:
+                    if pos_c > 0.05:
+                        s_extra.append(pos_c)
+                    if neg_c > 0.05:
+                        r_extra.append(neg_c)
+                elif rr in self.REFUTES.get(rel, ()) and pos_c > 0.05:
+                    r_extra.append(pos_c)
+    if not s_extra and not r_extra:
+        return res
+    support = 1.0 - res['support']
+    for c in s_extra:
+        support *= (1.0 - c)
+    support = 1.0 - support
+    refute = 1.0 - res['refute']
+    for c in r_extra:
+        refute *= (1.0 - c)
+    refute = 1.0 - refute
+    if support - refute >= 0.1 and support >= 0.15:
+        verdict = 'supported'
+    elif refute - support >= 0.1 and refute >= 0.15:
+        verdict = 'refuted'
+    elif support >= 0.2 and refute >= 0.2:
+        verdict = 'conflicted'
+    else:
+        verdict = 'unknown'
+    res = dict(res)
+    res['support'] = round(support, 4)
+    res['refute'] = round(refute, 4)
+    res['verdict'] = verdict
+    res['universal_evidence'] = len(s_extra) + len(r_extra)
+    return res
+
+
+LearnedLogicEngine.check = _v55_check
+
+
+class LearnedMemoryStore:
+    """Persists everything the learned layers know.
+
+    Docs serialise in order so doc_ids restore identically; edges, rules,
+    and quantities remap their doc sets through a content-hash identity
+    map, so provenance survives even when some docs already exist (the
+    corpus rebuild may have re-ingested them). Atomic write via tmp+rename.
+    """
+
+    VERSION = 1
+
+    def __init__(self, sim, retriever, extractor=None):
+        self.sim = sim
+        self.r = retriever
+        self.ex = extractor
+        self.last_saved_docs = -1
+        self.saves = 0
+        self.restores = 0
+        self.errors = Counter()
+
+    def _path(self):
+        d = getattr(getattr(self.sim, '_wave48_checkpoints', None),
+                    'directory', None) or os.path.dirname(
+                        os.path.abspath(__file__))
+        return os.path.join(d, CONFIG.get('w55_memory_file',
+                                          'learned_memory.json'))
+
+    @staticmethod
+    def _hash(text):
+        return hashlib.blake2b(str(text).encode('utf-8'),
+                               digest_size=8).hexdigest()
+
+    def save(self):
+        try:
+            idx = self.r.index
+            ex = self.ex
+            docs = [[d.get('text', ''), dict(d.get('meta') or {})]
+                    for d in idx.docs]
+            edges = []
+            if ex is not None:
+                for (a, r, b), e in ex._edges.items():
+                    edges.append([a, r, b, sorted(e['pos']),
+                                  sorted(e['neg']), e['w']])
+            rules = []
+            for (a, r, b), e in (getattr(ex, '_rules', {}) or {}).items():
+                rules.append([a, r, b, sorted(e['pos']), sorted(e['neg']),
+                              e.get('w', 0.85)])
+            qty = {p: [dict(rec) for rec in recs]
+                   for p, recs in (getattr(ex, '_quantities', {}) or
+                                   {}).items()}
+            payload = {'version': self.VERSION, 'saved_at': time.time(),
+                       'docs': docs, 'edges': edges, 'rules': rules,
+                       'quantities': qty}
+            path = self._path()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(payload, f)
+            os.replace(tmp, path)
+            self.last_saved_docs = len(docs)
+            self.saves += 1
+            return path
+        except Exception as e:
+            self.errors['save'] += 1
+            return None
+
+    def load(self):
+        try:
+            path = self._path()
+            if not os.path.isfile(path):
+                return {'loaded': False, 'reason': 'no memory file'}
+            with open(path, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+            idx = self.r.index
+            existing = {self._hash(d.get('text', '')): i
+                        for i, d in enumerate(idx.docs)}
+            idmap, added = {}, 0
+            for old_id, row in enumerate(payload.get('docs') or []):
+                text, meta = (row[0], row[1] if len(row) > 1 else {})
+                h = self._hash(text)
+                if h in existing:
+                    idmap[old_id] = existing[h]
+                    continue
+                new_id = idx.add(text, meta)
+                if new_id is not None:
+                    idmap[old_id] = new_id
+                    self.r.sources[(meta or {}).get('source',
+                                                   'learned')] += 1
+                    added += 1
+            idx.finalize()
+
+            def _rm(ids):
+                return {idmap[d] for d in ids if d in idmap}
+
+            ex = self.ex
+            edges_r = rules_r = 0
+            if ex is not None:
+                for a, r, b, pos, neg, w in (payload.get('edges') or []):
+                    e = ex._edges.get((a, r, b))
+                    if e is None:
+                        e = ex._edges[(a, r, b)] = {
+                            'pos': set(), 'neg': set(), 'w': w}
+                        ex._adj[a].add((r, b))
+                        ex._adj_in[b].add((r, a))
+                        for t in a.split():
+                            ex._phrase_index[t].add(a)
+                        for t in b.split():
+                            ex._phrase_index[t].add(b)
+                    e['pos'] |= _rm(pos)
+                    e['neg'] |= _rm(neg)
+                    edges_r += 1
+                if not hasattr(ex, '_rules'):
+                    ex._rules = {}
+                    ex._rule_pairs = defaultdict(list)
+                for a, r, b, pos, neg, w in (payload.get('rules') or []):
+                    e = ex._rules.get((a, r, b))
+                    if e is None:
+                        e = ex._rules[(a, r, b)] = {
+                            'pos': set(), 'neg': set(), 'w': w}
+                        ex._rule_pairs[(a, b)].append(r)
+                    e['pos'] |= _rm(pos)
+                    e['neg'] |= _rm(neg)
+                    rules_r += 1
+                for phrase, recs in (payload.get('quantities') or
+                                     {}).items():
+                    tgt = ex._quantities.setdefault(phrase, [])
+                    for rec in recs:
+                        rec = dict(rec)
+                        if rec.get('doc') in idmap:
+                            rec['doc'] = idmap[rec['doc']]
+                        else:
+                            rec['doc'] = -1
+                        tgt.append(rec)
+                    for t in phrase.split():
+                        ex._phrase_index[t].add(phrase)
+            self.restores += 1
+            self.last_saved_docs = len(idx.docs)
+            return {'loaded': True, 'docs_added': added,
+                    'docs_total': len(idx.docs), 'edges': edges_r,
+                    'rules': rules_r,
+                    'quantities': len(payload.get('quantities') or {})}
+        except Exception as e:
+            self.errors['load'] += 1
+            return {'loaded': False, 'reason': str(e)}
+
+    def note_work(self):
+        """Called on the cognitive tick + after wave53_learn: autosave when
+        the corpus grew past the configured delta."""
+        if not CONFIG.get('w55_persist', True):
+            return
+        try:
+            n = len(self.r.index.docs)
+        except Exception:
+            return
+        threshold = int(CONFIG.get('w55_autosave_docs', 32))
+        if n - self.last_saved_docs >= threshold:
+            self.save()
+
+    def get_status(self):
+        return {'file': self._path(), 'saves': self.saves,
+                'restores': self.restores,
+                'errors': dict(self.errors),
+                'last_saved_docs': self.last_saved_docs}
+
+
+class GapDirectedAcquisition:
+    """Turns measured knowledge gaps into new learned data.
+
+    Missed-question terms enqueue (when w55_auto_acquire is on or via the
+    public API); the cognitive tick drains at a throttled rate through
+    Wikipedia extracts into wave53_learn — index, correlation graph,
+    relation edges, and subconscious trainer all update from the same
+    ingest path, so 'I don't know X' becomes 'fetch X and learn it'.
+    """
+
+    UA = {'User-Agent': 'ConsciousnessSimulator-learner/1.0'}
+
+    def __init__(self, sim):
+        self.sim = sim
+        self.queue = deque(maxlen=64)
+        self.acquired = set()
+        self.failed = Counter()
+        self.attempts = 0
+        self.succeeded = 0
+        self.last = 0.0
+
+    def enqueue(self, term):
+        t = str(term).strip().lower()
+        if (not t or len(t) < 3 or t in self.acquired or t in self.queue
+                or self.failed.get(t, 0) >= 3
+                or t in HashingVectorizer._STOP):
+            return False
+        self.queue.append(t)
+        return True
+
+    def _session(self):
+        return getattr(self.sim, '_web_session', None)
+
+    def acquire(self, term):
+        t = str(term).strip()
+        out = {'term': t, 'learned': False, 'chars': 0}
+        if not t:
+            return out
+        if t in self.acquired:
+            out['reason'] = 'already acquired'
+            return out
+        cooldown = float(CONFIG.get('w55_acquire_cooldown', 30.0))
+        if time.time() - self.last < cooldown:
+            out['reason'] = 'cooldown'
+            return out
+        self.attempts += 1
+        self.last = time.time()
+        try:
+            sess = self._session() or requests
+            title = urllib.parse.quote(t.replace(' ', '_'))
+            text = ''
+            resp = sess.get(
+                'https://en.wikipedia.org/api/rest_v1/page/summary/' +
+                title, timeout=10, headers=self.UA)
+            if resp.status_code == 200:
+                try:
+                    j = resp.json()
+                    text = ((j.get('title') or '') + '. ' +
+                            (j.get('extract') or '')).strip()
+                except Exception:
+                    text = ''
+            if len(text) < 300:
+                resp2 = sess.get(
+                    'https://en.wikipedia.org/w/api.php',
+                    params={'action': 'query', 'prop': 'extracts',
+                            'explaintext': '1', 'exintro': '1',
+                            'format': 'json', 'titles': t,
+                            'redirects': '1'},
+                    timeout=12, headers=self.UA)
+                if resp2.status_code == 200:
+                    try:
+                        pages = (resp2.json().get('query', {})
+                                 .get('pages', {}))
+                        for p in pages.values():
+                            ext = p.get('extract', '') or ''
+                            if len(ext) > len(text):
+                                text = ext
+                    except Exception:
+                        pass
+            text = re.sub(r'\s+', ' ', text).strip()
+            text = text[:int(CONFIG.get('w55_acquire_chars', 8000))]
+            if len(text) < 60:
+                self.failed[t.lower()] += 1
+                out['reason'] = 'no extract found'
+                return out
+            res = self.sim.wave53_learn(text)
+            self.acquired.add(t)
+            self.succeeded += 1
+            out.update({'learned': bool(res.get('ok')),
+                        'chars': len(text),
+                        'indexed': res.get('indexed', 0),
+                        'trained': res.get('trained', 0)})
+            try:
+                edges = 0
+                w54 = getattr(self.sim, '_wave54', None)
+                if w54 is not None and w54.extractor is not None:
+                    edges = len(w54.extractor.edges_for(t))
+                out['relations'] = edges
+            except Exception:
+                pass
+        except Exception as e:
+            self.failed[t.lower()] += 1
+            out['error'] = str(e)
+        return out
+
+    def drain(self, n=None):
+        n = int(n if n is not None else CONFIG.get('w55_drain_per_tick', 1))
+        did = []
+        for _ in range(max(0, n)):
+            if not self.queue:
+                break
+            did.append(self.acquire(self.queue.popleft()))
+        return did
+
+    def auto(self, k=3):
+        w54 = getattr(self.sim, '_wave54', None)
+        if w54 is not None and w54.gaps is not None:
+            for g in w54.gaps.gaps(k=int(k)):
+                self.enqueue(g['term'])
+        return self.drain(n=int(k))
+
+    def get_status(self):
+        return {'queued': len(self.queue), 'acquired': len(self.acquired),
+                'attempts': self.attempts, 'succeeded': self.succeeded,
+                'failed_terms': dict(self.failed),
+                'auto': bool(CONFIG.get('w55_auto_acquire', False))}
+
+
+class QuantityComparator:
+    """Magnitude reasoning over learned quantities: which is bigger, how
+    much bigger, is X more than Y — with unit normalisation."""
+
+    def __init__(self, extractor):
+        self.ex = extractor
+
+    @staticmethod
+    def _unit(u):
+        return str(u or '').strip().lower().rstrip('.')
+
+    def _pair(self, ra, rb):
+        for r1 in ra:
+            for r2 in rb:
+                if self._unit(r1['unit']) and \
+                        self._unit(r1['unit']) == self._unit(r2['unit']):
+                    return (r1['value'], r2['value'],
+                            self._unit(r1['unit']), False)
+        for r1 in ra:
+            for r2 in rb:
+                u1, u2 = self._unit(r1['unit']), self._unit(r2['unit'])
+                if not u1 or not u2:
+                    continue
+                try:
+                    v = convert_unit(r1['value'], u1, u2)
+                except Exception:
+                    v = None
+                if v is not None:
+                    return (v, r2['value'], u2, True)
+                try:
+                    v = convert_unit(r2['value'], u2, u1)
+                except Exception:
+                    v = None
+                if v is not None:
+                    return (r1['value'], v, u1, True)
+        return None
+
+    def compare(self, a, b, adj='bigger'):
+        if self.ex is None or not CONFIG.get('w55_qty_compare', True):
+            return None
+        ra = self.ex.quantities_for(a)
+        rb = self.ex.quantities_for(b)
+        if not ra and not rb:
+            return None
+        pair = self._pair(ra, rb)
+        if pair is None:
+            a_txt = (f"{a}: {ra[0]['value']:g} {ra[0]['unit']}".strip()
+                     if ra else f"{a}: no learned magnitude")
+            b_txt = (f"{b}: {rb[0]['value']:g} {rb[0]['unit']}".strip()
+                     if rb else f"{b}: no learned magnitude")
+            return {'answer': f'Learned data cannot compare them — '
+                              f'{a_txt} vs {b_txt} (different or missing '
+                              f'units).',
+                    'confidence': 0.4, 'kind': 'qty_compare',
+                    'provenance': {'sources': ['learned_quantities']}}
+        va, vb, unit, conv = pair
+        if va == vb:
+            text = f'Learned data: {a} and {b} are equal ({va:g} {unit}).'
+        else:
+            winner, loser = (a, b) if va > vb else (b, a)
+            hi, lo = max(va, vb), min(va, vb)
+            ratio = (hi / lo) if lo > 0 else float('inf')
+            ratio_txt = (f'{ratio:g}x' if ratio != float('inf')
+                         else 'infinitely')
+            text = (f'Learned data: {winner} is {adj} — '
+                    f'{a} is {va:g} {unit} vs {b} is {vb:g} {unit} '
+                    f'({ratio_txt} more).')
+        return {'answer': text, 'confidence': 0.8,
+                'kind': 'qty_compare',
+                'details': {'a': va, 'b': vb, 'unit': unit,
+                            'converted': conv,
+                            'winner': (a if va > vb else
+                                       b if vb > va else None)},
+                'provenance': {'sources': ['learned_quantities']}}
+
+
+class Wave55Integration:
+    """Owns the loop-closing layer: memory store, universal rules,
+    acquisition, and quantity comparison; extends Wave54Integration.
+    relate through a class-level wrap."""
+
+    _ADJ = (r"bigger|larger|greater|heavier|faster|hotter|colder|longer|"
+            r"taller|wider|deeper|stronger|more\s+powerful|more\s+massive|"
+            r"smaller|lighter|slower|shorter|weaker|cheaper|more\s+expensive")
+    _QP55 = None
+
+    @classmethod
+    def _patterns(cls):
+        if cls._QP55 is not None:
+            return cls._QP55
+        N = r"(.+?)"
+        A = cls._ADJ
+        cls._QP55 = [
+            (re.compile(r"(?i)^(?:which|what)\s+(?:is|are)\s+(?:the\s+)?(" +
+                        A + r")\s*(?:,|of|between)?\s*" + N +
+                        r"\s+or\s+" + N + r"\s*$"),
+             'qty_which'),
+            (re.compile(r"(?i)^(?:is|are|was|were)\s+" + N + r"\s+(" + A +
+                        r")\s+than\s+" + N + r"\s*$"),
+             'qty_than'),
+            (re.compile(r"(?i)^how\s+much\s+(" + A +
+                        r")\s+(?:is|are)\s+" + N + r"\s+than\s+" + N +
+                        r"\s*$"), 'qty_howmuch'),
+            (re.compile(r"(?i)^(?:do|does|are|is|can|could)\s+"
+                        r"(?:all|every|each|any)\s+" + N +
+                        r"\s+(?:have|has|contain|contains|carry|carries|"
+                        r"possess)\s+" + N + r"\s*$"),
+             ('univ', 'has')),
+            (re.compile(r"(?i)^(?:do|does|did|can|could)\s+"
+                        r"(?:all|every|each|any)\s+" + N +
+                        r"\s+(?:cause|causes|produce|produces|lead\s+to|"
+                        r"result\s+in|trigger|induce)\s+" + N + r"\s*$"),
+             ('univ', 'causes')),
+            (re.compile(r"(?i)^(?:do|does)\s+(?:all|every|each|any)\s+" +
+                        N + r"\s+(?:use|uses|need|needs|require|requires|"
+                        r"consume|consumes|absorb|absorbs)\s+" + N +
+                        r"\s*$"), ('univ', 'uses')),
+            (re.compile(r"(?i)^(?:are|is|were|was)\s+"
+                        r"(?:all|every|each|any)\s+" + N + r"\s+" + N +
+                        r"\s*$"), ('univ', 'is_a')),
+        ]
+        return cls._QP55
+
+    def __init__(self, sim=None):
+        self.sim = sim
+        self.w54 = None
+        self.store = None
+        self.acq = None
+        self.cmp = None
+        self.errors = defaultdict(int)
+        self._bound = False
+        self.extended = 0
+
+    def bind(self, sim):
+        self.sim = sim
+        w49 = getattr(sim, '_wave49', None)
+        retriever = getattr(w49, 'retriever', None) if w49 is not None else None
+        self.w54 = getattr(sim, '_wave54', None)
+        ex = getattr(self.w54, 'extractor', None) if self.w54 else None
+        if retriever is not None:
+            self.store = LearnedMemoryStore(sim, retriever, extractor=ex)
+            self.acq = GapDirectedAcquisition(sim)
+            self.cmp = QuantityComparator(ex)
+        if self.w54 is not None:
+            self.w54._w55 = self
+        self._bound = retriever is not None
+        if self._bound and CONFIG.get('w55_persist', True):
+            try:
+                rep = self.store.load()
+                if rep.get('loaded'):
+                    print(f"  [WAVE55] learned memory: +{rep['docs_added']} "
+                          f"docs, {rep['edges']} edges, {rep['rules']} "
+                          f"rules, {rep['quantities']} quantities restored")
+            except Exception:
+                self.errors['load'] += 1
+        return self._bound
+
+    def _canon(self, raw):
+        ex = getattr(self.w54, 'extractor', None)
+        return ex._canon(raw) if ex else None
+
+    def _parse55(self, question):
+        if self.cmp is None:
+            return None
+        q = re.sub(r'\s+', ' ', str(question).strip().rstrip('?').strip())
+        if not q:
+            return None
+        for rx, spec in self._patterns():
+            m = rx.match(q)
+            if not m:
+                continue
+            if spec == 'qty_which':
+                adj, a, b = m.group(1), m.group(2), m.group(3)
+                return ('qty', self._canon(adj) or adj, self._canon(a),
+                        self._canon(b))
+            if spec == 'qty_than':
+                a, adj, b = m.group(1), m.group(2), m.group(3)
+                return ('qty', self._canon(adj) or adj, self._canon(a),
+                        self._canon(b))
+            if spec == 'qty_howmuch':
+                adj, a, b = m.group(1), m.group(2), m.group(3)
+                return ('qty', self._canon(adj) or adj, self._canon(a),
+                        self._canon(b))
+            op, rel = spec
+            a = self._canon(m.group(1))
+            b = self._canon(m.group(2))
+            if not a or not b or a == b:
+                return None
+            return ('univ', rel, a, b)
+        return None
+
+    def _univ_answer(self, rel, a, b):
+        logic = getattr(self.w54, 'logic', None) if self.w54 else None
+        if logic is None:
+            return None
+        res = logic.check(a, rel, b)
+        if res['verdict'] == 'unknown':
+            return None
+        base = self.w54._check_answer(a, rel, b)
+        if base is not None:
+            base['details'] = res
+            if res.get('universal_evidence'):
+                base['answer'] += (' (universal learned rule supports '
+                                   'this)')
+            return base
+        return None
+
+    def relate_extended(self, question):
+        """Wave-55 ops: quantity comparison and universal-quantifier
+        checks. Returns None for anything else so the Wave-54 router
+        handles it."""
+        parsed = self._parse55(question)
+        if parsed is None:
+            return None
+        self.extended += 1
+        try:
+            if parsed[0] == 'qty':
+                out = self.cmp.compare(parsed[2], parsed[3],
+                                       adj=parsed[1])
+            elif parsed[0] == 'univ':
+                out = self._univ_answer(parsed[1], parsed[2], parsed[3])
+            else:
+                out = None
+        except Exception:
+            self.errors[parsed[0]] += 1
+            out = None
+        return out
+
+    def rules(self, term=None, k=24):
+        ex = getattr(self.w54, 'extractor', None) if self.w54 else None
+        if ex is None:
+            return []
+        rules = getattr(ex, '_rules', {})
+        out = []
+        for (a, r, b), e in rules.items():
+            if term is not None:
+                if term not in a.split() and term not in b.split() \
+                        and a != term and b != term:
+                    continue
+            out.append({'a': a, 'rel': r, 'b': b, 'pos': len(e['pos']),
+                        'neg': len(e['neg']),
+                        'verdict': ('universal' if e['pos'] and not e['neg']
+                                    else 'universal_negative' if e['neg']
+                                    and not e['pos'] else 'contested')})
+        out.sort(key=lambda x: -(x['pos'] + x['neg']))
+        return out[:k]
+
+    def get_status(self):
+        return {'bound': self._bound,
+                'errors': dict(self.errors),
+                'extended_routes': self.extended,
+                'store': (self.store.get_status()
+                          if self.store else None),
+                'acquisition': (self.acq.get_status()
+                                if self.acq else None),
+                'rules': len(getattr(getattr(
+                    self.w54, 'extractor', None), '_rules', {}) or {}),
+                'persist': bool(CONFIG.get('w55_persist', True)),
+                'auto_acquire': bool(CONFIG.get('w55_auto_acquire',
+                                                False))}
+
+    def report(self):
+        s = self.get_status()
+        st = s['store'] or {}
+        aq = s['acquisition'] or {}
+        return '\n'.join([
+            "=" * 68,
+            "WAVE 55 - AUTONOMOUS LEARNING LOOP",
+            "=" * 68,
+            f"  bound      : {s['bound']}   persist: "
+            f"{'ON' if s['persist'] else 'off'}   "
+            f"auto-acquire: {'ON' if s['auto_acquire'] else 'off'}",
+            f"  memory     : {st.get('file', '?')}",
+            f"  saves      : {st.get('saves', 0)}   restores: "
+            f"{st.get('restores', 0)}   last docs: "
+            f"{st.get('last_saved_docs', 0)}",
+            f"  rules      : {s['rules']} universal   "
+            f"extended routes: {s['extended_routes']}",
+            f"  acquire    : {aq.get('acquired', 0)} learned   "
+            f"{aq.get('queued', 0)} queued   "
+            f"{aq.get('attempts', 0)} attempts",
+            "=" * 68,
+        ])
+
+
+# ---- relate extension through ONE class-level wrap ------------------------------
+# Every Wave-54 consumer (respond, wave49_answer, answer_qa,
+# multi_step_reason) calls w54.relate — wrapping it once upgrades them all.
+_pre_v55_w54_relate = Wave54Integration.relate
+
+
+def _v55_w54_relate(self, question):
+    w55 = getattr(self, '_w55', None)
+    if w55 is not None:
+        try:
+            res = w55.relate_extended(question)
+        except Exception:
+            res = None
+        if res is not None:
+            return res
+    return _pre_v55_w54_relate(self, question)
+
+
+Wave54Integration.relate = _v55_w54_relate
+
+
+# ---- acquisition queue feed -------------------------------------------------------
+_pre_v55_lap_answer = LearnedAnswerPath.answer
+
+
+def _v55_lap_answer(self, query, top_k=6, max_sents=2):
+    """On a miss, enqueue the query's content terms for acquisition —
+    opt-in via w55_auto_acquire because it touches the network."""
+    res = _pre_v55_lap_answer(self, query, top_k=top_k, max_sents=max_sents)
+    try:
+        if res is not None and res.get('answer'):
+            return res
+        if not CONFIG.get('w55_auto_acquire', False):
+            return res
+        sim = getattr(self, 'sim', None)
+        w54 = getattr(sim, '_wave54', None)
+        w55 = getattr(sim, '_wave55', None)
+        if w54 is not None and w54.gaps is not None \
+                and w55 is not None and w55.acq is not None:
+            for t in w54.gaps._terms(query)[:4]:
+                w55.acq.enqueue(t)
+    except Exception:
+        pass
+    return res
+
+
+LearnedAnswerPath.answer = _v55_lap_answer
+
+
+# ---- loop closure -----------------------------------------------------------------
+_pre_v55_learn = ConsciousnessSimulator.wave53_learn
+
+
+def _v55_learn(self, source, max_train_lines=None):
+    out = _pre_v55_learn(self, source, max_train_lines=max_train_lines)
+    try:
+        w55 = getattr(self, '_wave55', None)
+        if w55 is not None and w55.store is not None and out.get('indexed'):
+            w55.store.note_work()
+    except Exception:
+        pass
+    return out
+
+
+ConsciousnessSimulator.wave53_learn = _v55_learn
+
+_pre_v55_save = ConsciousnessSimulator.wave48_save
+
+
+def _v55_save(self, tag=None):
+    """wave48_save now also writes the learned-memory file — the model's
+    weights and the knowledge they serve persist together."""
+    path = _pre_v55_save(self, tag=tag)
+    try:
+        w55 = getattr(self, '_wave55', None)
+        if w55 is not None and w55.store is not None:
+            w55.store.save()
+    except Exception:
+        pass
+    return path
+
+
+ConsciousnessSimulator.wave48_save = _v55_save
+
+_pre_v55_load = ConsciousnessSimulator.wave48_load
+
+
+def _v55_load(self, path=None):
+    out = _pre_v55_load(self, path=path)
+    try:
+        w55 = getattr(self, '_wave55', None)
+        if w55 is not None and w55.store is not None:
+            rep = w55.store.load()
+            if isinstance(out, dict) and rep.get('loaded'):
+                out['learned_memory'] = rep
+    except Exception:
+        pass
+    return out
+
+
+ConsciousnessSimulator.wave48_load = _v55_load
+
+_pre_v55_step4245 = ConsciousnessSimulator._step_wave4245_engines
+
+
+def _v55_step4245(self):
+    out = _pre_v55_step4245(self)
+    try:
+        w55 = getattr(self, '_wave55', None)
+        if w55 is not None:
+            if w55.acq is not None and w55.acq.queue:
+                w55.acq.drain()
+            if w55.store is not None:
+                w55.store.note_work()
+    except Exception:
+        pass
+    return out
+
+
+ConsciousnessSimulator._step_wave4245_engines = _v55_step4245
+
+
+# ---- public API ---------------------------------------------------------------
+def _wave55_acquire(self, term):
+    """Public: fetch and learn a topic now (Wikipedia -> wave53_learn)."""
+    w = getattr(self, '_wave55', None)
+    if w is None or w.acq is None:
+        return {'learned': False, 'reason': 'wave55 not initialised'}
+    return w.acq.acquire(str(term))
+
+
+def _wave55_auto(self, k=3):
+    """Public: acquire data for the top-k measured knowledge gaps."""
+    w = getattr(self, '_wave55', None)
+    if w is None or w.acq is None:
+        return []
+    return w.acq.auto(k=k)
+
+
+def _wave55_rules(self, term=None, k=24):
+    """Public: learned universal rules (all/no/always/never claims)."""
+    w = getattr(self, '_wave55', None)
+    if w is None:
+        return []
+    return w.rules(term=str(term).lower() if term else None, k=k)
+
+
+def _wave55_persist(self):
+    """Public: write the learned-memory file now. Returns its path."""
+    w = getattr(self, '_wave55', None)
+    if w is None or w.store is None:
+        return None
+    return w.store.save()
+
+
+def _wave55_recall(self):
+    """Public: reload learned memory from disk. Returns a restore report."""
+    w = getattr(self, '_wave55', None)
+    if w is None or w.store is None:
+        return {'loaded': False, 'reason': 'wave55 not initialised'}
+    return w.store.load()
+
+
+def _wave55_status(self):
+    w = getattr(self, '_wave55', None)
+    return w.get_status() if w is not None else {'bound': False}
+
+
+def _wave55_report(self):
+    w = getattr(self, '_wave55', None)
+    return w.report() if w is not None else 'wave55 not initialised'
+
+
+ConsciousnessSimulator.wave55_acquire = _wave55_acquire
+ConsciousnessSimulator.wave55_auto = _wave55_auto
+ConsciousnessSimulator.wave55_rules = _wave55_rules
+ConsciousnessSimulator.wave55_persist = _wave55_persist
+ConsciousnessSimulator.wave55_recall = _wave55_recall
+ConsciousnessSimulator.wave55_status = _wave55_status
+ConsciousnessSimulator.wave55_report = _wave55_report
+
+
+# ---- registration -------------------------------------------------------------
+_pre_v55_init = ConsciousnessSimulator.__init__
+
+
+def _wave55_cs_init(self, *args, **kwargs):
+    _pre_v55_init(self, *args, **kwargs)
+    if getattr(self, '_wave55', None) is not None:
+        return
+    try:
+        self._wave55 = Wave55Integration(sim=self)
+        ok = self._wave55.bind(self)
+        print(f"  [WAVE55] learning loop "
+              f"{'online' if ok else 'waiting for retrieval index'}")
+    except Exception as e:
+        print(f"  [WARN] wave55 init: {e}")
+        self._wave55 = None
+
+
+ConsciousnessSimulator.__init__ = _wave55_cs_init
+
+_so_v55 = SovereignOrchestrator.__init__
+
+
+def _so_v55_init(self, sim):
+    _so_v55(self, sim)
+    self._sub_engines = self._sub_engines + ('_wave55',)
+
+
+SovereignOrchestrator.__init__ = _so_v55_init
+
+_pwa_v55 = ProcessWiringAuditor.__init__
+
+
+def _pwa_v55_init(self, sim):
+    _pwa_v55(self, sim)
+    self._expected = self._expected + ('_wave55',)
+
+
+ProcessWiringAuditor.__init__ = _pwa_v55_init
+
+
+# =============================================================================
+# WAVE 56 - INDUCTIVE LOGIC LAYER
+# =============================================================================
+# Waves 53-55 learned the DATA of reason: correlations, typed edges,
+# universal rules, quantities. But the LOGIC that walks them — the
+# composition table, the inverse map, the conflict map — was still
+# authored. A system that only learns data can only compose relations in
+# the 19 ways its author imagined. Wave 56 removes that ceiling: the
+# inference rules themselves are now mined from the corpus's own graph,
+# each with counted support and measured confidence.
+#
+#   LearnedRuleMiner — AMIE-style induction over the typed edge graph.
+#       Every observed path a -r1-> m -r2-> b that the corpus closes with
+#       a direct a -r3-> b is one counted instance of `r1 . r2 => r3`; a
+#       negated (a,r3,b) is a counter-instance. The same pass measures
+#       inverse rules P(b -r2-> a | a -r1-> b) and conflict rules (r1
+#       positive beside r2 negated on the same pair means r1 refutes r2).
+#       The authored tables survive only as PRIORS behind
+#       w56_rule_priors: they fill in where the corpus is still thin and
+#       are outvoted wherever data has spoken. Mining also discovers
+#       compositions no author wrote — (produces, produces) transitivity
+#       was unreachable before; if the data shows it, it is now a rule.
+#
+#   EquivalenceMiner — distributional aliases from the correlation
+#       matrix alone. Two tokens that never co-occur but keep
+#       near-identical NPMI neighbor vectors are the same thing in
+#       different vocabulary ('h2o' and 'water'). Candidates are the
+#       neighbors OF the term's neighbors — the only place a
+#       non-co-occurring twin can hide — cosine-scored over the learned
+#       vectors, then admitted only if the substitution test passes
+#       (shared context, separate documents). _resolve closes over them,
+#       so learned structure unifies automatically.
+#
+#   LogicSelfVerifier — measured, not assumed, inference quality. Sample
+#       direct edges, ask whether the rest of the graph (plus mined
+#       rules) can still derive them through other paths, and report the
+#       fraction recovered. The honesty axiom applied to the logic
+#       itself: the system knows how good its own reasoning is.
+#
+#   Abduction — 'why' questions no longer fetch only 'causes' chains:
+#       every learned relation's incoming paths are pooled and ranked, so
+#       an explanation can be a cause, a producer, a location, a part —
+#       whatever the data actually says stands behind the term.
+#
+#   Nothing here is persisted: every rule re-derives deterministically
+#   from the restored edges, so the Wave-55 memory format is unchanged.
+# =============================================================================
+
+for _k, _v in (('w56_learned_rules', True),
+               ('w56_rule_priors', True),
+               ('w56_prior_conf', 0.72),
+               ('w56_rule_min_conf', 0.4),
+               ('w56_rule_min_support', 1),
+               ('w56_rule_recalc', 24),
+               ('w56_mine_max_paths', 6000),
+               ('w56_deepen_terms', 24),
+               ('w56_deepen_docs', 320),
+               ('w56_ensure_docs', 512),
+               ('w56_resolve_cache', 2048),
+               ('w56_walk_cache', 512),
+               ('w56_check_conflicts', 3),
+               ('w56_aliases', True),
+               ('w56_alias_cos', 0.68),
+               ('w56_alias_cand', 12),
+               ('w56_alias_min_df', 2),
+               ('w56_alias_max', 6),
+               ('w56_abduce', True),
+               ('w56_verify_samples', 24)):
+    CONFIG.setdefault(_k, _v)
+del _k, _v
+
+
+class LearnedRuleMiner:
+    """Mines the inference rules themselves from the learned edge graph.
+
+    Composition: each observed path a -r1-> m -r2-> b paired with a direct
+    a -r3-> b edge is one counted instance of `r1 . r2 => r3`. A path whose
+    (a,b) pair carries only NEGATED r3 evidence is a counter-instance.
+    Confidence is pos/(pos+neg+1) — one instance suggests, many confirm.
+
+    Inverse: for each positive a -r1-> b, the presence of b -r2-> a counts
+    toward `r2 backs r1 in reverse`; conf is P(back-via-r2 | r1) measured
+    on positive edges. Conflict: positive a -r1-> b beside a NEGATED
+    a -r2-> b means r1 refutes r2 — the corpus asserting that evidence for
+    one relation is evidence against the other; a co-existing positive
+    r2 is counter-evidence.
+
+    Rules recompute lazily when the edge store grows by more than
+    w56_rule_recalc entries; _deepen() first pulls extraction forward for
+    the highest-traffic middle nodes, because composition rules can only
+    be counted where the corpus has actually been read.
+    """
+
+    def __init__(self, extractor, logic=None, graph=None):
+        self.ex = extractor
+        self.logic = logic
+        self.graph = graph
+        self._stamp = None          # (n_edges, n_docs_extracted) at last mine
+        self.composed = {}          # (r1, r2) -> {r3: {pos, neg}}
+        self.inverses = {}          # r -> {r2: pos_count}
+        self.conflicts = {}         # refuted_rel -> {refuting_rel: {pos, neg}}
+        self._fwd_total = Counter()  # r -> n positive out-edges sampled
+        self.uses = Counter()        # (r1, r2, r3) -> times a path fired it
+        self._mines = 0
+        self._paths_seen = 0
+
+    @staticmethod
+    def _c(rec):
+        return rec['pos'] / float(rec['pos'] + rec['neg'] + 1.0)
+
+    def _deepen(self):
+        """Ensure extraction for the highest-traffic middle nodes — the
+        terms whose postings hold the most composition paths. Bounded by
+        w56_deepen_docs: deepening is an accelerator, and an unbounded one
+        turned every remine into a potential 24-term × max-scan extraction
+        storm. High-degree terms beyond the budget are mined on the next
+        recalc instead."""
+        try:
+            budget = int(CONFIG.get('w56_deepen_docs', 320))
+            scans0 = self.ex._scans
+            deg = [(m, len(self.ex._adj.get(m, ())) +
+                    len(self.ex._adj_in.get(m, ())))
+                   for m in self.ex._adj]
+            deg = [d for d in deg if d[1] >= 3]
+            deg.sort(key=lambda x: -x[1])
+            for m, _d in deg[:int(CONFIG.get('w56_deepen_terms', 24))]:
+                if self.ex._scans - scans0 >= budget:
+                    break
+                self.ex._ensure(m)
+        except Exception:
+            pass
+
+    def mine(self, force=False):
+        if not CONFIG.get('w56_learned_rules', True):
+            return
+        try:
+            stamp = (len(self.ex._edges), len(self.ex._done))
+        except Exception:
+            return
+        recalc = int(CONFIG.get('w56_rule_recalc', 24))
+        if (not force and self._stamp is not None
+                and stamp[0] - self._stamp[0] < recalc
+                and stamp[1] - self._stamp[1] < recalc):
+            return
+        self._mines += 1
+        self._deepen()
+        try:  # stamp AFTER deepen — its _ensure calls move the counts
+            self._stamp = (len(self.ex._edges), len(self.ex._done))
+        except Exception:
+            self._stamp = stamp
+        E, ADJ, ADJ_IN = self.ex._edges, self.ex._adj, self.ex._adj_in
+        rules_tbl = getattr(self.ex, '_rules', {}) or {}
+        rule_pairs = getattr(self.ex, '_rule_pairs', {}) or {}
+        composed = defaultdict(lambda: defaultdict(
+            lambda: {'pos': 0, 'neg': 0}))
+        inverses = defaultdict(lambda: defaultdict(int))
+        fwd_total = Counter()
+        conflicts = defaultdict(lambda: defaultdict(
+            lambda: {'pos': 0, 'neg': 0}))
+        max_paths = int(CONFIG.get('w56_mine_max_paths', 6000))
+        seen = 0
+        mids = [m for m in ADJ if ADJ.get(m) and ADJ_IN.get(m)]
+        mids.sort(key=lambda m: -(len(ADJ[m]) * len(ADJ_IN[m])))
+        for m in mids:
+            if seen >= max_paths:
+                break
+            for r1, a in tuple(ADJ_IN.get(m, ())):
+                e1 = E.get((a, r1, m))
+                if not e1 or not e1['pos']:
+                    continue
+                for r2, b in tuple(ADJ.get(m, ())):
+                    if a == b:
+                        continue
+                    e2 = E.get((m, r2, b))
+                    if not e2 or not e2['pos']:
+                        continue
+                    seen += 1
+                    for r3, b2 in ADJ.get(a, ()):
+                        if b2 != b:
+                            continue
+                        e3 = E.get((a, r3, b))
+                        if not e3:
+                            continue
+                        if e3['pos']:
+                            composed[(r1, r2)][r3]['pos'] += 1
+                        elif e3['neg']:
+                            composed[(r1, r2)][r3]['neg'] += 1
+                    # a universal rule on (a,b) is the strongest direct
+                    # evidence the corpus gives — count it too
+                    for r3 in rule_pairs.get((a, b), ()):
+                        e3 = rules_tbl.get((a, r3, b))
+                        if e3 is not None and e3['pos']:
+                            composed[(r1, r2)][r3]['pos'] += 1
+        for (a, r1, b), e1 in E.items():
+            if not e1['pos']:
+                continue
+            fwd_total[r1] += 1
+            for r2, a2 in ADJ.get(b, ()):
+                if a2 != a:
+                    continue
+                e2 = E.get((b, r2, a))
+                if e2 is not None and e2['pos']:
+                    inverses[r1][r2] += 1
+        for (a, r1, b), e1 in E.items():
+            if not e1['pos']:
+                continue
+            for r2, b2 in ADJ.get(a, ()):
+                if b2 != b or r2 == r1:
+                    continue
+                e2 = E.get((a, r2, b))
+                if e2 is None:
+                    continue
+                if e2['neg'] and not e2['pos']:
+                    conflicts[r2][r1]['pos'] += 1
+                elif e2['pos']:
+                    conflicts[r2][r1]['neg'] += 1
+        self.composed = {k: dict(v) for k, v in composed.items()}
+        self.inverses = {k: dict(v) for k, v in inverses.items()}
+        self.conflicts = {k: dict(v) for k, v in conflicts.items()}
+        self._fwd_total = fwd_total
+        self._paths_seen = seen
+
+    # ---- rule-table views -----------------------------------------------------
+    def compose(self, r1, r2):
+        """Candidate (new_rel, conf, support, tag) list for walking r1
+        then r2. Mined rules compete with authored priors; multiple
+        conclusions for the same composition are all carried forward."""
+        self.mine()
+        merged = {}
+        for r3, rec in (self.composed.get((r1, r2)) or {}).items():
+            c = self._c(rec)
+            if (rec['pos'] >= int(CONFIG.get('w56_rule_min_support', 1))
+                    and c >= float(CONFIG.get('w56_rule_min_conf', 0.4))):
+                merged[r3] = (c, rec['pos'], 'learned')
+        if CONFIG.get('w56_rule_priors', True):
+            prior = float(CONFIG.get('w56_prior_conf', 0.72))
+            authored = LearnedLogicEngine.COMPOSE.get((r1, r2))
+            if authored is not None and authored not in merged:
+                merged[authored] = (prior, 0, 'prior')
+            if (r1 == r2 and r1 in LearnedLogicEngine.TRANSITIVE
+                    and r1 not in merged):
+                merged[r1] = (prior, 0, 'prior')
+        out = [(r3, c, s, t) for r3, (c, s, t) in merged.items()]
+        out.sort(key=lambda o: -o[1])
+        return out
+
+    def conflicts_of(self, rel, learned_only=False):
+        """[(r2, conf)] — evidence for r2 refutes a `rel` claim.
+        learned_only skips relations already in the authored REFUTES
+        table so callers never double-count the same evidence."""
+        self.mine()
+        out = []
+        authored = LearnedLogicEngine.REFUTES.get(rel, frozenset())
+        for r2, rec in (self.conflicts.get(rel) or {}).items():
+            c = self._c(rec)
+            if c < float(CONFIG.get('w56_rule_min_conf', 0.4)):
+                continue
+            if learned_only and r2 in authored:
+                continue
+            out.append((r2, c))
+        if not learned_only and CONFIG.get('w56_rule_priors', True):
+            prior = float(CONFIG.get('w56_prior_conf', 0.72))
+            for r2 in authored:
+                if not any(o[0] == r2 for o in out):
+                    out.append((r2, prior))
+        out.sort(key=lambda o: -o[1])
+        return out
+
+    def inverse_of(self, rel):
+        """[(r2, conf)] — relations observed backing `rel` in reverse:
+        b -r2-> a co-existing with a -rel-> b often enough to count."""
+        self.mine()
+        tot = self._fwd_total.get(rel, 0)
+        if not tot:
+            return []
+        out = [(r2, n / float(tot + 1))
+               for r2, n in (self.inverses.get(rel) or {}).items()]
+        out = [o for o in out
+               if o[1] >= float(CONFIG.get('w56_rule_min_conf', 0.4))]
+        out.sort(key=lambda o: -o[1])
+        return out
+
+    def table(self, k=24):
+        """The mined composition rules, confidence-sorted, for audit."""
+        self.mine()
+        rows = []
+        for (r1, r2), tgts in self.composed.items():
+            for r3, rec in tgts.items():
+                rows.append({'rule': f'{r1} + {r2} => {r3}',
+                             'left': r1, 'right': r2, 'yields': r3,
+                             'pos': rec['pos'], 'neg': rec['neg'],
+                             'conf': round(self._c(rec), 4),
+                             'uses': self.uses.get((r1, r2, r3), 0)})
+        rows.sort(key=lambda x: (-x['conf'], -x['pos']))
+        return rows[:k]
+
+    def get_status(self):
+        self.mine()
+        return {'mines': self._mines, 'paths_seen': self._paths_seen,
+                'compose_rules': sum(len(v) for v in
+                                     self.composed.values()),
+                'inverse_rules': sum(len(v) for v in
+                                     self.inverses.values()),
+                'conflict_rules': sum(len(v) for v in
+                                      self.conflicts.values()),
+                'priors': bool(CONFIG.get('w56_rule_priors', True))}
+
+
+class EquivalenceMiner:
+    """Distributional aliases from the correlation matrix alone.
+
+    Two tokens that never co-occur but keep near-identical NPMI neighbor
+    lists are the same thing in different vocabulary — 'h2o' and 'water'.
+    Candidates are the neighbors OF the term's neighbors (the only place
+    a non-co-occurring twin can hide), cosine-scored over the learned
+    vectors themselves, then admitted only when the substitution test
+    passes: shared context, separate documents. No dictionary, no
+    morphology — only measured context overlap.
+    """
+
+    def __init__(self, extractor, graph):
+        self.ex = extractor
+        self.graph = graph
+        self._pairs = {}          # token -> {alias: cosine}
+        self._checked = {}        # token -> doc-count at last mine
+        self._merges = 0
+
+    def _vec(self, t):
+        if self.graph is None:
+            return {}
+        v = {u: w for u, w, _n in self.graph.neighbors(t, k=32)
+             if '_' not in u}
+        n = math.sqrt(sum(w * w for w in v.values()))
+        return {u: w / n for u, w in v.items()} if n > 0 else {}
+
+    def mine_term(self, token):
+        if self.graph is None or not CONFIG.get('w56_aliases', True):
+            return
+        token = str(token).strip().lower()
+        if not token or '_' in token:
+            return
+        try:
+            stamp = len(self.graph.index.docs)
+        except Exception:
+            return
+        if self._checked.get(token) == stamp:
+            return
+        self._checked[token] = stamp
+        df_t = self.graph._df(token)
+        # a term seen fewer times than this has no reliable context
+        # signature — distributional equivalence needs evidence, not a
+        # single document's worth of neighbors
+        if df_t < int(CONFIG.get('w56_alias_min_df', 2)):
+            return
+        vt = self._vec(token)
+        if not vt:
+            return
+        pool = set()
+        for u in list(vt)[:int(CONFIG.get('w56_alias_cand', 12))]:
+            for m, _w, _n in self.graph.neighbors(u, k=16):
+                if m != token and '_' not in m:
+                    pool.add(m)
+        df_t = max(1, self.graph._df(token))
+        cos_min = float(CONFIG.get('w56_alias_cos', 0.68))
+        for m in pool:
+            vm = self._vec(m)
+            if not vm:
+                continue
+            dot = sum(w * vm.get(u, 0.0) for u, w in vt.items())
+            if dot < cos_min:
+                continue
+            df_m = max(1, self.graph._df(m))
+            cooc = len(self.graph.shared_docs(token, m, cap=200))
+            # substitution test: twins share context, not documents —
+            # heavy co-occurrence means a real relation, not an alias
+            if cooc > max(1, int(0.25 * min(df_t, df_m))):
+                continue
+            # typed-edge veto: if the learned logic graph already says
+            # HOW the pair relates (is_a, part_of, ...), it is a relation
+            # — never an equivalence. The matrix proposes, logic vetoes.
+            if self._typed_link(token, m):
+                continue
+            self._pairs.setdefault(token, {})[m] = round(dot, 4)
+            self._pairs.setdefault(m, {})[token] = round(dot, 4)
+            self._merges += 1
+
+    def _typed_link(self, a, b):
+        """True when any learned typed edge runs between the two terms."""
+        ex = self.ex
+        if ex is None:
+            return False
+        try:
+            for r, y in ex._adj.get(a, ()):
+                if y == b:
+                    return True
+            for r, x in ex._adj.get(b, ()):
+                if x == a:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def aliases(self, token, k=None):
+        k = int(k or CONFIG.get('w56_alias_max', 6))
+        self.mine_term(token)
+        out = sorted((self._pairs.get(token) or {}).items(),
+                     key=lambda kv: -kv[1])
+        return out[:k]
+
+    def get_status(self):
+        n_pairs = sum(len(v) for v in self._pairs.values()) // 2
+        return {'alias_pairs': n_pairs,
+                'terms_checked': len(self._checked),
+                'cos_min': float(CONFIG.get('w56_alias_cos', 0.68))}
+
+
+class LogicSelfVerifier:
+    """Measures how good the learned logic actually is.
+
+    Sample direct edges, then ask whether the rest of the graph — plus
+    the mined rules — can still derive them through OTHER paths. The
+    precision it reports is computed, not assumed: the honesty axiom
+    applied to the inference machinery itself.
+    """
+
+    def __init__(self, logic, miner):
+        self.logic = logic
+        self.miner = miner
+        self.last = None
+
+    def verify(self, k=None):
+        if self.logic is None or self.miner is None:
+            return {'precision': 0.0, 'coverage': 0.0, 'sampled': 0}
+        self.miner.mine()
+        k = int(k or CONFIG.get('w56_verify_samples', 24))
+        ex = self.logic.ex
+        cands = []
+        for (a, r, b), e in ex._edges.items():
+            if not e['pos']:
+                continue
+            c = LearnedRelationExtractor._conf(e)
+            if c >= 0.3:
+                cands.append((a, r, b))
+        rng = random.Random(0)
+        rng.shuffle(cands)
+        cands = cands[:k]
+        hit = cover = 0
+        for a, r, b in cands:
+            e = ex._edges.get((a, r, b))
+            if e is None:
+                continue
+            saved_pos, saved_neg = e['pos'], e['neg']
+            try:
+                # true hold-out: erase the edge's evidence, then ask the
+                # rest of the graph to re-derive the same relation
+                e['pos'], e['neg'] = set(), set()
+                outs = self.logic.derive(a, rel=r, k=32)
+            except Exception:
+                outs = []
+            finally:
+                e['pos'], e['neg'] = saved_pos, saved_neg
+            if outs:
+                cover += 1
+            if any(h['term'] == b for h in outs):
+                hit += 1
+        n = len(cands)
+        self.last = {
+            'sampled': n,
+            'precision': round(hit / float(n), 4) if n else 0.0,
+            'coverage': round(cover / float(n), 4) if n else 0.0,
+            'note': 'fraction of held-out direct edges re-derived '
+                    'through other paths — measured, not assumed'}
+        return dict(self.last)
+
+    def get_status(self):
+        return dict(self.last or {'precision': None})
+
+
+class Wave56Integration:
+    """Owns the inductive layer: rule miner, alias miner, self-verifier,
+    and the abductive explanation route."""
+
+    _QP56 = None
+
+    @classmethod
+    def _patterns(cls):
+        if cls._QP56 is not None:
+            return cls._QP56
+        N = r"(.+?)"
+        cls._QP56 = [
+            (re.compile(r"(?i)^why\s+(?:does|do|did|is|are|was|were|"
+                        r"would|should|can|could|must|might|has|have|"
+                        r"had)\s+" + N + r"\s*$"), 'why'),
+            (re.compile(r"(?i)^what\s+(?:explains?|underlies?|"
+                        r"accounts?\s+for|is\s+behind|drives?)\s+" + N +
+                        r"\s*$"), 'abduce'),
+        ]
+        return cls._QP56
+
+    def __init__(self, sim=None):
+        self.sim = sim
+        self.w54 = None
+        self.miner = None
+        self.aliaser = None
+        self.verifier = None
+        self.errors = defaultdict(int)
+        self._bound = False
+        self.extended = 0
+
+    def bind(self, sim):
+        self.sim = sim
+        self.w54 = getattr(sim, '_wave54', None)
+        w53 = getattr(sim, '_wave53', None)
+        graph = getattr(w53, 'graph', None) if w53 is not None else None
+        ex = getattr(self.w54, 'extractor', None) if self.w54 else None
+        logic = getattr(self.w54, 'logic', None) if self.w54 else None
+        if ex is not None:
+            try:
+                self.miner = LearnedRuleMiner(ex, logic, graph)
+                self.aliaser = EquivalenceMiner(ex, graph)
+                self.verifier = LogicSelfVerifier(logic, self.miner)
+                if logic is not None:
+                    logic.rule_source = self.miner
+                ex._aliaser = self.aliaser
+            except Exception:
+                self.errors['init'] += 1
+        if self.w54 is not None:
+            self.w54._w56 = self
+        self._bound = self.miner is not None and logic is not None
+        if self._bound:
+            try:
+                self.miner.mine(force=True)
+            except Exception:
+                self.errors['mine'] += 1
+        return self._bound
+
+    # ---- abduction -------------------------------------------------------------
+    def _why_term(self, tail):
+        """The subject of a why-question: first resolvable content token
+        of the tail. 'why does rust form' -> 'rust'."""
+        ex = getattr(self.w54, 'extractor', None) if self.w54 else None
+        toks = [t for t in re.findall(r"[a-z0-9][a-z0-9_\-']*",
+                                      str(tail).lower())
+                if t not in HashingVectorizer._STOP and len(t) > 1]
+        if not toks:
+            return None
+        if ex is not None:
+            for cand in (' '.join(toks[:2]), toks[0]):
+                c = ex._canon(cand)
+                if c and ex.index.postings.get(c.split()[0]):
+                    return c
+        return toks[0]
+
+    # every relation the extractor can produce — the fallback pool so a
+    # fresh term's own extraction (triggered lazily inside chain) is
+    # never silently skipped because ex._edges was still empty
+    _ALL_RELS = frozenset(
+        ('is_a', 'part_of', 'located_in', 'causes', 'produces',
+         'prevents', 'uses', 'has', 'made_of', 'measures', 'used_for',
+         'defined_as'))
+
+    def abduce(self, term, k=8):
+        """Ranked explanations for `term`: every learned relation's
+        incoming chains pooled — abduction over the learned graph."""
+        logic = getattr(self.w54, 'logic', None) if self.w54 else None
+        ex = getattr(self.w54, 'extractor', None) if self.w54 else None
+        if logic is None or ex is None:
+            return []
+        ex._resolve(term)          # warm: pull the term's docs into edges
+        rels = {r for (_a, r, _b) in ex._edges}
+        rels |= self._ALL_RELS
+        best = {}
+        for r in sorted(rels):
+            try:
+                for h in logic.chain(term, r, 'in', k=4):
+                    if h['conf'] > best.get(h['term'], (0.0,))[0]:
+                        best[h['term']] = (h['conf'], r, h)
+            except Exception:
+                continue
+        out = [{'term': t, 'rel': v[1], 'conf': round(v[0], 4),
+                'path': [list(p) for p in v[2]['path']]}
+               for t, v in best.items() if t != term]
+        out.sort(key=lambda x: -x['conf'])
+        return out[:k]
+
+    def _abduce_answer(self, term, question):
+        hits = self.abduce(term, k=8)
+        if not hits:
+            return None
+        parts = [f"{h['term']} ({h['rel'].replace('_', ' ')}, "
+                 f"{h['conf']:.2f})" for h in hits[:5]]
+        docs = []
+        for h in hits[:5]:
+            for ekey in h['path']:
+                e = self.w54.extractor._edges.get(tuple(ekey))
+                if e:
+                    docs += list(e['pos'])[:2]
+        return {'answer': f"Learned explanations for {term}: "
+                          + '; '.join(parts) + '.',
+                'confidence': round(hits[0]['conf'], 3),
+                'kind': 'abduce', 'details': hits[:5],
+                'provenance': {'sources': self.w54._docs_meta(
+                    sorted(set(docs)))}}
+
+    def relate_extended(self, question):
+        """Wave-56 ops: abductive 'why'/'what explains' — ranked across
+        ALL learned relations. None falls through to the 55/54 routers."""
+        if not CONFIG.get('w56_abduce', True) or self.w54 is None:
+            return None
+        q = re.sub(r'\s+', ' ', str(question).strip().rstrip('?').strip())
+        if not q:
+            return None
+        for rx, op in self._patterns():
+            m = rx.match(q)
+            if not m:
+                continue
+            self.extended += 1
+            try:
+                term = self._why_term(m.group(1))
+                if not term:
+                    return None
+                return self._abduce_answer(term, question)
+            except Exception:
+                self.errors[op] += 1
+                return None
+        return None
+
+    # ---- correlated-but-untyped pairs -------------------------------------------
+    def untyped(self, k=12):
+        """Strong learned correlations with NO typed edge — pairs the
+        correlation matrix insists are related but the logic layer
+        cannot yet say how. The next mining/learning targets."""
+        w54 = self.w54
+        w53 = getattr(self.sim, '_wave53', None)
+        ex = getattr(w54, 'extractor', None) if w54 else None
+        graph = getattr(w53, 'graph', None) if w53 is not None else None
+        if ex is None or graph is None:
+            return []
+        seeds = []
+        if w54.gaps is not None:
+            seeds += [t for t, _n in w54.gaps.misses.most_common(24)]
+        seeds += [m for m in list(ex._adj)[:64] if ' ' not in m]
+        out, seen = [], set()
+        # Phrase resolution WITHOUT _ensure: a report like this only needs
+        # the structure already extracted — per-neighbor _resolve would
+        # trigger up to ~500 postings scans of max_scan docs each.
+        def _ph(t):
+            ph = {ex._canon(t) or str(t).strip().lower()}
+            for tok in str(t).split():
+                ph |= ex._phrase_index.get(tok, set())
+            return ph
+        for a in seeds:
+            if not a:
+                continue
+            try:
+                nbrs = graph.neighbors(a, k=8)
+            except Exception:
+                nbrs = []
+            for u, w, n in nbrs:
+                if '_' in u or u == a:
+                    continue
+                key = tuple(sorted((a, u)))
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    pa, pb = _ph(a), _ph(u)
+                    typed = False
+                    for x in pa:
+                        for r, y in ex._adj.get(x, ()):
+                            if y in pb:
+                                typed = True
+                    if not typed:
+                        for y in pb:
+                            for r, x in ex._adj.get(y, ()):
+                                if x in pa:
+                                    typed = True
+                    if not typed:
+                        out.append({'a': a, 'b': u, 'npmi': w,
+                                    'shared_docs': n})
+                except Exception:
+                    continue
+        out.sort(key=lambda x: -x['npmi'])
+        return out[:k]
+
+    def get_status(self):
+        return {'bound': self._bound,
+                'errors': dict(self.errors),
+                'extended_routes': self.extended,
+                'miner': (self.miner.get_status()
+                          if self.miner else None),
+                'aliases': (self.aliaser.get_status()
+                            if self.aliaser else None),
+                'verifier': (self.verifier.get_status()
+                             if self.verifier else None),
+                'learned_rules': bool(CONFIG.get('w56_learned_rules',
+                                                 True)),
+                'abduce': bool(CONFIG.get('w56_abduce', True))}
+
+    def report(self):
+        s = self.get_status()
+        m = s['miner'] or {}
+        al = s['aliases'] or {}
+        v = s['verifier'] or {}
+        top = (self.miner.table(k=5) if self.miner else [])
+        lines = [
+            "=" * 68,
+            "WAVE 56 - INDUCTIVE LOGIC LAYER",
+            "=" * 68,
+            f"  bound      : {s['bound']}   learned rules: "
+            f"{'ON' if s['learned_rules'] else 'off'}   "
+            f"priors: {'ON' if m.get('priors') else 'OFF'}",
+            f"  rules      : {m.get('compose_rules', 0)} compose   "
+            f"{m.get('inverse_rules', 0)} inverse   "
+            f"{m.get('conflict_rules', 0)} conflict   "
+            f"paths seen {m.get('paths_seen', 0)}",
+            f"  aliases    : {al.get('alias_pairs', 0)} pairs   "
+            f"checked {al.get('terms_checked', 0)} terms",
+            f"  verified   : precision {v.get('precision')}   "
+            f"coverage {v.get('coverage')}   "
+            f"sampled {v.get('sampled', 0)}",
+            f"  abduce     : {s['extended_routes']} extended routes",
+            "  top rules  :"]
+        for row in top:
+            lines.append(f"    {row['rule']}  conf={row['conf']} "
+                         f"n={row['pos']} uses={row['uses']}")
+        lines.append("=" * 68)
+        return '\n'.join(lines)
+
+
+# ---- alias-aware resolution ----------------------------------------------------
+_pre_v56_resolve = LearnedRelationExtractor._resolve
+
+
+def _v56_resolve(self, term):
+    """Phrases now close over learned aliases — distributionally
+    equivalent tokens resolve to the same learned structure. Results are
+    memoised on (docs_extracted, phrases_known, corpus_docs): every logic
+    op resolves its endpoints, and re-deriving the closure each time was
+    the top per-query cost once the graph was warm."""
+    try:
+        stamp = (self._scans, len(self._phrase_index),
+                 len(self.index.docs))
+    except Exception:
+        stamp = None
+    cache = getattr(self, '_rslv_cache', None)
+    if cache is None:
+        cache = self._rslv_cache = {}
+    ent = cache.get(term) if stamp is not None else None
+    if ent is not None and ent[0] == stamp:
+        return set(ent[1])
+    phrases = _pre_v56_resolve(self, term)
+    al = getattr(self, '_aliaser', None)
+    if al is None or not CONFIG.get('w56_aliases', True):
+        if stamp is not None:
+            if len(cache) >= int(CONFIG.get('w56_resolve_cache', 2048)):
+                cache.clear()
+            cache[term] = (stamp, frozenset(phrases))
+        return phrases
+    cap = int(CONFIG.get('w56_alias_max', 6))
+    out = set(phrases)
+    try:
+        for p in list(phrases):
+            toks = p.split()
+            for i, t in enumerate(toks):
+                for alt, _cos in al.aliases(t):
+                    if alt == t:
+                        continue
+                    self._ensure(alt)
+                    out.add(alt)
+                    if len(toks) > 1:
+                        out.add(' '.join(toks[:i] + [alt] + toks[i + 1:]))
+                    if len(out) >= cap * 4:
+                        break
+            if len(out) >= cap * 4:
+                break
+    except Exception:
+        pass
+    if stamp is not None:
+        if len(cache) >= int(CONFIG.get('w56_resolve_cache', 2048)):
+            cache.clear()
+        cache[term] = (stamp, frozenset(out))
+    return out
+
+
+LearnedRelationExtractor._resolve = _v56_resolve
+
+
+# ---- derivation over the learned rule table ------------------------------------
+_pre_v56_derive = LearnedLogicEngine.derive
+
+
+def _v56_derive(self, term, rel=None, max_hops=None, k=16):
+    """Forward-chaining over the LEARNED rule table.
+
+    Each composition step consults the miner: mined rules carry measured
+    confidence and can conclude MULTIPLE relations where the authored
+    table had one or none; authored entries survive only as priors.
+    Every derived hit records `rules_used` — which rules fired — so a
+    proof is auditable down to the inference machinery itself. Falls
+    back to the authored walk when the miner is absent or disabled."""
+    miner = getattr(self, 'rule_source', None)
+    if miner is None or not CONFIG.get('w56_learned_rules', True):
+        return _pre_v56_derive(self, term, rel=rel, max_hops=max_hops,
+                               k=k)
+    self._derivations += 1
+    max_hops = int(max_hops or self.max_hops)
+    try:
+        mstamp = (self.ex._scans, len(self.ex._edges))
+    except Exception:
+        mstamp = None
+    cache = getattr(self, '_walk_cache', None)
+    if cache is None:
+        cache = self._walk_cache = {}
+    ck = ('d', term, rel, max_hops, k)
+    ent = cache.get(ck) if mstamp is not None else None
+    if ent is not None and ent[0] == mstamp:
+        return list(ent[1])
+    scans0 = self.ex._scans
+    ensure_budget = int(CONFIG.get('w56_ensure_docs', 512))
+    best = {}
+    for start in self._resolve(term):
+        frontier = [(start, None, 1.0, [], [])]
+        seen_states = {(start, None)}
+        hops = 0
+        while frontier and hops < max_hops:
+            hops += 1
+            nxt = []
+            for node, acc_rel, conf, path, rused in frontier:
+                if self.ex._scans - scans0 < ensure_budget:
+                    self.ex._ensure(node)
+                for r2, other in tuple(self.ex._adj.get(node, ())):
+                    e = self.ex._edges.get((node, r2, other))
+                    c = LearnedRelationExtractor._conf(e) if e else 0.0
+                    if c <= self.ex.min_conf:
+                        continue
+                    if acc_rel is None:
+                        cands = [(r2, 1.0, 0, 'edge')]
+                    else:
+                        cands = miner.compose(acc_rel, r2)
+                    for new_rel, rconf, _sup, tag in cands:
+                        if tag == 'learned':
+                            miner.uses[(acc_rel, r2, new_rel)] += 1
+                        nc = conf * c * rconf * (
+                            self.hop_decay if path else 1.0)
+                        key = (other, new_rel)
+                        nru = (rused if tag == 'edge'
+                               else rused + [(acc_rel, r2, new_rel)])
+                        if nc > best.get(key, (0.0, None, None))[0]:
+                            best[key] = (nc, path + [(node, r2, other)],
+                                         nru)
+                        st = (other, new_rel)
+                        if st not in seen_states and hops < max_hops:
+                            seen_states.add(st)
+                            nxt.append((other, new_rel, nc,
+                                        path + [(node, r2, other)],
+                                        nru))
+            frontier = nxt
+    out = [{'term': n, 'rel': r, 'conf': round(c, 4),
+            'hops': len(p), 'path': list(p), 'derived': len(p) > 1,
+            'rules_used': [list(x) for x in ru]}
+           for (n, r), (c, p, ru) in best.items()
+           if rel is None or r == rel]
+    out.sort(key=lambda x: -x['conf'])
+    out = out[:k]
+    if mstamp is not None:
+        if len(cache) >= int(CONFIG.get('w56_walk_cache', 512)):
+            cache.clear()
+        cache[ck] = (mstamp, out)
+    return out
+
+
+LearnedLogicEngine.derive = _v56_derive
+
+
+# ---- learned inverses + conflicts in check() ------------------------------------
+_pre_v56_check = LearnedLogicEngine.check
+
+
+def _v56_check(self, a, rel, b, k=8):
+    """Learned inverses and learned conflicts join the verdict — evidence
+    the authored tables never named. Mirrors the Wave-55 fold-in: pool,
+    recompute the verdict, annotate what data added."""
+    res = _pre_v56_check(self, a, rel, b, k=k)
+    miner = getattr(self, 'rule_source', None)
+    if miner is None or not CONFIG.get('w56_learned_rules', True):
+        return res
+    pa, pb = self._resolve(a), self._resolve(b)
+    s_extra, r_extra = [], []
+    inv_map = dict(miner.inverse_of(rel))
+    for y in pb:
+        for r2, x in self.ex._adj.get(y, ()):
+            if x not in pa or r2 == rel:
+                continue
+            if self.INVERSE.get(r2) == rel:
+                continue                      # authored path already pooled
+            if r2 not in inv_map:
+                continue
+            e = self.ex._edges.get((y, r2, x))
+            if not e:
+                continue
+            ec = LearnedRelationExtractor._conf(e)
+            if ec > 0.03:
+                s_extra.append(ec * inv_map[r2])
+    for cr, cconf in miner.conflicts_of(rel, learned_only=True)[
+            :int(CONFIG.get('w56_check_conflicts', 3))]:
+        for hit in self.derive(a, cr, k=16):
+            if hit['term'] in pb:
+                r_extra.append(hit['conf'] * cconf)
+    if not s_extra and not r_extra:
+        return res
+    support = 1.0 - res['support']
+    for c in s_extra:
+        support *= (1.0 - c)
+    support = 1.0 - support
+    refute = 1.0 - res['refute']
+    for c in r_extra:
+        refute *= (1.0 - c)
+    refute = 1.0 - refute
+    if support - refute >= 0.1 and support >= 0.15:
+        verdict = 'supported'
+    elif refute - support >= 0.1 and refute >= 0.15:
+        verdict = 'refuted'
+    elif support >= 0.2 and refute >= 0.2:
+        verdict = 'conflicted'
+    else:
+        verdict = 'unknown'
+    res = dict(res)
+    res['support'] = round(support, 4)
+    res['refute'] = round(refute, 4)
+    res['verdict'] = verdict
+    res['learned_evidence'] = len(s_extra) + len(r_extra)
+    return res
+
+
+LearnedLogicEngine.check = _v56_check
+
+
+# ---- abductive routing through the same single wrap point ----------------------
+_pre_v56_w54_relate = Wave54Integration.relate
+
+
+def _v56_w54_relate(self, question):
+    w56 = getattr(self, '_w56', None)
+    if w56 is not None:
+        try:
+            res = w56.relate_extended(question)
+        except Exception:
+            res = None
+        if res is not None:
+            return res
+    return _pre_v56_w54_relate(self, question)
+
+
+Wave54Integration.relate = _v56_w54_relate
+
+
+# ---- public API ---------------------------------------------------------------
+def _wave56_rules(self, k=24):
+    """Public: the mined inference-rule table — composition rules with
+    counted support, measured confidence, and firing counts."""
+    w = getattr(self, '_wave56', None)
+    if w is None or w.miner is None:
+        return []
+    return w.miner.table(k=k)
+
+
+def _wave56_verify(self, k=None):
+    """Public: held-out measured precision of the learned logic — the
+    fraction of direct edges re-derived through other paths."""
+    w = getattr(self, '_wave56', None)
+    if w is None or w.verifier is None:
+        return {'precision': 0.0, 'coverage': 0.0, 'sampled': 0}
+    return w.verifier.verify(k=k)
+
+
+def _wave56_aliases(self, term):
+    """Public: learned distributional aliases of a term — the tokens the
+    correlation matrix says are the same thing in different vocabulary."""
+    w = getattr(self, '_wave56', None)
+    if w is None or w.aliaser is None:
+        return []
+    return w.aliaser.aliases(str(term))
+
+
+def _wave56_abduce(self, query):
+    """Public: ranked learned explanations for a 'why'/'what explains'
+    question, pooled across every learned relation."""
+    w = getattr(self, '_wave56', None)
+    if w is None:
+        return {'answer': None, 'reason': 'wave56 not initialised'}
+    res = w.relate_extended(str(query))
+    return res or {'answer': None,
+                   'reason': 'no learned explanation for this question'}
+
+
+def _wave56_untyped(self, k=12):
+    """Public: strongly correlated pairs with no typed learned edge —
+    what the system knows is related but not yet how."""
+    w = getattr(self, '_wave56', None)
+    if w is None:
+        return []
+    return w.untyped(k=k)
+
+
+def _wave56_status(self):
+    w = getattr(self, '_wave56', None)
+    return w.get_status() if w is not None else {'bound': False}
+
+
+def _wave56_report(self):
+    w = getattr(self, '_wave56', None)
+    return w.report() if w is not None else 'wave56 not initialised'
+
+
+ConsciousnessSimulator.wave56_rules = _wave56_rules
+ConsciousnessSimulator.wave56_verify = _wave56_verify
+ConsciousnessSimulator.wave56_aliases = _wave56_aliases
+ConsciousnessSimulator.wave56_abduce = _wave56_abduce
+ConsciousnessSimulator.wave56_untyped = _wave56_untyped
+ConsciousnessSimulator.wave56_status = _wave56_status
+ConsciousnessSimulator.wave56_report = _wave56_report
+
+
+# ---- registration -------------------------------------------------------------
+_pre_v56_init = ConsciousnessSimulator.__init__
+
+
+def _wave56_cs_init(self, *args, **kwargs):
+    _pre_v56_init(self, *args, **kwargs)
+    if getattr(self, '_wave56', None) is not None:
+        return
+    try:
+        self._wave56 = Wave56Integration(sim=self)
+        ok = self._wave56.bind(self)
+        print(f"  [WAVE56] inductive logic layer "
+              f"{'online' if ok else 'waiting for learned logic layer'}")
+    except Exception as e:
+        print(f"  [WARN] wave56 init: {e}")
+        self._wave56 = None
+
+
+ConsciousnessSimulator.__init__ = _wave56_cs_init
+
+_so_v56 = SovereignOrchestrator.__init__
+
+
+def _so_v56_init(self, sim):
+    _so_v56(self, sim)
+    self._sub_engines = self._sub_engines + ('_wave56',)
+
+
+SovereignOrchestrator.__init__ = _so_v56_init
+
+_pwa_v56 = ProcessWiringAuditor.__init__
+
+
+def _pwa_v56_init(self, sim):
+    _pwa_v56(self, sim)
+    self._expected = self._expected + ('_wave56',)
+
+
+ProcessWiringAuditor.__init__ = _pwa_v56_init
+
+
 if __name__ == '__main__':
     # Create and run; optional profile harness for finding real bottlenecks
     if os.environ.get('CS_PROFILE', '0') == '1':
@@ -67827,7 +73968,5 @@ if __name__ == '__main__':
                 f.write(s.getvalue())
             print("Profile written to cs_profile.txt")
     else:
-        consciousness = ConsciousnessSimulator()
-        consciousness.run()
         consciousness = ConsciousnessSimulator()
         consciousness.run()
